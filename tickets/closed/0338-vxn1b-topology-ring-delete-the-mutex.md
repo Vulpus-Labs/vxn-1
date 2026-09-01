@@ -93,7 +93,7 @@ full ring, set the resync flag and let the snapshot path carry it.
 ## Notes
 
 - `priority: high` and `depends: []` — unlike the rest of
-  [E049](../../epics/open/E049-shared-matrix-routing.md) this fixes a live
+  [E049](../../epics/closed/E049-shared-matrix-routing.md) this fixes a live
   real-time hazard rather than removing duplication, and it needs none of the
   extraction work first. It can land immediately and independently.
 - The two-channel split is deliberately *not* "SPSC everywhere". Routing

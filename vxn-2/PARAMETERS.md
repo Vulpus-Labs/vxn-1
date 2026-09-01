@@ -178,6 +178,15 @@ users can additionally route those sources via the matrix.
 
 ## Mod matrix
 
+**The routing mechanism is shared with VXN1b** — the slot type, the curve axes,
+the scale VCA, route compilation, the evaluator and the smoother bank all live
+in [`vxn-core-matrix`](../crates/vxn-core-matrix) (epic E049, [ADR
+0003](../adrs/0003-vxn-core-matrix.md)). What remains VXN2's is the **roster**:
+which sources and destinations exist, each destination's gain, depth taper,
+granularity tier and smoothing class, and the wire encoding below. Everything in
+this section describes shared behaviour except the source and destination lists
+and the packed-`u32` slot format, which VXN1b spells differently on purpose.
+
 The matrix is a 16-slot table per patch. Each slot has:
 
 | Field      | Type | Notes                                                                                            |
@@ -189,6 +198,7 @@ The matrix is a 16-slot table per patch. Each slot has:
 | `shape`    | e    | {lin, exp, log} — response bend, applied after `polarity`.                                       |
 | `scale_src`| e    | Optional **secondary scale source** (E033), same roster as `source`; `none` (default) = depth unscaled. |
 | `scale_shape` | e | {lin, exp, log} — response bend on the scale VCA. `lin` (default) = straight-line gate.          |
+| `enabled`  | b    | The player's on/off switch. A switched-off route keeps its wiring and contributes nothing, so A/B-ing a route does not destroy its setup. Distinct from *wired*: persistence and free-slot search ask whether both endpoints are set, regardless of the switch. |
 
 **Curve shapes.** `lin` is passthrough; `exp` (`sign(v)·v²`) and `log`
 (`sign(v)·√|v|`) steepen or compress while preserving sign; `bipolar`

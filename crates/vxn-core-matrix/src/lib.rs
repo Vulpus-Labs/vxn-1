@@ -20,23 +20,18 @@
 //! dest total to a filter coefficient, a phase increment or a VCA stays in the
 //! synth.
 //!
-//! ## Status: the seam only
+//! ## Status: complete
 //!
-//! Epic [E049](../../../epics/open/E049-shared-matrix-routing.md) ports the
-//! mechanism across in steps, each one null-tested at ≤ −100 dBFS against the
-//! render it replaces. Ticket
-//! [0329](../../../tickets/open/0329-vxn-core-matrix-crate-skeleton.md) — this
-//! one — lands the crate and the roster trait **with no consumers**, so the
-//! seam gets reviewed before anything is ported through it. If the trait is
-//! wrong, that is the cheap moment to find out.
+//! Epic [E049](../../../epics/closed/E049-shared-matrix-routing.md) is closed
+//! and this crate holds the whole mechanism. Both synths route through it and
+//! neither carries a slot type, a curve axis, a scale VCA, a route compiler, a
+//! lane loop or a smoother of its own.
 //!
-//! Ticket [0330](../../../tickets/open/0330-share-curve-vocabulary.md) gave the
-//! crate its first consumers: [`curve`] holds the polarity/shape axes, the
-//! `matrix_enum!` generator behind every name/label table in both synths, the
-//! flat preset codec and the scale VCA. 0332 added the generated roster row and
-//! 0333 the [`slot`] layer — the patch table both synths hold and the
-//! `RouteList` both compile it into. The evaluator follows in 0334 and the
-//! smoother bank in 0335.
+//! It landed in steps, each null-tested against the **pre-epic** render, and the
+//! end-to-end result is that both synths render **bit-identically** to the code
+//! this replaced — the epic budgeted for last-bit reordering and got none. The
+//! module list below is roughly the order it arrived in, and each module's docs
+//! carry the measurements behind its shape.
 //!
 //! ## Writing code in this crate
 //!
@@ -76,22 +71,23 @@
 /// synths now use for their own source and destination enums — it is exported
 /// at the crate root, not from this module.
 ///
-/// Filled in by ticket 0330.
+/// Landed in ticket 0330.
 pub mod curve;
 
 /// The coherence predicate: [`Coherence`](coherence::Coherence), the verdict a
 /// faceplate paints a row red on, and [`CoherenceRoster`](coherence::CoherenceRoster),
 /// the per-synth hook for the special cases the tier rule does not cover.
 ///
-/// Filled in by ticket 0336.
+/// Landed in ticket 0336.
 pub mod coherence;
 
 /// The roster half of the seam: [`MatrixRoster`](roster::MatrixRoster) and the
 /// two shared vocabularies keyed on a destination, [`Tier`](roster::Tier) and
 /// [`Smoothing`](roster::Smoothing).
 ///
-/// Filled in by ticket 0329; ticket 0332 replaces hand-written implementations
-/// with one generated from a row list per enum.
+/// Landed in ticket 0329; 0332 replaced hand-written implementations with one
+/// generated from a row list per enum, and 0334 added `matrix_roster!` so the
+/// forwarding impl is generated too.
 pub mod roster;
 
 /// The patch's routing table and the block's compiled routes:
@@ -99,7 +95,7 @@ pub mod roster;
 /// [`Route`](slot::Route) and [`RouteList`](slot::RouteList), plus the two
 /// endpoint traits a synth's own `SourceId` / `DestId` cross the seam through.
 ///
-/// Filled in by ticket 0333; [`RouteList::compile`](slot::RouteList::compile)
+/// Landed in ticket 0333; [`RouteList::compile`](slot::RouteList::compile)
 /// is the single place a slot's on/off switch, its zero-depth skip, its depth
 /// taper and its dest gain are resolved, for both synths.
 pub mod slot;
@@ -107,7 +103,8 @@ pub mod slot;
 /// Lane-major matrix storage sized to a roster — the const-generic scheme, and
 /// the `const {}` guard that makes a roster/storage mismatch a compile error.
 ///
-/// Filled in by ticket 0329; ticket 0334 put the evaluator on top of it.
+/// Landed in ticket 0329; 0334 put the evaluator on top of it, which is what
+/// the sizing scheme was designed against.
 pub mod storage;
 
 /// The evaluator: [`eval_dests`](eval::eval_dests), the scalar per-voice
@@ -116,7 +113,7 @@ pub mod storage;
 /// [`slot_topology_gain`](eval::slot_topology_gain) and its two companions, the
 /// gain primitives a synth's own fast paths re-apply piecewise.
 ///
-/// Filled in by ticket 0334, the last and largest mechanism move: neither synth
+/// Landed in ticket 0334, the last and largest mechanism move: neither synth
 /// carries a lane loop after it.
 pub mod eval;
 
@@ -125,7 +122,7 @@ pub mod eval;
 /// [`class_rows`](smoothing::class_rows), which turns a roster's declared
 /// `Smoothing` column into the rows a bank smooths.
 ///
-/// Filled in by ticket 0335. The recurrence, the state, the snap and the settle
+/// Landed in ticket 0335. The recurrence, the state, the snap and the settle
 /// predicates are shared; *when* to advance a lane stays each synth's render
 /// loop's decision.
 pub mod smoothing;
@@ -149,7 +146,7 @@ pub mod test_roster;
 /// evaluator's arithmetic and nothing else. Same gating as `test_roster` —
 /// available to this crate's tests always, to other crates via `testing`.
 ///
-/// Filled in by ticket 0331; ticket 0334 registers the shared evaluator as a
-/// further path and the whole table covers it without new test code.
+/// Landed in ticket 0331; 0334 registered the shared evaluator as two further
+/// paths, so the whole table covers the code both synths ship.
 #[cfg(any(test, feature = "testing"))]
 pub mod golden;

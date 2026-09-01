@@ -8,7 +8,7 @@
 //! filter coefficient, a phase increment or a VCA stays in the synth
 //! ([ADR 0003](../../../../adrs/0003-vxn-core-matrix.md) §"Consequences").
 //!
-//! Ticket [0332](../../../../tickets/open/0332-roster-row-declares-everything.md)
+//! Ticket [0332](../../../../tickets/closed/0332-roster-row-declares-everything.md)
 //! generates the implementations from one row list per enum, so that a
 //! destination cannot be added without every column being filled. Until then
 //! an implementation is written by hand; the trait shape is the same either
@@ -37,7 +37,7 @@
 /// tier is coarser-or-equal to the dest tier. A coarser source broadcasts
 /// unambiguously to a finer dest; a finer source into a coarser dest is a lossy
 /// collapse to lane 0 — which lane wins? [`Tier::covers`] is that rule;
-/// [0336](../../../../tickets/open/0336-coherence-in-the-shared-engine.md)
+/// [0336](../../../../tickets/closed/0336-coherence-in-the-shared-engine.md)
 /// adds the two special cases (an LFO into its own rate, and a lane-0-collapsed
 /// `voice-idx` route) and the verdict enum the UI reads.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -99,7 +99,7 @@ impl Tier {
 /// that filter over a destination's whole total.
 ///
 /// Consumed by
-/// [0335](../../../../tickets/open/0335-declared-target-smoothing.md), which
+/// [0335](../../../../tickets/closed/0335-declared-target-smoothing.md), which
 /// builds the bank. Declared here from the start so that 0332's roster row has
 /// a column to fill.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
@@ -165,7 +165,7 @@ pub enum Smoothing {
 /// twice and quietly cube an already-cubed depth (0.5 → 0.125 → ~0.00195, a
 /// ~64× loss of pitch modulation on a `GlobalPitch` route). That is silent,
 /// plausible-looking, and well past E049's −100 dBFS bar. Untangling it is
-/// [0333](../../../../tickets/open/0333-share-slot-and-route-compilation.md)'s
+/// [0333](../../../../tickets/closed/0333-share-slot-and-route-compilation.md)'s
 /// job; the contract is stated here because this is what an implementor reads.
 ///
 /// # Storage sizing
@@ -233,7 +233,7 @@ pub trait MatrixRoster: Copy {
 /// an inherent method on the source or destination enum, and every table
 /// already exists as a generated const. Writing it out is a dozen one-line
 /// methods that say nothing, twice, once per synth; that is the shape of
-/// duplication [E049](../../../../epics/open/E049-shared-matrix-routing.md)
+/// duplication [E049](../../../../epics/closed/E049-shared-matrix-routing.md)
 /// exists to remove, so it is generated too.
 ///
 /// ```

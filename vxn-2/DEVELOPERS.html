@@ -527,12 +527,36 @@ already <code>Releasing</code>) before actively-held keys, oldest as tiebreaker:
 the first slides from the previous sounding pitch, tracked via a block-rate
 <code>GlideState</code>.</p>
 <h3 id="32-the-mod-matrix-matrixrs-modulationrs">3.2 The mod matrix (<a href="crates/vxn2-engine/src/matrix.rs"><code>matrix.rs</code></a>, <a href="crates/vxn2-engine/src/modulation.rs"><code>modulation.rs</code></a>)<a class="headerlink" href="#32-the-mod-matrix-matrixrs-modulationrs" title="Permanent link">¶</a></h3>
+<p><strong>The routing mechanism is shared with VXN1b</strong> and lives in
+<a href="../crates/vxn-core-matrix"><code>vxn-core-matrix</code></a> (epic E049,
+<a href="../adrs/0003-vxn-core-matrix.md">ADR 0003</a>). The seam runs between the
+<strong>roster</strong> — what <em>this</em> synth can route, its sources and destinations and
+their declared columns — and the <strong>mechanism</strong> — how a routing is evaluated.
+<code>matrix.rs</code> is now the roster half plus the bindings; none of the following is
+defined there any more:</p>
+<table>
+<thead>
+<tr><th>In <code>vxn-core-matrix</code></th><th>What it is</th></tr>
+</thead>
+<tbody>
+<tr><td><code>slot::MatrixSlot</code>, <code>MatrixTable</code></td><td>the patch's routing table</td></tr>
+<tr><td><code>slot::Route</code>, <code>RouteList::compile</code></td><td>the block's compiled routes — the one place a slot's on/off switch, zero-depth skip, depth taper and dest gain are resolved</td></tr>
+<tr><td><code>curve::Polarity</code>, <code>Shape</code>, <code>scale_norm</code></td><td>the shaping axes and the scale VCA</td></tr>
+<tr><td><code>eval::eval_dests_bank</code></td><td>the dest-major lane loop both synths run</td></tr>
+<tr><td><code>smoothing::CascadeBank</code>, <code>OnePoleBank</code></td><td>the post-sum smoothers (<code>PitchSmoother</code> is now an alias for the first)</td></tr>
+<tr><td><code>roster::MatrixRoster</code>, <code>matrix_enum!</code>, <code>matrix_roster!</code></td><td>the declared roster and the tables generated from it</td></tr>
+</tbody>
+</table>
+<p>What stays VXN2's: the source and destination sets, the wire/state encodings
+(nibble-packed <code>u32</code> per row, which VXN1b does differently on purpose), which 8
+of 16 depths are CLAP-automatable, and everything about what a destination
+<em>means</em> — applying a total to a phase increment, a VCA or a filter coefficient.</p>
 <p>The matrix is <strong>the only routing mechanism</strong> — there is no hard-wired "mod
 wheel → cutoff". 16 slots, each <code>(source, dest, depth, polarity, shape, scale_src,
-scale_shape)</code> — curve shaping is two axes, a range mapping then a response bend,
-and the scale VCA carries its own bend. Depths for
-slots 1–8 are CLAP-automatable; slots 9–16 and all topology (source/dest/curve)
-are patch state only.</p>
+scale_shape, enabled)</code> — curve shaping is two axes, a range mapping then a
+response bend, and the scale VCA carries its own bend. Depths for
+slots 1–8 are CLAP-automatable; slots 9–16 and all topology are patch state
+only.</p>
 <p>Sources and destinations live in <strong>three granularity tiers</strong>:</p>
 <table>
 <thead>
@@ -565,18 +589,31 @@ broadcasts cleanly to a finer dest; a <em>finer</em> source into a coarser dest
 collapses to lane 0 (lossy) and the UI renders it red. <code>coherence(src, dst)</code> is
 the single source of truth, consulted by the UI tooltip, the matrix eval, and a
 <strong>factory CI test</strong> that fails if any shipped preset routes incoherently.</p>
-<p>Evaluation is a two-phase, allocation-free fan-out done once per block:</p>
+<p>Evaluation is allocation-free and splits along <strong>two rates</strong>:</p>
 <ul>
-<li><code>eval_sources(...)</code> broadcasts every source into a <code>[lane][source]</code> lookup
-  table (the broadcast cost is paid once, never inside the per-slot loop);</li>
-<li><code>eval_dests(...)</code> walks each active slot, applies its curve, multiplies by
-  depth, and accumulates into the matching per-lane destination column.</li>
+<li><strong>Once per block</strong> — <code>RouteList::compile(...)</code> resolves the 16 slots into
+  the active routes, folding the on/off switch, the zero-depth skip, the depth
+  taper and the dest gain into one <code>gain</code> factor each. All of that is a pure
+  function of the patch, and used to be re-derived per stack.</li>
+<li><strong>Once per stack</strong> — <code>eval_sources(...)</code> broadcasts every source into a
+  <strong>source-major</strong> <code>[source][lane]</code> table, then <code>eval_dests(...)</code> walks the
+  compiled routes and accumulates into a <strong>dest-major</strong> <code>[dest][lane]</code>
+  accumulator.</li>
 </ul>
-<p><strong>Rate control:</strong> non-pitch destinations are applied at block rate. Pitch
-destinations are smoothed down to a 16-sample sub-block quantum (<code>PitchSmoother</code>)
-so a per-block matrix value doesn't zipper the pitch — and once the smoother is
-within <code>1e-4</code> semitones of target the per-quantum re-cook is skipped entirely, so
-unmodulated pitch pays nothing.</p>
+<p>Both buffers are dest-/source-major rather than lane-major, and that is
+load-bearing: with one destination's lanes contiguous the accumulate is a 4-wide
+<code>fmul.4s</code>/<code>fadd.4s</code> over a <code>q</code> register instead of a gather/scatter that LLVM
+leaves scalar. Every per-route decision — polarity, shape, scale-source polarity,
+scale bend — is dispatched <strong>above</strong> the lane loop into one of fifteen
+straight-line arms, for the same reason.</p>
+<p><strong>Rate control:</strong> non-pitch destinations are applied at block rate.
+Destinations declaring <code>quantum_cascade</code> are smoothed down to a 16-sample
+sub-block quantum by a shared <code>CascadeBank</code> (two poles — one is C0 but
+C1-broken, and the velocity step is the click), so a per-block matrix value
+doesn't zipper the pitch. Once the smoother is within <code>1e-4</code> semitones of
+target the per-quantum re-cook is skipped entirely, so unmodulated pitch pays
+nothing. <strong>Which</strong> destinations those are is the <code>smooth =</code> column of their
+roster rows, not a list kept beside them.</p>
 <p><strong>Stack-pitch modulation</strong> (ADR 0005): six <code>Op{N}StackPitch</code> destinations. A
 single route bends the target op <em>and every op in its connected component of the
 algorithm graph</em> by the <strong>same semitone delta</strong>, keeping FM ratios intact

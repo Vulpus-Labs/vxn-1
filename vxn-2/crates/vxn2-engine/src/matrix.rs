@@ -58,32 +58,35 @@
 //! the matrix descriptor so the UI flags incoherent rows without re-deriving
 //! the rule.
 //!
-//! ## Inner-loop shape
+//! ## Inner-loop shape — now documented where the loop is
 //!
-//! Per-slot inner loops walk 8 lanes. Every per-slot decision — curve
-//! polarity, curve shape, scale-source polarity, scale bend — is dispatched
-//! *outside* the lane loop, so each arm's body is straight-line FMA + add with
-//! no branch or match per lane. Letting one of those matches ride inside the
-//! loop is expensive: `scale_norm` was originally called per lane, and hoisting
-//! its two decisions into the arms below cut a fully-scaled 16-slot eval by
-//! ~47% (253 ns → 133 ns, `matrix_eval_scaled`).
+//! The lane loop moved to [`vxn_core_matrix::eval`] in 0334 and the smoother to
+//! [`vxn_core_matrix::smoothing`] in 0335, and the rules that shape them moved
+//! with them: hoist every per-route decision above the lane loop, `clamp_unit`
+//! rather than `f32::clamp`, the branch inside `shape_log` rather than
+//! `copysign`. All three are counter-intuitive, all three are measured, and all
+//! three are stated next to the code they constrain rather than here.
 //!
-//! Both buffers are stored **transposed** — [`LaneSourceVals`] source-major,
-//! [`LaneDestVals`] dest-major — so a slot's source row and dest row are each
-//! a contiguous `[f32; STACK_LANES]` and each curve arm's accumulate compiles
-//! to a `ldr q` / `fmul.4s` / `fadd.4s` / `str q` over two vectors, not a
-//! gather-scatter (ticket 0328). Under the old lane-major layout
-//! `sources[k][si]` and `out[k][di]` strided a whole row per lane and the
-//! accumulate stayed scalar. Measured post-LTO on the linked `matrix` bench
-//! binary, lane-major → transposed: 895 → 569 instructions, 383 → 112 scalar
-//! FP ops, 23 → 74 `.4s` ops — and where every vector op used to live in the
-//! *scale-VCA* loop (the one loop already walking a contiguous local), the
-//! curve arms now carry `fabs.4s` / `fneg.4s` / `fcmlt.4s` of their own.
-//! Straight-line-per-lane is worth keeping on top of that, for the
-//! branch-prediction and code-size win.
+//! Two facts stay in this module because they are **VXN2's**, not the
+//! mechanism's:
 //!
-//! **Measure this post-LTO or not at all.** `cargo rustc --emit asm` on this
-//! crate runs *no* loop vectoriser — with `lto` set, cargo passes
+//! - Both buffers are stored **transposed** — [`LaneSourceVals`] source-major,
+//!   [`LaneDestVals`] dest-major — so a route's source row and dest row are each
+//!   a contiguous `[f32; STACK_LANES]` and the accumulate compiles to
+//!   `ldr q` / `fmul.4s` / `fadd.4s` / `str q` over two vectors rather than a
+//!   gather-scatter (0328). Under the old lane-major layout `sources[k][si]` and
+//!   `out[k][di]` strided a whole row per lane and the accumulate stayed scalar.
+//!   Measured post-LTO on the linked `matrix` bench binary, lane-major →
+//!   transposed: 895 → 569 instructions, 383 → 112 scalar FP ops, 23 → 74 `.4s`
+//!   ops. This layout is a **precondition** of the shared evaluator, not an
+//!   optimisation on top of it — the two synths could not share a lane loop
+//!   until they agreed on it.
+//! - `eval_dests` runs **once per active stack** while its input is a pure
+//!   function of the patch, which is why `RouteList::compile` is hoisted to once
+//!   per block (0333). Up to sixteen repeats of work that belongs once.
+//!
+//! **Measure post-LTO or not at all.** `cargo rustc --emit asm` on this crate
+//! runs *no* loop vectoriser — with `lto` set, cargo passes
 //! `-C linker-plugin-lto` and the pipeline is deferred to link time, so even a
 //! trivially vectorisable loop shows up scalar. Use `llvm-objdump` on a linked
 //! artifact. An earlier revision of this note asserted "autovectorises to NEON",
@@ -131,7 +134,7 @@ pub use vxn_core_matrix::curve::{
 ///
 /// Only [`Smoothing::QuantumCascade`] is read today, to derive [`PITCH_DESTS`].
 /// The rest is declaration ahead of its consumer: the shared smoother bank
-/// ([0335](../../../../tickets/open/0335-declared-target-smoothing.md)) is what
+/// ([0335](../../../../tickets/closed/0335-declared-target-smoothing.md)) is what
 /// turns the other classes into behaviour, and declaring them here first means
 /// that ticket is a consumer change rather than a data-entry pass over 51 rows.
 pub use vxn_core_matrix::roster::Smoothing;

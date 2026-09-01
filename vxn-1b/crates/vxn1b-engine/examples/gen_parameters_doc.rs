@@ -16,7 +16,7 @@
 //! silently landing under whichever heading happened to precede it.
 
 use vxn1b_engine::matrix::{
-    SHAPE_LABELS, DEST_LABELS, DEST_NAMES, SOURCE_LABELS, SOURCE_NAMES, SourceId,
+    DEST_LABELS, DEST_NAMES, DestId, SOURCE_LABELS, SOURCE_NAMES, Smoothing, SourceId,
 };
 use vxn1b_engine::params::{
     GLOBAL_PARAMS, Layer, MATRIX_SLOTS, PATCH_COUNT, PATCH_PARAMS, ParamId, TOTAL_PARAMS,
@@ -239,11 +239,54 @@ fn emit_matrix() {
 
     println!("### Destinations");
     println!();
-    println!("| Label | Wire name |");
-    println!("|-------|-----------|");
+    println!(
+        "**Gain** converts the normalised `curve(source) x depth` product into the \
+         destination's own unit, so a fixed depth means something comparable across kinds. \
+         **Taper** is applied to the raw depth *before* the gain — `cubic` only where the \
+         musical range would otherwise live in the bottom sliver of fader travel. \
+         **Smoothing** is the class applied to the destination's summed total (0335): \
+         `block` holds the value for the control block, `quantum` glides it with one pole \
+         per 16-sample sub-block, and `quantum_cascade` uses two — a single pole is \
+         continuous in value but not in *velocity*, and that velocity step is the click a \
+         stepped source routed to pitch would otherwise make."
+    );
+    println!();
+    println!("| Label | Wire name | Gain | Taper | Smoothing |");
+    println!("|-------|-----------|------|-------|-----------|");
     for i in 1..DEST_NAMES.len() {
-        println!("| {} | `{}` |", DEST_LABELS[i], DEST_NAMES[i]);
+        let dest = DestId::from_u8(i as u8);
+        // The taper is not a readable column, so infer it from the function the
+        // row generated: cubic is the only non-identity one either synth uses.
+        let taper = if (dest.cook_depth(0.5) - 0.125).abs() < 1e-6 {
+            "cubic"
+        } else {
+            "linear"
+        };
+        let smoothing = match dest.smoothing() {
+            Smoothing::Block => "block",
+            Smoothing::Quantum => "quantum",
+            Smoothing::QuantumCascade => "quantum cascade",
+            Smoothing::PerSample => "per sample",
+        };
+        println!(
+            "| {} | `{}` | {} | {} | {} |",
+            DEST_LABELS[i],
+            DEST_NAMES[i],
+            dest.gain(),
+            taper,
+            smoothing
+        );
     }
+    println!();
+    println!(
+        "`Amp` reads `block` above and is the one destination whose smoothing is not the \
+         class: only the *static* (non-envelope) part of the VCA coefficient is filtered, \
+         every frame, because smoothing the envelope part would smear the attack. That \
+         factoring belongs to the VCA rather than to routing — ADR 0003 section 3 records it \
+         as the deliberate exception. `Cutoff` and `HpfCutoff` read `block` for a different \
+         reason: the ladder ramps its own coefficients per frame, which already absorbs \
+         their block-edge steps."
+    );
     println!();
 
     println!("### Curve shaping");

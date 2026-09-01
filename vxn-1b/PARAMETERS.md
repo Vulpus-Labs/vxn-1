@@ -243,24 +243,28 @@ The **on/off switch** is separate from the wiring: a route can be set up and swi
 
 ### Destinations
 
-| Label | Wire name |
-|-------|-----------|
-| Pitch | `pitch` |
-| Cross Mod Sweep | `xmod-sweep` |
-| PWM (Both) | `pwm` |
-| Cutoff | `cutoff` |
-| Resonance | `resonance` |
-| HPF Cutoff | `hpf-cutoff` |
-| Amp | `amp` |
-| Cross Mod Amt | `cross-mod-amount` |
-| Pan | `pan` |
-| Osc 1 PWM | `osc1-pwm` |
-| Osc 2 PWM | `osc2-pwm` |
-| Env 1 Scale | `env1-scale` |
-| Env 2 Scale | `env2-scale` |
-| LFO 1 Rate | `lfo1-rate` |
-| Env 1 Sustain | `env1-sustain` |
-| Env 2 Sustain | `env2-sustain` |
+**Gain** converts the normalised `curve(source) x depth` product into the destination's own unit, so a fixed depth means something comparable across kinds. **Taper** is applied to the raw depth *before* the gain — `cubic` only where the musical range would otherwise live in the bottom sliver of fader travel. **Smoothing** is the class applied to the destination's summed total (0335): `block` holds the value for the control block, `quantum` glides it with one pole per 16-sample sub-block, and `quantum_cascade` uses two — a single pole is continuous in value but not in *velocity*, and that velocity step is the click a stepped source routed to pitch would otherwise make.
+
+| Label | Wire name | Gain | Taper | Smoothing |
+|-------|-----------|------|-------|-----------|
+| Pitch | `pitch` | 12 | cubic | quantum cascade |
+| Cross Mod Sweep | `xmod-sweep` | 48 | linear | quantum cascade |
+| PWM (Both) | `pwm` | 0.5 | linear | quantum |
+| Cutoff | `cutoff` | 48 | linear | block |
+| Resonance | `resonance` | 1 | linear | block |
+| HPF Cutoff | `hpf-cutoff` | 48 | linear | block |
+| Amp | `amp` | 1 | linear | block |
+| Cross Mod Amt | `cross-mod-amount` | 4 | linear | quantum |
+| Pan | `pan` | 1 | linear | quantum |
+| Osc 1 PWM | `osc1-pwm` | 0.5 | linear | quantum |
+| Osc 2 PWM | `osc2-pwm` | 0.5 | linear | quantum |
+| Env 1 Scale | `env1-scale` | 1 | linear | block |
+| Env 2 Scale | `env2-scale` | 1 | linear | block |
+| LFO 1 Rate | `lfo1-rate` | 2 | linear | block |
+| Env 1 Sustain | `env1-sustain` | 1 | linear | block |
+| Env 2 Sustain | `env2-sustain` | 1 | linear | block |
+
+`Amp` reads `block` above and is the one destination whose smoothing is not the class: only the *static* (non-envelope) part of the VCA coefficient is filtered, every frame, because smoothing the envelope part would smear the attack. That factoring belongs to the VCA rather than to routing — ADR 0003 section 3 records it as the deliberate exception. `Cutoff` and `HpfCutoff` read `block` for a different reason: the ladder ramps its own coefficients per frame, which already absorbs their block-edge steps.
 
 ### Curve shaping
 

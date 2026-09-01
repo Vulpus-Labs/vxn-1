@@ -14,7 +14,7 @@
 //! tested per-synth, against the real roster.
 //!
 //! Built on by
-//! [0331](../../../../tickets/open/0331-matrix-golden-vector-harness.md), whose
+//! [0331](../../../../tickets/closed/0331-matrix-golden-vector-harness.md), whose
 //! golden-vector cases are declarative records over exactly these endpoints.
 //!
 //! Available to this crate's own tests always, and to other crates' tests via
@@ -49,9 +49,9 @@ pub const TEST_DEST_LABELS: [&str; 4] = ["Dest A", "Dest B", "Dest C", "Dest D"]
 /// | 2 | `uni-a` | unipolar | `PerLane` | `dest-c` | `PerLane` | `QuantumCascade` |
 /// | 3 | `uni-b` | unipolar | `PerLane` | `dest-d` | `PerLane` | `PerSample` |
 ///
-/// That gives [0336](../../../../tickets/open/0336-coherence-in-the-shared-engine.md)
+/// That gives [0336](../../../../tickets/closed/0336-coherence-in-the-shared-engine.md)
 /// every coherent and incoherent tier pairing, and
-/// [0335](../../../../tickets/open/0335-declared-target-smoothing.md) one dest
+/// [0335](../../../../tickets/closed/0335-declared-target-smoothing.md) one dest
 /// of each smoothing class, without any of it perturbing a route product.
 ///
 /// Eight slots rather than four: a golden-vector case wants several slots

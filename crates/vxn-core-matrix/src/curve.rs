@@ -2,7 +2,7 @@
 //! decomposes into, the flat code preset files still spell them as, and the
 //! scale VCA that folds a secondary source into `[0, 1]`.
 //!
-//! This is the code that prompted [E049](../../../../epics/open/E049-shared-matrix-routing.md).
+//! This is the code that prompted [E049](../../../../epics/closed/E049-shared-matrix-routing.md).
 //! Adding the `abs` polarity, the polarity/shape split and the scale-VCA bend
 //! meant writing the same ~200 lines into vxn-2 and then into vxn-1b, by hand,
 //! 96 minutes apart (commits `bbff167`, `868faef`). None of it is specific to

@@ -45,6 +45,11 @@ pub use vxn_core_matrix::curve::{
 /// the module header for why the column is here at all.
 pub use vxn_core_matrix::roster::Tier;
 
+/// Smoothing class of a destination's summed total, re-exported from
+/// [`vxn_core_matrix::roster`]. The `smooth =` column of a [`DestId`] row, and
+/// what [`crate::mod_smoothing`] derives its banks from (0335).
+pub use vxn_core_matrix::roster::Smoothing;
+
 /// Slot count — the single source of truth is the param table's slot-depth count
 /// ([`crate::params::MATRIX_SLOTS`]), so the topology and the automatable depths
 /// can never disagree on how many slots exist.

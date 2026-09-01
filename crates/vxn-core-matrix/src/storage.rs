@@ -92,7 +92,7 @@
 //! speed: `L` is the one width that plausibly diverges later (a synth changing
 //! its unison width should not touch the shared evaluator), and a mechanism
 //! test that wants to check the lane loop's edges wants a small `L` — which
-//! [0331](../../../../tickets/open/0331-matrix-golden-vector-harness.md) is
+//! [0331](../../../../tickets/closed/0331-matrix-golden-vector-harness.md) is
 //! expected to use. If neither materialises, `L` is a cheap thing to fix later:
 //! the second lane count is the ~1.7 KB row above, and it is only ever paid by
 //! a build that actually instantiates one.
@@ -106,7 +106,7 @@ use crate::roster::MatrixRoster;
 /// `[[f32; N_SOURCES]; STACK_LANES]`, lane-major, where reading one source
 /// across lanes strides a whole row and the accumulate becomes a
 /// gather/scatter that cannot vectorise. The two converge in
-/// [0328](../../../../tickets/open/0328-matrix-dest-major-lane-accumulators.md),
+/// [0328](../../../../tickets/closed/0328-matrix-dest-major-lane-accumulators.md),
 /// which is a prerequisite for sharing the evaluator at all.
 pub type SourceLanes<const NS: usize, const L: usize> = [[f32; L]; NS];
 
@@ -147,7 +147,7 @@ pub fn assert_dest_width<R: MatrixRoster, const ND: usize>() {
 /// Zero a destination accumulator sized to roster `R`.
 ///
 /// The first thing every evaluator does, and — until
-/// [0334](../../../../tickets/open/0334-share-the-evaluator.md) moves the rest
+/// [0334](../../../../tickets/closed/0334-share-the-evaluator.md) moves the rest
 /// of the mechanism here — the only shared mechanism in this crate. It is here
 /// now because the sizing scheme needs a real caller to be reviewed against.
 ///

@@ -10,7 +10,7 @@ depends: []
 
 ## Summary
 
-First ticket of [E049](../../epics/open/E049-shared-matrix-routing.md). Two
+First ticket of [E049](../../epics/closed/E049-shared-matrix-routing.md). Two
 deliverables, both prerequisites for everything after:
 
 1. `crates/vxn-core-matrix` and the seam [ADR 0003](../../adrs/0003-vxn-core-matrix.md)
@@ -146,27 +146,27 @@ they exist:
 
 ## Acceptance criteria
 
-- [ ] `crates/vxn-core-matrix` exists, in the workspace, `cargo check` clean.
-- [ ] `MatrixRoster`, `Tier`, `Smoothing` defined and documented.
-- [ ] A synthetic test roster (`TestRoster`: ~4 sources, ~4 dests, all gains
+- [x] `crates/vxn-core-matrix` exists, in the workspace, `cargo check` clean.
+- [x] `MatrixRoster`, `Tier`, `Smoothing` defined and documented.
+- [x] A synthetic test roster (`TestRoster`: ~4 sources, ~4 dests, all gains
       1.0, no taper) lives behind `#[cfg(test)]` or a `testing` feature —
       [0331](0331-matrix-golden-vector-harness.md) builds on it.
-- [ ] `null_test_peak_dbfs` / `assert_null_test` in `vxn_core_dsp::test_util`,
+- [x] `null_test_peak_dbfs` / `assert_null_test` in `vxn_core_dsp::test_util`,
       with a reference render captured for **both** synths and a test that
       compares against it.
-- [ ] The harness is proved to work by making it fail: perturb one sample of a
+- [x] The harness is proved to work by making it fail: perturb one sample of a
       reference by a known amount and check the reported peak matches. A null
       test that silently passes on everything is worse than no null test, and
       that is the failure mode nobody notices.
-- [ ] vxn-1b render-hash baseline test exists, gated like vxn-2's
+- [x] vxn-1b render-hash baseline test exists, gated like vxn-2's
       (`VXN_RENDER_HASH=1`, CI-only), hash captured.
-- [ ] vxn-1b criterion matrix bench exists and produces stable numbers to quote
+- [x] vxn-1b criterion matrix bench exists and produces stable numbers to quote
       in later close-outs.
-- [ ] The routing crate itself has **no consumers** — no vxn-1b or vxn-2 file
+- [x] The routing crate itself has **no consumers** — no vxn-1b or vxn-2 file
       changes to use `vxn-core-matrix`. (The harness necessarily touches both
       synths' test dirs; that is the one deliberate exception, and it is why
       this criterion is scoped to the crate rather than to the ticket.)
-- [ ] The buffer-sizing decision above is recorded in the crate's module docs
+- [x] The buffer-sizing decision above is recorded in the crate's module docs
       with whatever measurement backed it.
 
 ## Notes
@@ -181,3 +181,44 @@ they exist:
   taken until it exists — including [0328](0328-matrix-dest-major-lane-accumulators.md),
   which now depends on this ticket for exactly that reason. If this ticket gets
   split, split it that way round — harness first.
+
+## Close-out (2026-09-01)
+
+**Implemented in `a2e025d` + `3d14b0a` on 2026-08-30; the ticket was left open.**
+Closed here as part of [0337](0337-retire-duplicated-matrix-code.md)'s epic
+close-out, since E049 cannot close with a member ticket open. This is a
+verification pass on today's `main`, not a record of fresh work.
+
+- `crates/vxn-core-matrix` is in the workspace and clean. `MatrixRoster`, `Tier`
+  and `Smoothing` are defined and documented in
+  [roster.rs](../../crates/vxn-core-matrix/src/roster.rs); `TestRoster` sits
+  behind `#[cfg(any(test, feature = "testing"))]`, which is how both synths' test
+  bridges reach it.
+- `null_test_peak_dbfs` / `assert_null_test` are in `vxn_core_dsp::test_util`,
+  with reference renders for **both** synths and a `baseline.rs` comparing
+  against each.
+- **The harness is proved by making it fail**, on all three levels the ticket
+  asked for: `a_known_perturbation_reads_back_at_its_known_level` in
+  `test_util`, and `a_perturbed_reference_is_caught_at_the_right_level_and_sample`
+  in each synth's `baseline.rs` — the latter also checks the reported *sample
+  index*, so a harness that found a difference but pointed at the wrong place
+  would fail too.
+- vxn-1b's render-hash baseline exists and is gated like vxn-2's
+  (`VXN_RENDER_HASH=1`, CI-only, dev machines skip); its criterion matrix bench
+  produces the four cases quoted throughout this epic's close-outs.
+- The buffer-sizing decision and its measurement (~2.4 kB per roster
+  instantiation, ~1.7 kB per extra lane count, and the observation that the two
+  rosters never link into the same binary) are in
+  [storage.rs](../../crates/vxn-core-matrix/src/storage.rs)'s module docs.
+
+**The "no consumers" criterion was satisfied when this landed and is
+deliberately no longer true** — 0330 onward is the whole point. The seam got its
+review before anything was ported through it, which is what the criterion bought.
+
+**One thing this ticket did better than it knew.** Capturing both reference
+renders here, before any arithmetic moved, is what made 0337's end-to-end null
+test possible: neither file was ever re-captured, so every null test across nine
+tickets has compared against the pre-epic render rather than the previous
+ticket's. The epic's §"The bar" workflow — per-ticket passes do not compose into
+an end-to-end one — was never actually needed, because the references never
+drifted. Worth copying the next time an epic sets a null-test bar.

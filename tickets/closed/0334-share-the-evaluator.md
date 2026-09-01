@@ -56,7 +56,7 @@ Preserve, and do not "clean up":
       — see [[vxn1-neon-grep-pitfall]]; `grep 'v\d+\.4s'` returns nothing on
       genuinely vectorised ARM64 and would make success look like failure.
 - [x] Null test against the pre-ticket render passes: difference peak
-      ≤ −100 dBFS (see [E049](../../epics/open/E049-shared-matrix-routing.md)
+      ≤ −100 dBFS (see [E049](../../epics/closed/E049-shared-matrix-routing.md)
       §"The bar"). Re-capture the render hashes if they moved, and say so.
       *`-inf dBFS` on both — bit-identical, so no hash moved.*
 - [x] Benchmarks: vxn-2's `matrix_eval_*` improve (it is gaining vectorisation);
@@ -90,7 +90,7 @@ Preserve, and do not "clean up":
   fast path loses bit-exactness. `Lfo1Rate` reads the *previous* block's total,
   a deliberate lag the eval-order contract preserves.
 - If the generic form cannot be made bit-exact for both, **stop and re-scope** —
-  [E049](../../epics/open/E049-shared-matrix-routing.md) takes no re-baselines.
+  [E049](../../epics/closed/E049-shared-matrix-routing.md) takes no re-baselines.
   A macro stamping out a monomorphic evaluator per roster is the fallback: less
   elegant, same deduplication, no genericity tax.
 

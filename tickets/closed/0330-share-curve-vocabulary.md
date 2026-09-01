@@ -12,7 +12,7 @@ depends: ["0329"]
 
 Move the curve-shaping vocabulary into `vxn-core-matrix` and have both synths
 use it. This is the duplication that prompted
-[E049](../../epics/open/E049-shared-matrix-routing.md): commits `bbff167` and
+[E049](../../epics/closed/E049-shared-matrix-routing.md): commits `bbff167` and
 `868faef` added the same design to each synth by hand, 96 minutes apart.
 
 Moving, in both directions from one shared definition:
@@ -60,7 +60,7 @@ same inlining problem as within one.
       hold — the legacy preset encoding is load-bearing in both synths.
 - [ ] Every factory preset in both synths still loads with no warnings.
 - [ ] Both render-hash baselines **byte-identical** — one of the two tickets
-      held to that (see [E049](../../epics/open/E049-shared-matrix-routing.md)
+      held to that (see [E049](../../epics/closed/E049-shared-matrix-routing.md)
       §"The bar"). Nothing here reorders an arithmetic operation; code changes
       crate, that is all. A moved bit means something was mistranscribed.
 - [ ] `matrix_eval_full` / `matrix_eval_scaled` (vxn2-osc-bench) within noise of

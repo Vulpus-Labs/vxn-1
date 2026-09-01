@@ -1,9 +1,9 @@
 # ADR 0003 — vxn-core-matrix: one modulation routing engine, two rosters
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-09-01, on E049's close-out)
 - **Date:** 2026-08-30
 - **Scope:** Where mod-matrix routing code lives. Companion to epic
-  [E049](../epics/open/E049-shared-matrix-routing.md). Follows the precedent set
+  [E049](../epics/closed/E049-shared-matrix-routing.md). Follows the precedent set
   by [ADR 0002](0002-vxn-core-dsp.md) for the DSP component layer, and applies
   its test — *"is this signal-model-specific, or did it fork by copy-paste?"* —
   to the routing layer.
@@ -62,7 +62,7 @@ parallel lists by hand and tests only their lengths.
   which walks a contiguous local, vectorises (2-wide). vxn-1b's
   `eval_dests_bank` is dest-major SoA, const-generic over lane count. Genuinely
   different — and vxn-1b is simply ahead. Converging is ticket
-  [0328](../tickets/open/0328-matrix-dest-major-lane-accumulators.md).
+  [0328](../tickets/closed/0328-matrix-dest-major-lane-accumulators.md).
 - **Route precompilation.** vxn-1b compiles a `RouteList` once per block,
   hoisting the sentinel checks, the zero-depth skip, `cook_depth` and the
   `DEST_GAIN` lookup out of the per-voice loop. vxn-2 hoists only `cook_depth`
@@ -195,7 +195,7 @@ workspace runs **no loop vectoriser at all**: with `lto` set, cargo passes
 `-C linker-plugin-lto` and the pipeline defers to link time. Every vectorisation
 claim in this ADR was re-derived with `llvm-objdump` on a linked bench binary
 after the per-crate method was found to report scalar code for a canary loop that
-plainly vectorises. Tickets under [E049](../epics/open/E049-shared-matrix-routing.md)
+plainly vectorises. Tickets under [E049](../epics/closed/E049-shared-matrix-routing.md)
 that assert anything about SIMD must measure the same way.
 
 **One acknowledged exception, which stays synth-side.** vxn-1b smooths only the
@@ -225,7 +225,7 @@ SPSC ring; vxn-1b takes a `Mutex` and raises a reload flag. The first two are
 each internally coherent. The third is not — a mutex on the audio thread is a
 priority-inversion risk, and it is the only place in either synth where the
 render can block on another thread (ticket
-[0338](../tickets/open/0338-vxn1b-topology-ring-delete-the-mutex.md)).
+[0338](../tickets/closed/0338-vxn1b-topology-ring-delete-the-mutex.md)).
 
 The fix is **not** "SPSC everywhere". The right axis is what kind of change is
 being communicated:
@@ -285,6 +285,41 @@ drives the amp.
 **vxn-2 keeps its render-hash baseline, and vxn-1b gains one in 0329** — it has
 none today. The pair then pins "nothing changed" through the extraction, as a
 tripwire under the null-test bar.
+
+## What shipped
+
+Recorded on acceptance, because three things in the Decision above did not
+survive contact and a reader comparing this ADR to the code should not have to
+reconstruct why.
+
+- **§1's extraction landed whole, not as the macro fallback.** The evaluator is
+  one const-generic function over a `MatrixRoster`
+  ([`eval::eval_dests_bank`](../crates/vxn-core-matrix/src/eval.rs)), and both
+  synths call it. E049's fallback — a macro stamping out a monomorphic evaluator
+  per roster — was not needed: the generic form is bit-exact for both and costs
+  the shipped banked path nothing measurable.
+- **§3's smoothing landed, but its stated optimisation did not.** The classes,
+  the post-sum placement and the declared column are all as specified. The
+  *two-pass* cascade restructure this ADR's companion ticket priced at 46% was
+  measured on a linked binary and is a **7.3% regression** — the premise (that
+  fusing the stages forces `zip2`/`uzp2` interleaving) is false on this
+  toolchain, where both shapes emit 138 instructions and 96 `.4s` ops with zero
+  shuffles. The fused loop ships, with the measurement recorded on it. Ticket
+  0335's close-out has the numbers.
+- **§2 gained a companion generator.** The roster row declares everything keyed
+  on a destination, as specified — and `matrix_roster!` was added beside
+  `matrix_enum!` in 0334, because the `MatrixRoster` implementation the shared
+  evaluator needs is pure forwarding to those declared columns and was otherwise
+  a dozen one-line methods written twice, which is the shape of duplication this
+  ADR exists to remove.
+- **The "no intended behaviour change" claim held exactly**, and needs no
+  amendment. Both synths render **bit-identically** to the pre-epic reference —
+  the null test reports `-inf dBFS`, not merely ≤ −100 dBFS, and the reference
+  files were captured once at the epic's start and never re-captured. The epic
+  budgeted for hash moves from reassociation (§"The bar") and did not get one:
+  every step that could have reordered arithmetic either did not, or reordered
+  it in a way that lands on the same bits. No listening check was needed and no
+  step exceeded the bar.
 
 ## Consequences
 

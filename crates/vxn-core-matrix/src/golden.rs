@@ -43,7 +43,7 @@
 //! dispatched — which is exactly where a reassociation would hide.
 //!
 //! The other two are [`crate::eval`]'s, registered by
-//! [0334](../../../../tickets/open/0334-share-the-evaluator.md): the scalar
+//! [0334](../../../../tickets/closed/0334-share-the-evaluator.md): the scalar
 //! per-voice reference and the banked lane loop, which is to say **the code both
 //! synths ship**. The whole of [`CASES`] covers them without a line of new case
 //! data, and the reassociation sweep covers the grouping the exact-dyadic table
@@ -72,7 +72,7 @@
 //!
 //! Add a row to [`CASES`]. There is deliberately no test function per case —
 //! the coverage list in
-//! [0331](../../../../tickets/open/0331-matrix-golden-vector-harness.md) is
+//! [0331](../../../../tickets/closed/0331-matrix-golden-vector-harness.md) is
 //! data, and the run/compare/report loop is written once.
 //!
 //! A Rust `const` table rather than a TOML fixture: the values are floats
@@ -516,7 +516,7 @@ struct Compiled {
 /// (`shaped · depth · scale`) until 0333 gave it a compiled
 /// [`crate::slot::Route`] carrying one pre-folded factor; both synths and this
 /// harness now group the same way,
-/// so [0334](../../../../tickets/open/0334-share-the-evaluator.md) inherits one
+/// so [0334](../../../../tickets/closed/0334-share-the-evaluator.md) inherits one
 /// association rather than reconciling two.
 fn eval_banked<R: MatrixRoster, const NS: usize, const ND: usize, const L: usize>(
     routes: &[Route],
@@ -678,7 +678,7 @@ pub fn run_case<R: MatrixRoster, const NS: usize, const ND: usize, const L: usiz
 /// unit gain and no taper, run its *shipped* evaluator over the same routes,
 /// and check the result against this — which is how vxn-1b's and vxn-2's own
 /// route-shaping arms get covered by this table before
-/// [0334](../../../../tickets/open/0334-share-the-evaluator.md) makes them one
+/// [0334](../../../../tickets/closed/0334-share-the-evaluator.md) makes them one
 /// evaluator. Without that bridge the table would only ever prove the harness
 /// consistent with itself.
 ///
@@ -755,7 +755,7 @@ fn check_and_expand<R: MatrixRoster, const ND: usize>(case: &Case) -> [f32; ND] 
 /// is arithmetic a reader can redo.
 ///
 /// The groups follow
-/// [0331](../../../../tickets/open/0331-matrix-golden-vector-harness.md)'s
+/// [0331](../../../../tickets/closed/0331-matrix-golden-vector-harness.md)'s
 /// coverage list. `polarity_shape_pairs_are_all_covered` and
 /// `scale_polarities_and_bends_are_all_covered` hold the first two groups to
 /// it, so a row deleted in a later edit is a failure rather than a quiet gap.

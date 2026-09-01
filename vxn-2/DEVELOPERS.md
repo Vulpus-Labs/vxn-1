@@ -350,10 +350,31 @@ the first slides from the previous sounding pitch, tracked via a block-rate
 
 ### 3.2 The mod matrix ([`matrix.rs`](crates/vxn2-engine/src/matrix.rs), [`modulation.rs`](crates/vxn2-engine/src/modulation.rs))
 
-The matrix is **the only routing mechanism** — there is no hard-wired "mod
-wheel → cutoff". 16 slots, each `(source, dest, depth, curve)`. Depths for
-slots 1–8 are CLAP-automatable; slots 9–16 and all topology (source/dest/curve)
-are patch state only.
+**The routing mechanism is shared with VXN1b** and lives in
+[`vxn-core-matrix`](../crates/vxn-core-matrix) (epic E049, [ADR
+0003](../adrs/0003-vxn-core-matrix.md)). The seam runs between the **roster** —
+what *this* synth can route, its sources and destinations and their declared
+columns — and the **mechanism** — how a routing is evaluated. `matrix.rs` is now
+the roster half plus the bindings; none of the following is defined here any
+more:
+
+| In `vxn-core-matrix` | What it is |
+|---|---|
+| `slot::MatrixSlot`, `MatrixTable` | the patch's routing table |
+| `slot::Route`, `RouteList::compile` | the block's compiled routes — the one place a slot's on/off switch, zero-depth skip, depth taper and dest gain are resolved |
+| `curve::Polarity`, `Shape`, `scale_norm` | the shaping axes and the scale VCA |
+| `eval::eval_dests_bank` | the dest-major lane loop both synths run |
+| `smoothing::CascadeBank`, `OnePoleBank` | the post-sum smoothers (`PitchSmoother` is now an alias for the first) |
+| `roster::MatrixRoster`, `matrix_enum!`, `matrix_roster!` | the declared roster and the tables generated from it |
+
+What stays VXN2's: the source and destination sets, the wire/state encodings
+(nibble-packed `u32` per row, which VXN1b does differently on purpose), which
+8 of 16 depths are CLAP-automatable, and everything about what a destination
+*means* — applying a total to a phase increment, a VCA or a filter coefficient.
+
+16 slots, each `(source, dest, depth, polarity, shape, scale_src, scale_shape,
+enabled)`. Depths for slots 1–8 are CLAP-automatable; slots 9–16 and all
+topology are patch state only.
 
 Sources and destinations live in **three granularity tiers**:
 
@@ -369,18 +390,31 @@ collapses to lane 0 (lossy) and the UI renders it red. `coherence(src, dst)` is
 the single source of truth, consulted by the UI tooltip, the matrix eval, and a
 **factory CI test** that fails if any shipped preset routes incoherently.
 
-Evaluation is a two-phase, allocation-free fan-out done once per block:
+Evaluation is allocation-free and splits along **two rates**:
 
-- `eval_sources(...)` broadcasts every source into a `[lane][source]` lookup
-  table (the broadcast cost is paid once, never inside the per-slot loop);
-- `eval_dests(...)` walks each active slot, applies its curve, multiplies by
-  depth, and accumulates into the matching per-lane destination column.
+- **Once per block** — `RouteList::compile(...)` resolves the 16 slots into the
+  active routes, folding the on/off switch, the zero-depth skip, the depth taper
+  and the dest gain into one `gain` factor each. All of that is a pure function
+  of the patch, and used to be re-derived per stack.
+- **Once per stack** — `eval_sources(...)` broadcasts every source into a
+  **source-major** `[source][lane]` table, then `eval_dests(...)` walks the
+  compiled routes and accumulates into a **dest-major** `[dest][lane]`
+  accumulator.
 
-**Rate control:** non-pitch destinations are applied at block rate. Pitch
-destinations are smoothed down to a 16-sample sub-block quantum (`PitchSmoother`)
-so a per-block matrix value doesn't zipper the pitch — and once the smoother is
-within `1e-4` semitones of target the per-quantum re-cook is skipped entirely, so
-unmodulated pitch pays nothing.
+Both buffers are dest-/source-major rather than lane-major, and that is load
+bearing: with one destination's lanes contiguous the accumulate is a 4-wide
+`fmul.4s`/`fadd.4s` over a `q` register instead of a gather/scatter that LLVM
+leaves scalar. Every per-route decision — polarity, shape, scale-source polarity,
+scale bend — is dispatched **above** the lane loop into one of fifteen
+straight-line arms, for the same reason.
+
+**Rate control:** non-pitch destinations are applied at block rate. Destinations
+declaring `quantum_cascade` are smoothed down to a 16-sample sub-block quantum by
+a shared `CascadeBank` (two poles — one is C0 but C1-broken, and the velocity
+step is the click), so a per-block matrix value doesn't zipper the pitch. Once
+the smoother is within `1e-4` semitones of target the per-quantum re-cook is
+skipped entirely, so unmodulated pitch pays nothing. **Which** destinations those
+are is the `smooth =` column of their roster rows, not a list kept beside them.
 
 **Stack-pitch modulation** (ADR 0005): six `Op{N}StackPitch` destinations. A
 single route bends the target op *and every op in its connected component of the

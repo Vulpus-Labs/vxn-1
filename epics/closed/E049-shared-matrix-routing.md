@@ -2,7 +2,7 @@
 id: E049
 product: monorepo
 title: "Shared matrix routing — one modulation engine under vxn-1b and vxn-2, rosters stay per-synth (behaviour-preserving; null-tested, not bit-frozen)"
-status: open
+status: closed
 created: 2026-08-30
 ---
 
@@ -46,7 +46,7 @@ designed, not a failed ticket.
 The harness does not exist yet — the repo has only the hash, and **only vxn-2's
 hash at that: vxn-1b has no render-hash baseline today**. Building the harness,
 the vxn-1b baseline and a vxn-1b matrix bench is part of
-[0329](../../tickets/open/0329-vxn-core-matrix-crate-skeleton.md); the
+[0329](../../tickets/closed/0329-vxn-core-matrix-crate-skeleton.md); the
 comparator sits in `vxn_core_dsp::test_util` alongside the other
 render-comparison helpers, and it gates every later ticket's verification.
 
@@ -60,11 +60,11 @@ rather than a consequence:
 
 - **Two evaluator paths in the same build** (scalar vs banked). They evaluate
   the same routes in the same order by construction; vxn-1b already states this
-  as its contract, and [0331](../../tickets/open/0331-matrix-golden-vector-harness.md)
+  as its contract, and [0331](../../tickets/closed/0331-matrix-golden-vector-harness.md)
   generalises it.
-- **Pure-movement tickets** — [0330](../../tickets/open/0330-share-curve-vocabulary.md)
+- **Pure-movement tickets** — [0330](../../tickets/closed/0330-share-curve-vocabulary.md)
   (code moves crates, no arithmetic changes) and
-  [0332](../../tickets/open/0332-roster-row-declares-everything.md) (constants
+  [0332](../../tickets/closed/0332-roster-row-declares-everything.md) (constants
   are transcribed, not recomputed). If those move a bit, something was
   mistranscribed.
 
@@ -102,9 +102,9 @@ post-LTO on a linked binary:
 | Stage | Today | Note |
 |---|---|---|
 | Source fan-out | not measured | vxn-1b transposes to SoA; the transpose itself has a cost nobody has priced |
-| Route accumulate | **scalar** | gather/scatter on lane-major accumulators — [0328](../../tickets/open/0328-matrix-dest-major-lane-accumulators.md) |
+| Route accumulate | **scalar** | gather/scatter on lane-major accumulators — [0328](../../tickets/closed/0328-matrix-dest-major-lane-accumulators.md) |
 | Scale VCA | 2-wide | walks a contiguous local, so it vectorises inside the same function the accumulate doesn't |
-| Target smoothing | **4-wide already** | but ~46% available from splitting the fused cascade — [0335](../../tickets/open/0335-declared-target-smoothing.md) |
+| Target smoothing | **4-wide already** | but ~46% available from splitting the fused cascade — [0335](../../tickets/closed/0335-declared-target-smoothing.md) |
 | Target application | not measured | likely dominated by `exp2`/`powf` per lane; vectorising upstream may not move the needle |
 
 **Measure post-LTO.** `cargo rustc --emit asm` on a lib crate here runs no loop
@@ -143,19 +143,19 @@ crate); **0330 → 0332** (serial with each other — 0332 extends the
 
 | # | Ticket | Depends |
 |---|---|---|
-| [0328](../../tickets/open/0328-matrix-dest-major-lane-accumulators.md) | vxn-2 matrix eval doesn't vectorise: transpose to dest-major | 0329 (harness) |
-| [0329](../../tickets/open/0329-vxn-core-matrix-crate-skeleton.md) | `vxn-core-matrix` skeleton + `MatrixRoster` seam + **null-test harness** + vxn-1b baseline & bench | — |
-| [0330](../../tickets/open/0330-share-curve-vocabulary.md) | Share the polarity/shape/scale-VCA vocabulary | 0329 |
-| [0331](../../tickets/open/0331-matrix-golden-vector-harness.md) | Golden-vector test harness + synthetic roster | 0329 |
-| [0332](../../tickets/open/0332-roster-row-declares-everything.md) | Roster row declares gain, taper, tier, smoothing | 0329 |
-| [0333](../../tickets/open/0333-share-slot-and-route-compilation.md) | Share slot/table + `RouteList` precompilation | 0330, 0332 |
-| [0334](../../tickets/open/0334-share-the-evaluator.md) | Share the evaluator, const-generic over lanes | 0328, 0331, 0333 |
-| [0335](../../tickets/open/0335-declared-target-smoothing.md) | Declared per-destination smoothing bank | 0332, 0334 |
-| [0336](../../tickets/open/0336-coherence-in-the-shared-engine.md) | Coherence predicate + vxn-1b's UI surface | 0332 |
-| [0337](../../tickets/open/0337-retire-duplicated-matrix-code.md) | Retire the duplicates; docs + close-out | all |
-| [0338](../../tickets/open/0338-vxn1b-topology-ring-delete-the-mutex.md) | **Get vxn-1b's audio thread off the matrix mutex** | — |
+| [0328](../../tickets/closed/0328-matrix-dest-major-lane-accumulators.md) | vxn-2 matrix eval doesn't vectorise: transpose to dest-major | 0329 (harness) |
+| [0329](../../tickets/closed/0329-vxn-core-matrix-crate-skeleton.md) | `vxn-core-matrix` skeleton + `MatrixRoster` seam + **null-test harness** + vxn-1b baseline & bench | — |
+| [0330](../../tickets/closed/0330-share-curve-vocabulary.md) | Share the polarity/shape/scale-VCA vocabulary | 0329 |
+| [0331](../../tickets/closed/0331-matrix-golden-vector-harness.md) | Golden-vector test harness + synthetic roster | 0329 |
+| [0332](../../tickets/closed/0332-roster-row-declares-everything.md) | Roster row declares gain, taper, tier, smoothing | 0329 |
+| [0333](../../tickets/closed/0333-share-slot-and-route-compilation.md) | Share slot/table + `RouteList` precompilation | 0330, 0332 |
+| [0334](../../tickets/closed/0334-share-the-evaluator.md) | Share the evaluator, const-generic over lanes | 0328, 0331, 0333 |
+| [0335](../../tickets/closed/0335-declared-target-smoothing.md) | Declared per-destination smoothing bank | 0332, 0334 |
+| [0336](../../tickets/closed/0336-coherence-in-the-shared-engine.md) | Coherence predicate + vxn-1b's UI surface | 0332 |
+| [0337](../../tickets/closed/0337-retire-duplicated-matrix-code.md) | Retire the duplicates; docs + close-out | all |
+| [0338](../../tickets/closed/0338-vxn1b-topology-ring-delete-the-mutex.md) | **Get vxn-1b's audio thread off the matrix mutex** | — |
 
-> **[0338](../../tickets/open/0338-vxn1b-topology-ring-delete-the-mutex.md) is
+> **[0338](../../tickets/closed/0338-vxn1b-topology-ring-delete-the-mutex.md) is
 > independent and urgent.** It fixes a live real-time hazard — vxn-1b's audio
 > thread takes a `std::sync::Mutex` on every topology edit — and depends on none
 > of the extraction work. Land it first, or in parallel; do not queue it behind
@@ -185,3 +185,99 @@ crate); **0330 → 0332** (serial with each other — 0332 extends the
   on both synths (0337). The hashes match their last captured values, with
   every re-capture named in a ticket close-out — §"The bar" above deliberately
   does not require them byte-identical to pre-epic.
+
+## Close-out (2026-09-01)
+
+All eleven tickets closed. Both synths route through `vxn-core-matrix`; neither
+carries its own slot type, curve axes, scale VCA, route compilation, evaluator or
+smoother bank, and neither has a production lane loop left in its matrix module.
+
+### The bar was met with room to spare
+
+**Both synths render bit-identically to the pre-epic reference — `-inf dBFS`.**
+
+The epic was built around the expectation that this would *not* happen: §"The
+bar" argues at length that transposing accumulators, sharing an evaluator across
+two lane counts and splitting a fused smoother cascade all reorder float
+operations, that float addition is not associative, and that demanding an
+unchanged hash would rule out the restructuring the epic exists to do. It
+budgeted for hash moves, specified a −100 dBFS null test as the real bar, and set
+out a workflow for re-capturing hashes with each move named in a close-out.
+
+None of that was needed. No hash moved, no re-capture happened, no listening
+check was called for, and no step came near the bar. The reasons, in the order
+they mattered:
+
+- **0328** transposed vxn-2's accumulators without touching accumulation *order*,
+  so the reordering the epic feared never occurred.
+- **0333** did change the multiply grouping (`shaped · depth · scale` →
+  `shaped · (gain · scale)`), but the reference patch wires no scale sources, so
+  the two spellings coincide on that render. Real change, invisible here — worth
+  knowing that the reference does not cover it, and that the golden harness's
+  reassociation sweep does.
+- **0334** shared an evaluator across both rosters and stayed bit-exact by
+  construction: same routes, same order, one association.
+- **0335**'s reordering was measured and **rejected** before it shipped.
+
+So ADR 0003's "no intended behaviour change" claim held exactly, and is recorded
+that way on acceptance rather than amended.
+
+The mechanism that made the end-to-end check trustworthy was set up in
+[0329](../../tickets/closed/0329-vxn-core-matrix-crate-skeleton.md): both
+reference renders were captured once, before any arithmetic moved, and never
+re-captured. Every null test across nine tickets has therefore compared against
+the pre-epic render rather than the previous ticket's, and the "per-ticket passes
+do not compose" problem this epic worried about never arose.
+
+### What each synth actually gained
+
+The table in §"What each synth gains" was written as a prediction. Measured, per
+active stack, pre-epic → now:
+
+| | vxn-2 | vxn-1b |
+|---|---|---|
+| `matrix_eval_scaled` | 125.9 → **72.7 ns** (−42%) | — |
+| `matrix_eval_full` | 113.5 → **96.2 ns** (−15%) | — |
+| `matrix_eval_empty` | 26.5 → **21.1 ns** (−20%) | — |
+| `matrix_bank_scaled` | — | 113.9 → **105.7 ns** (−7.2%) |
+| `matrix_bank_full` | — | 137.1 → **134.2 ns** (−2.1%) |
+
+Plus vxn-2's per-block/per-stack split: `RouteList::compile` (~77 ns) is now paid
+once per block instead of that work sitting inside every stack's eval, up to
+sixteen times. vxn-1b was the donor for most of the mechanism, so it had least to
+gain and still improved on both banked cases; its scalar reference path regressed
+17%, which has no production caller and is attributed in 0334's close-out.
+
+vxn-1b also gained the coherence surface (trivially `Ok` today, live the moment a
+global destination appears), and — outside the extraction — the fix in
+[0338](../../tickets/closed/0338-vxn1b-topology-ring-delete-the-mutex.md) that
+got its audio thread off a mutex.
+
+### Where the epic's own analysis was wrong
+
+Three of this epic's stated premises did not survive measurement. All three are
+recorded on the code rather than only here, because the next person to read that
+code is the one who needs them.
+
+1. **0335's 46% two-pass cascade win does not exist.** The premise — fusing the
+   two stages forces `zip2`/`uzp2` interleaving — is false on this toolchain:
+   both shapes emit 138 instructions and 96 `.4s` ops with **zero** shuffles, and
+   the split measures 7.3% *slower*. The fused loop ships.
+2. **Vectorisation claims must be measured post-LTO**, which this epic already
+   knew (§"Vectorisation is a per-stage question") and which caught two wrong
+   claims in its own tickets before they shipped. It held for the rest.
+3. **A same-binary A/B measures code layout as much as it measures the code.**
+   Twice — 0334's `&RouteList` vs `&[Route]` and 0335's fused vs split — an
+   in-binary comparison pointed the opposite way to a standalone one. Build one
+   binary per implementation and interleave; that is now the house rule.
+
+### Left open
+
+- vxn-2's TOML preset format has no `active` column, so muting a route, saving
+  and reloading brings it back on. Pre-existing, found during 0333; vxn-1b does
+  persist the flag. Wants its own ticket.
+- vxn-1b's web build shares `SharedParams` as a UI model but never drains the
+  topology ring, so it sits permanently full with a resync owed. Inert, and
+  documented in `shared.rs`; a real fix is a web-side drain (found during 0338).
+- vxn-1b's smoother has no microbenchmark — its ticking is per-lane inside the
+  render loop and does not factor out the way vxn-2's does.

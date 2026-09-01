@@ -10,7 +10,7 @@ depends: ["0329"]
 
 ## Summary
 
-Prerequisite for [E049](../../epics/open/E049-shared-matrix-routing.md): the
+Prerequisite for [E049](../../epics/closed/E049-shared-matrix-routing.md): the
 shared evaluator ([0334](0334-share-the-evaluator.md)) cannot be built until
 both synths agree on accumulator layout, and this is where vxn-2 converges on
 vxn-1b's. Opened standalone (at priority low) before that epic existed; now on
