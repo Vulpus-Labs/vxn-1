@@ -94,3 +94,38 @@ already works this way in vxn-1b.
   the columns independent and derive neither from the other. Don't forget the
   fifth hand-synced structure while retiring the four named above:
   `is_pitch_shaped`, kept in step with `PITCH_DESTS` only by a test.
+
+## Close-out (2026-09-01)
+
+- `matrix_enum!`'s destination form now takes four mandatory columns — `gain =`,
+  `taper =`, `tier =`, `smooth =` — and generates `DEST_GAIN`, `cook_depth`,
+  `tier` and the smoothing classification from the row list in both synths
+  ([curve.rs](../../crates/vxn-core-matrix/src/curve.rs)). The hand-kept arrays
+  are gone: vxn-2's `DEST_GAIN`, `DestId::tier`, `DestId::cook_depth` and
+  `is_pitch_shaped` no longer exist as hand-written items, and vxn-1b's
+  `DEST_GAIN` became a generated table.
+- Omitting a column is a compile error, shown by a `compile_fail` doctest on the
+  macro ([curve.rs:86](../../crates/vxn-core-matrix/src/curve.rs#L86)).
+- The macro emits the sentinel-free roster tables (`N` long) beside each synth's
+  existing `N + 1` wire tables, off the same rows, per ADR 0003 §2.
+- `PITCH_DESTS` is derived from `smooth = quantum_cascade`
+  ([matrix.rs:566](../../vxn-2/crates/vxn2-engine/src/matrix.rs#L566)) rather
+  than declared, which retires the fifth hand-synced structure and the
+  `pitch_shaped_set_matches_constant` test that policed it.
+- **Transcription proved mechanically, not by re-reading.** Every dest's gain,
+  tier, pitch-set membership and nine cooked depths were dumped as raw bits from
+  the pre-ticket tree and from this one and diffed: identical across all 52
+  vxn-2 and 17 vxn-1b destinations. The dumps were temporary and are not
+  checked in.
+- Deriving `PITCH_DESTS` changed its **order** — `[GlobalPitch, Lfo2Phase,
+  Op1..Op6]` became `[Op1..Op6, GlobalPitch, Lfo2Phase]` — so the pitch
+  smoother's row indices are now resolved by name at compile time in
+  [engine.rs](../../vxn-2/crates/vxn2-engine/src/engine.rs) instead of written as
+  literals. Null test `-inf dBFS` on both engines confirms no row got crossed.
+- Both render hashes byte-identical to the branch base. (vxn-2's `EXPECTED`
+  fails locally on a macOS 14 debug build, which is the documented
+  profile/OS artifact recorded in `baseline.rs` — not a regression, and no
+  re-capture is owed.)
+- Review fix carried in the same commit: the const guard on vxn-1b's gain table
+  now asks `index()` for the row rather than assuming it equals `i`, so it can
+  still fail if 0333 moves `index()` into discriminant space.
