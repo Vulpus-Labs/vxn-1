@@ -60,10 +60,6 @@ impl Oscillator {
         }
     }
 
-    pub fn reset(&mut self) {
-        self.acc.reset();
-    }
-
     /// Set the per-sample phase increment (`freq_hz / sample_rate`).
     #[inline]
     pub fn set_increment(&mut self, increment: f32) {

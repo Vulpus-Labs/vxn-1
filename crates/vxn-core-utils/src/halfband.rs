@@ -504,9 +504,12 @@ mod tests {
     fn goertzel(x: &[f32], f: f32, fs: f32) -> f32 {
         let w = 2.0 * std::f32::consts::PI * f / fs;
         let coeff = 2.0 * w.cos();
-        let (mut s0, mut s1, mut s2) = (0.0f32, 0.0f32, 0.0f32);
+        // `s0` is written before it is read on every iteration and never read
+        // after the loop, so it is a loop local rather than carried state — only
+        // `s1`/`s2` are the recurrence.
+        let (mut s1, mut s2) = (0.0f32, 0.0f32);
         for &v in x {
-            s0 = v + coeff * s1 - s2;
+            let s0 = v + coeff * s1 - s2;
             s2 = s1;
             s1 = s0;
         }

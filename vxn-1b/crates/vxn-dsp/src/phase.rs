@@ -23,10 +23,6 @@ impl MonoPhaseAccumulator {
         }
     }
 
-    pub fn reset(&mut self) {
-        self.phase = 0.0;
-    }
-
     /// Set the per-sample increment, clamped below Nyquist so [`advance`] can
     /// wrap with a single conditional subtraction.
     #[inline]
