@@ -1,0 +1,211 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Curve selector mock — vxn mod matrix</title>
+<style>
+:root{
+  --panel-bg:#1c1c1c; --panel-bg-hi:#2f2f2f; --panel-corner:4px;
+  --banner-fg:#a7cfe2; --text:#d6d6d6; --ctl-label:#aeaeae; --ctl-value:#d9701b;
+  --track-fill:#d9701b; --glyph:#888; --glyph-active:#a7cfe2; --thumb-border:#a7cfe2;
+}
+*{box-sizing:border-box}
+body{
+  margin:0; padding:26px; background:#101010; color:var(--text);
+  font-family:"IBM Plex Sans Condensed",-apple-system,system-ui,sans-serif; font-size:12px;
+}
+.note{max-width:760px;color:var(--ctl-label);line-height:1.5;margin:0 0 18px}
+.note b{color:var(--text)}
+.overlay-panel{
+  background:var(--panel-bg); border:1px solid var(--ctl-value);
+  border-radius:var(--panel-corner); box-shadow:0 8px 30px rgba(0,0,0,.6);
+  padding:12px; min-width:720px; max-width:900px;
+}
+.overlay-title{color:var(--banner-fg);font-size:14px;letter-spacing:2px;text-transform:uppercase;font-weight:700;margin-bottom:8px}
+/* on | # | source | dest | amount | curve | scale | scale-curve | bin
+   Two 80/72 combo columns collapse into one 30px glyph each. */
+.vxn-mm-header,.vxn-mm-row{
+  display:grid; grid-template-columns:20px 24px 1fr 1fr 130px 38px 1fr 38px 24px;
+  gap:6px; align-items:center; padding:3px 0; min-height:26px;
+}
+.vxn-mm-header{font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--ctl-label)}
+.vxn-mm-row{color:#6f7780}
+.vxn-mm-row[data-active="1"]{color:var(--text)}
+.vxn-mm-slot-num{text-align:right;font-variant-numeric:tabular-nums;font-size:10px}
+.vxn-mm-on{margin:0;justify-self:center;width:12px;height:12px;accent-color:var(--track-fill);cursor:pointer}
+.vxn-mm-combo{
+  display:flex;align-items:center;gap:4px;min-width:0;background:#0e0e0e;border:1px solid #333;
+  border-radius:2px;color:var(--text);font:inherit;font-size:11px;padding:2px 4px;height:20px;cursor:pointer;
+}
+.vxn-mm-combo:hover{border-color:var(--glyph-active)}
+.vxn-mm-combo-label{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vxn-mm-combo-caret{flex:0 0 auto;color:var(--ctl-label);font-size:8px}
+.vxn-mm-depth{position:relative;height:6px;background:#0e0e0e;border:1px solid #333;border-radius:2px}
+.vxn-mm-depth i{position:absolute;top:0;bottom:0;background:var(--track-fill)}
+.vxn-mm-depth b{position:absolute;top:-3px;bottom:-3px;left:50%;width:1px;background:var(--glyph)}
+.vxn-mm-bin{background:transparent;border:1px solid #2c3038;border-radius:3px;color:var(--ctl-label);
+  cursor:pointer;font-size:11px;line-height:1;padding:2px 4px}
+.vxn-mm-bin:hover{color:var(--text);border-color:#4a5060}
+
+/* ── the curve button: one control per curve, glyph only ── */
+.curve-btn{
+  width:38px;height:22px;padding:0;background:#0e0e0e;border:1px solid #333;border-radius:2px;
+  cursor:pointer;display:block;
+}
+.curve-btn:hover,.curve-btn:focus,.curve-btn.open{border-color:var(--glyph-active);outline:none}
+.curve-btn svg{display:block;width:100%;height:100%}
+.g-axis{stroke:#3a3a3a;stroke-width:1px}
+.g-faint{stroke:#2a2a2a}
+.g-curve{fill:none;stroke:var(--ctl-value);stroke-width:9;stroke-linecap:round;stroke-linejoin:round;
+  vector-effect:non-scaling-stroke}
+.curve-btn .g-curve{stroke-width:2px}
+.g-ident{stroke:#4a4a4a;opacity:.55;stroke-dasharray:3 3}
+.g-band{fill:#ffffff09}
+
+/* ── the picker: 3x3, larger, dismisses on choice ── */
+.picker{
+  position:fixed;z-index:500;background:#141414;border:1px solid var(--glyph-active);
+  border-radius:3px;box-shadow:0 6px 18px rgba(0,0,0,.55);padding:8px;
+}
+.picker[hidden]{display:none}
+.picker-title{font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--ctl-label);
+  margin-bottom:6px;display:flex;justify-content:space-between;gap:16px}
+.picker-title em{font-style:normal;color:var(--ctl-value)}
+.picker-grid{display:grid;grid-template-columns:auto repeat(3,88px);gap:4px;align-items:center}
+.picker-grid .ch{font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:var(--ctl-label);text-align:center}
+.picker-grid .rh{font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:var(--ctl-label);
+  writing-mode:horizontal-tb;text-align:right;padding-right:4px}
+.opt{background:#0e0e0e;border:1px solid #2c2c2c;border-radius:2px;padding:3px;cursor:pointer;display:block}
+.opt svg{display:block;width:82px;height:62px}
+.opt .g-curve{stroke-width:2px}
+.opt:hover{border-color:var(--glyph-active);background:#181818}
+.opt.sel{border-color:var(--ctl-value);background:#1a1310}
+.picker-foot{margin-top:6px;font-size:9px;color:#6f7780;text-align:center}
+</style>
+
+<p class="note">Mock: each matrix row now carries <b>one curve control per curve</b> — a
+38&thinsp;px glyph button where the <em>Polarity</em> and <em>Shape</em> combos used to sit
+(two per row: the route's own curve, and the scale VCA's). Click a glyph to open the 3&times;3
+picker; picking closes it. Esc or a click outside cancels. Row&nbsp;3's scale curve is set to
+<b>Abs&nbsp;Exp</b> so you can see a non-default glyph at row scale.</p>
+
+<div class="overlay-panel">
+  <div class="overlay-title">Mod Matrix — Layer 1</div>
+  <div class="vxn-mm-header">
+    <span></span><span></span><span>Source</span><span>Dest</span><span>Amount</span>
+    <span>Crv</span><span>Scale</span><span>Scl&thinsp;Crv</span><span></span>
+  </div>
+  <div id="rows"></div>
+</div>
+
+<div class="picker" id="picker" hidden></div>
+
+<script>
+const GLYPHS = [{"code": 0, "pol": 0, "shape": 0, "native": "0.0,100.0 1.0,99.0 2.1,97.9 3.1,96.9 4.2,95.8 5.2,94.8 6.2,93.8 7.3,92.7 8.3,91.7 9.4,90.6 10.4,89.6 11.5,88.5 12.5,87.5 13.5,86.5 14.6,85.4 15.6,84.4 16.7,83.3 17.7,82.3 18.8,81.2 19.8,80.2 20.8,79.2 21.9,78.1 22.9,77.1 24.0,76.0 25.0,75.0 26.0,74.0 27.1,72.9 28.1,71.9 29.2,70.8 30.2,69.8 31.2,68.8 32.3,67.7 33.3,66.7 34.4,65.6 35.4,64.6 36.5,63.5 37.5,62.5 38.5,61.5 39.6,60.4 40.6,59.4 41.7,58.3 42.7,57.3 43.8,56.2 44.8,55.2 45.8,54.2 46.9,53.1 47.9,52.1 49.0,51.0 50.0,50.0 51.0,49.0 52.1,47.9 53.1,46.9 54.2,45.8 55.2,44.8 56.2,43.8 57.3,42.7 58.3,41.7 59.4,40.6 60.4,39.6 61.5,38.5 62.5,37.5 63.5,36.5 64.6,35.4 65.6,34.4 66.7,33.3 67.7,32.3 68.8,31.2 69.8,30.2 70.8,29.2 71.9,28.1 72.9,27.1 74.0,26.0 75.0,25.0 76.0,24.0 77.1,22.9 78.1,21.9 79.2,20.8 80.2,19.8 81.2,18.8 82.3,17.7 83.3,16.7 84.4,15.6 85.4,14.6 86.5,13.5 87.5,12.5 88.5,11.5 89.6,10.4 90.6,9.4 91.7,8.3 92.7,7.3 93.8,6.2 94.8,5.2 95.8,4.2 96.9,3.1 97.9,2.1 99.0,1.0 100.0,0.0", "band": [0.0, 100.0], "out": []}, {"code": 1, "pol": 0, "shape": 1, "native": "0.0,100.0 1.0,97.9 2.1,95.9 3.1,93.9 4.2,92.0 5.2,90.1 6.2,88.3 7.3,86.5 8.3,84.7 9.4,83.0 10.4,81.3 11.5,79.7 12.5,78.1 13.5,76.6 14.6,75.1 15.6,73.6 16.7,72.2 17.7,70.9 18.8,69.5 19.8,68.3 20.8,67.0 21.9,65.8 22.9,64.7 24.0,63.6 25.0,62.5 26.0,61.5 27.1,60.5 28.1,59.6 29.2,58.7 30.2,57.8 31.2,57.0 32.3,56.3 33.3,55.6 34.4,54.9 35.4,54.3 36.5,53.7 37.5,53.1 38.5,52.6 39.6,52.2 40.6,51.8 41.7,51.4 42.7,51.1 43.8,50.8 44.8,50.5 45.8,50.3 46.9,50.2 47.9,50.1 49.0,50.0 50.0,50.0 51.0,50.0 52.1,49.9 53.1,49.8 54.2,49.7 55.2,49.5 56.2,49.2 57.3,48.9 58.3,48.6 59.4,48.2 60.4,47.8 61.5,47.4 62.5,46.9 63.5,46.3 64.6,45.7 65.6,45.1 66.7,44.4 67.7,43.7 68.8,43.0 69.8,42.2 70.8,41.3 71.9,40.4 72.9,39.5 74.0,38.5 75.0,37.5 76.0,36.4 77.1,35.3 78.1,34.2 79.2,33.0 80.2,31.7 81.2,30.5 82.3,29.1 83.3,27.8 84.4,26.4 85.4,24.9 86.5,23.4 87.5,21.9 88.5,20.3 89.6,18.7 90.6,17.0 91.7,15.3 92.7,13.5 93.8,11.7 94.8,9.9 95.8,8.0 96.9,6.1 97.9,4.1 99.0,2.1 100.0,0.0", "band": [0.0, 100.0], "out": []}, {"code": 2, "pol": 0, "shape": 2, "native": "0.0,100.0 1.0,99.5 2.1,98.9 3.1,98.4 4.2,97.9 5.2,97.3 6.2,96.8 7.3,96.2 8.3,95.6 9.4,95.1 10.4,94.5 11.5,93.9 12.5,93.3 13.5,92.7 14.6,92.1 15.6,91.5 16.7,90.8 17.7,90.2 18.8,89.5 19.8,88.9 20.8,88.2 21.9,87.5 22.9,86.8 24.0,86.1 25.0,85.4 26.0,84.6 27.1,83.9 28.1,83.1 29.2,82.3 30.2,81.5 31.2,80.6 32.3,79.8 33.3,78.9 34.4,78.0 35.4,77.0 36.5,76.0 37.5,75.0 38.5,73.9 39.6,72.8 40.6,71.7 41.7,70.4 42.7,69.1 43.8,67.7 44.8,66.1 45.8,64.4 46.9,62.5 47.9,60.2 49.0,57.2 50.0,50.0 51.0,42.8 52.1,39.8 53.1,37.5 54.2,35.6 55.2,33.9 56.2,32.3 57.3,30.9 58.3,29.6 59.4,28.3 60.4,27.2 61.5,26.1 62.5,25.0 63.5,24.0 64.6,23.0 65.6,22.0 66.7,21.1 67.7,20.2 68.8,19.4 69.8,18.5 70.8,17.7 71.9,16.9 72.9,16.1 74.0,15.4 75.0,14.6 76.0,13.9 77.1,13.2 78.1,12.5 79.2,11.8 80.2,11.1 81.2,10.5 82.3,9.8 83.3,9.2 84.4,8.5 85.4,7.9 86.5,7.3 87.5,6.7 88.5,6.1 89.6,5.5 90.6,4.9 91.7,4.4 92.7,3.8 93.8,3.2 94.8,2.7 95.8,2.1 96.9,1.6 97.9,1.1 99.0,0.5 100.0,0.0", "band": [0.0, 100.0], "out": []}, {"code": 3, "pol": 1, "shape": 0, "native": "50.0,100.0 50.5,99.0 51.0,97.9 51.6,96.9 52.1,95.8 52.6,94.8 53.1,93.8 53.6,92.7 54.2,91.7 54.7,90.6 55.2,89.6 55.7,88.5 56.2,87.5 56.8,86.5 57.3,85.4 57.8,84.4 58.3,83.3 58.9,82.3 59.4,81.2 59.9,80.2 60.4,79.2 60.9,78.1 61.5,77.1 62.0,76.0 62.5,75.0 63.0,74.0 63.5,72.9 64.1,71.9 64.6,70.8 65.1,69.8 65.6,68.8 66.1,67.7 66.7,66.7 67.2,65.6 67.7,64.6 68.2,63.5 68.8,62.5 69.3,61.5 69.8,60.4 70.3,59.4 70.8,58.3 71.4,57.3 71.9,56.2 72.4,55.2 72.9,54.2 73.4,53.1 74.0,52.1 74.5,51.0 75.0,50.0 75.5,49.0 76.0,47.9 76.6,46.9 77.1,45.8 77.6,44.8 78.1,43.8 78.6,42.7 79.2,41.7 79.7,40.6 80.2,39.6 80.7,38.5 81.2,37.5 81.8,36.5 82.3,35.4 82.8,34.4 83.3,33.3 83.9,32.3 84.4,31.2 84.9,30.2 85.4,29.2 85.9,28.1 86.5,27.1 87.0,26.0 87.5,25.0 88.0,24.0 88.5,22.9 89.1,21.9 89.6,20.8 90.1,19.8 90.6,18.8 91.1,17.7 91.7,16.7 92.2,15.6 92.7,14.6 93.2,13.5 93.8,12.5 94.3,11.5 94.8,10.4 95.3,9.4 95.8,8.3 96.4,7.3 96.9,6.2 97.4,5.2 97.9,4.2 98.4,3.1 99.0,2.1 99.5,1.0 100.0,0.0", "band": [50.0, 50.0], "out": ["41.7,116.7 42.2,115.6 42.7,114.6 43.2,113.5 43.8,112.5 44.3,111.5 44.8,110.4 45.3,109.4 45.8,108.3 46.4,107.3 46.9,106.2 47.4,105.2 47.9,104.2 48.4,103.1 49.0,102.1 49.5,101.0 50.0,100.0"]}, {"code": 4, "pol": 1, "shape": 1, "native": "50.0,100.0 50.5,97.9 51.0,95.9 51.6,93.9 52.1,92.0 52.6,90.1 53.1,88.3 53.6,86.5 54.2,84.7 54.7,83.0 55.2,81.3 55.7,79.7 56.2,78.1 56.8,76.6 57.3,75.1 57.8,73.6 58.3,72.2 58.9,70.9 59.4,69.5 59.9,68.3 60.4,67.0 60.9,65.8 61.5,64.7 62.0,63.6 62.5,62.5 63.0,61.5 63.5,60.5 64.1,59.6 64.6,58.7 65.1,57.8 65.6,57.0 66.1,56.3 66.7,55.6 67.2,54.9 67.7,54.3 68.2,53.7 68.8,53.1 69.3,52.6 69.8,52.2 70.3,51.8 70.8,51.4 71.4,51.1 71.9,50.8 72.4,50.5 72.9,50.3 73.4,50.2 74.0,50.1 74.5,50.0 75.0,50.0 75.5,50.0 76.0,49.9 76.6,49.8 77.1,49.7 77.6,49.5 78.1,49.2 78.6,48.9 79.2,48.6 79.7,48.2 80.2,47.8 80.7,47.4 81.2,46.9 81.8,46.3 82.3,45.7 82.8,45.1 83.3,44.4 83.9,43.7 84.4,43.0 84.9,42.2 85.4,41.3 85.9,40.4 86.5,39.5 87.0,38.5 87.5,37.5 88.0,36.4 88.5,35.3 89.1,34.2 89.6,33.0 90.1,31.7 90.6,30.5 91.1,29.1 91.7,27.8 92.2,26.4 92.7,24.9 93.2,23.4 93.8,21.9 94.3,20.3 94.8,18.7 95.3,17.0 95.8,15.3 96.4,13.5 96.9,11.7 97.4,9.9 97.9,8.0 98.4,6.1 99.0,4.1 99.5,2.1 100.0,0.0", "band": [50.0, 50.0], "out": ["46.4,115.6 46.9,113.3 47.4,111.0 47.9,108.7 48.4,106.4 49.0,104.3 49.5,102.1 50.0,100.0"]}, {"code": 5, "pol": 1, "shape": 2, "native": "50.0,100.0 50.5,99.5 51.0,98.9 51.6,98.4 52.1,97.9 52.6,97.3 53.1,96.8 53.6,96.2 54.2,95.6 54.7,95.1 55.2,94.5 55.7,93.9 56.2,93.3 56.8,92.7 57.3,92.1 57.8,91.5 58.3,90.8 58.9,90.2 59.4,89.5 59.9,88.9 60.4,88.2 60.9,87.5 61.5,86.8 62.0,86.1 62.5,85.4 63.0,84.6 63.5,83.9 64.1,83.1 64.6,82.3 65.1,81.5 65.6,80.6 66.1,79.8 66.7,78.9 67.2,78.0 67.7,77.0 68.2,76.0 68.8,75.0 69.3,73.9 69.8,72.8 70.3,71.7 70.8,70.4 71.4,69.1 71.9,67.7 72.4,66.1 72.9,64.4 73.4,62.5 74.0,60.2 74.5,57.2 75.0,50.0 75.5,42.8 76.0,39.8 76.6,37.5 77.1,35.6 77.6,33.9 78.1,32.3 78.6,30.9 79.2,29.6 79.7,28.3 80.2,27.2 80.7,26.1 81.2,25.0 81.8,24.0 82.3,23.0 82.8,22.0 83.3,21.1 83.9,20.2 84.4,19.4 84.9,18.5 85.4,17.7 85.9,16.9 86.5,16.1 87.0,15.4 87.5,14.6 88.0,13.9 88.5,13.2 89.1,12.5 89.6,11.8 90.1,11.1 90.6,10.5 91.1,9.8 91.7,9.2 92.2,8.5 92.7,7.9 93.2,7.3 93.8,6.7 94.3,6.1 94.8,5.5 95.3,4.9 95.8,4.4 96.4,3.8 96.9,3.2 97.4,2.7 97.9,2.1 98.4,1.6 99.0,1.1 99.5,0.5 100.0,0.0", "band": [50.0, 50.0], "out": ["29.7,117.3 30.2,116.9 30.7,116.5 31.2,116.1 31.8,115.7 32.3,115.4 32.8,115.0 33.3,114.5 33.9,114.1 34.4,113.7 34.9,113.3 35.4,112.9 35.9,112.5 36.5,112.1 37.0,111.7 37.5,111.2 38.0,110.8 38.5,110.4 39.1,109.9 39.6,109.5 40.1,109.1 40.6,108.6 41.1,108.2 41.7,107.7 42.2,107.3 42.7,106.8 43.2,106.4 43.8,105.9 44.3,105.4 44.8,105.0 45.3,104.5 45.8,104.0 46.4,103.5 46.9,103.0 47.4,102.5 47.9,102.0 48.4,101.5 49.0,101.0 49.5,100.5 50.0,100.0"]}, {"code": 6, "pol": 2, "shape": 0, "native": "0.0,0.0 1.0,1.0 2.1,2.1 3.1,3.1 4.2,4.2 5.2,5.2 6.2,6.2 7.3,7.3 8.3,8.3 9.4,9.4 10.4,10.4 11.5,11.5 12.5,12.5 13.5,13.5 14.6,14.6 15.6,15.6 16.7,16.7 17.7,17.7 18.8,18.8 19.8,19.8 20.8,20.8 21.9,21.9 22.9,22.9 24.0,24.0 25.0,25.0 26.0,26.0 27.1,27.1 28.1,28.1 29.2,29.2 30.2,30.2 31.2,31.2 32.3,32.3 33.3,33.3 34.4,34.4 35.4,35.4 36.5,36.5 37.5,37.5 38.5,38.5 39.6,39.6 40.6,40.6 41.7,41.7 42.7,42.7 43.8,43.8 44.8,44.8 45.8,45.8 46.9,46.9 47.9,47.9 49.0,49.0 50.0,50.0 51.0,49.0 52.1,47.9 53.1,46.9 54.2,45.8 55.2,44.8 56.2,43.8 57.3,42.7 58.3,41.7 59.4,40.6 60.4,39.6 61.5,38.5 62.5,37.5 63.5,36.5 64.6,35.4 65.6,34.4 66.7,33.3 67.7,32.3 68.8,31.2 69.8,30.2 70.8,29.2 71.9,28.1 72.9,27.1 74.0,26.0 75.0,25.0 76.0,24.0 77.1,22.9 78.1,21.9 79.2,20.8 80.2,19.8 81.2,18.8 82.3,17.7 83.3,16.7 84.4,15.6 85.4,14.6 86.5,13.5 87.5,12.5 88.5,11.5 89.6,10.4 90.6,9.4 91.7,8.3 92.7,7.3 93.8,6.2 94.8,5.2 95.8,4.2 96.9,3.1 97.9,2.1 99.0,1.0 100.0,0.0", "band": [0.0, 100.0], "out": []}, {"code": 7, "pol": 2, "shape": 1, "native": "0.0,0.0 1.0,2.1 2.1,4.1 3.1,6.1 4.2,8.0 5.2,9.9 6.2,11.7 7.3,13.5 8.3,15.3 9.4,17.0 10.4,18.7 11.5,20.3 12.5,21.9 13.5,23.4 14.6,24.9 15.6,26.4 16.7,27.8 17.7,29.1 18.8,30.5 19.8,31.7 20.8,33.0 21.9,34.2 22.9,35.3 24.0,36.4 25.0,37.5 26.0,38.5 27.1,39.5 28.1,40.4 29.2,41.3 30.2,42.2 31.2,43.0 32.3,43.7 33.3,44.4 34.4,45.1 35.4,45.7 36.5,46.3 37.5,46.9 38.5,47.4 39.6,47.8 40.6,48.2 41.7,48.6 42.7,48.9 43.8,49.2 44.8,49.5 45.8,49.7 46.9,49.8 47.9,49.9 49.0,50.0 50.0,50.0 51.0,50.0 52.1,49.9 53.1,49.8 54.2,49.7 55.2,49.5 56.2,49.2 57.3,48.9 58.3,48.6 59.4,48.2 60.4,47.8 61.5,47.4 62.5,46.9 63.5,46.3 64.6,45.7 65.6,45.1 66.7,44.4 67.7,43.7 68.8,43.0 69.8,42.2 70.8,41.3 71.9,40.4 72.9,39.5 74.0,38.5 75.0,37.5 76.0,36.4 77.1,35.3 78.1,34.2 79.2,33.0 80.2,31.7 81.2,30.5 82.3,29.1 83.3,27.8 84.4,26.4 85.4,24.9 86.5,23.4 87.5,21.9 88.5,20.3 89.6,18.7 90.6,17.0 91.7,15.3 92.7,13.5 93.8,11.7 94.8,9.9 95.8,8.0 96.9,6.1 97.9,4.1 99.0,2.1 100.0,0.0", "band": [0.0, 100.0], "out": []}, {"code": 8, "pol": 2, "shape": 2, "native": "0.0,0.0 1.0,0.5 2.1,1.1 3.1,1.6 4.2,2.1 5.2,2.7 6.2,3.2 7.3,3.8 8.3,4.4 9.4,4.9 10.4,5.5 11.5,6.1 12.5,6.7 13.5,7.3 14.6,7.9 15.6,8.5 16.7,9.2 17.7,9.8 18.8,10.5 19.8,11.1 20.8,11.8 21.9,12.5 22.9,13.2 24.0,13.9 25.0,14.6 26.0,15.4 27.1,16.1 28.1,16.9 29.2,17.7 30.2,18.5 31.2,19.4 32.3,20.2 33.3,21.1 34.4,22.0 35.4,23.0 36.5,24.0 37.5,25.0 38.5,26.1 39.6,27.2 40.6,28.3 41.7,29.6 42.7,30.9 43.8,32.3 44.8,33.9 45.8,35.6 46.9,37.5 47.9,39.8 49.0,42.8 50.0,50.0 51.0,42.8 52.1,39.8 53.1,37.5 54.2,35.6 55.2,33.9 56.2,32.3 57.3,30.9 58.3,29.6 59.4,28.3 60.4,27.2 61.5,26.1 62.5,25.0 63.5,24.0 64.6,23.0 65.6,22.0 66.7,21.1 67.7,20.2 68.8,19.4 69.8,18.5 70.8,17.7 71.9,16.9 72.9,16.1 74.0,15.4 75.0,14.6 76.0,13.9 77.1,13.2 78.1,12.5 79.2,11.8 80.2,11.1 81.2,10.5 82.3,9.8 83.3,9.2 84.4,8.5 85.4,7.9 86.5,7.3 87.5,6.7 88.5,6.1 89.6,5.5 90.6,4.9 91.7,4.4 92.7,3.8 93.8,3.2 94.8,2.7 95.8,2.1 96.9,1.6 97.9,1.1 99.0,0.5 100.0,0.0", "band": [0.0, 100.0], "out": []}];
+// Glyph data is indexed by the engine's discriminant order (0 none, 1 bipolar,
+// 2 abs); the picker lays the rows out in POL_ROWS order instead.
+const POL = ['None', 'Bipolar', 'Abs'], SHP = ['Lin', 'Exp', 'Log'];
+const POL_ROWS = [0, 2, 1];   // none, abs, bipolar
+// `None` is the resting polarity, so it drops out of the label: the plain
+// shape names are what the four pre-split preset spellings already meant.
+const LABEL = (c) => {
+  const g = GLYPHS[c];
+  return g.pol === 0 ? SHP[g.shape] : POL[g.pol] + (g.shape ? ' ' + SHP[g.shape] : '');
+};
+
+function svg(code, big) {
+  const g = GLYPHS[code];
+  const band = big ? `<rect class="g-band" x="${g.band[0]}" y="0" width="${g.band[1]}" height="100"/>` : '';
+  const ident = big ? '<polyline class="g-curve g-ident" points="0,100 100,0"/>' : '';
+  const axes = big
+    ? `<line class="g-axis" x1="50" y1="0" x2="50" y2="100" vector-effect="non-scaling-stroke"/>
+       <line class="g-axis" x1="0" y1="50" x2="100" y2="50" vector-effect="non-scaling-stroke"/>`
+    : `<line class="g-axis g-faint" x1="0" y1="50" x2="100" y2="50" vector-effect="non-scaling-stroke"/>`;
+  return `<svg viewBox="0 0 100 100" preserveAspectRatio="none">${band}${axes}
+    ${ident}<polyline class="g-curve" points="${g.native}"/></svg>`;
+}
+
+const ROWS = [
+  {on:1, src:'LFO 1',   dst:'Cutoff',    amt:0.62, curve:0, scale:'Mod Wheel', scurve:0},
+  {on:1, src:'Env 2',   dst:'Osc2 Pitch',amt:-0.34,curve:4, scale:'—',         scurve:0},
+  {on:1, src:'Voice Pos',dst:'Pan',      amt:0.80, curve:6, scale:'Velocity',  scurve:7},
+  {on:0, src:'Aftertch',dst:'LFO 1 Rate',amt:0.20, curve:2, scale:'—',         scurve:0},
+  {on:0, src:'—',       dst:'—',         amt:0,    curve:0, scale:'—',         scurve:0},
+];
+
+const rowsEl = document.getElementById('rows');
+ROWS.forEach((r, i) => {
+  const el = document.createElement('div');
+  el.className = 'vxn-mm-row';
+  el.dataset.active = r.on ? '1' : '0';
+  const fill = r.amt >= 0
+    ? `left:50%;width:${r.amt * 50}%`
+    : `left:${50 + r.amt * 50}%;width:${-r.amt * 50}%`;
+  el.innerHTML = `
+    <input class="vxn-mm-on" type="checkbox" ${r.on ? 'checked' : ''}>
+    <span class="vxn-mm-slot-num">${i + 1}</span>
+    <div class="vxn-mm-combo"><span class="vxn-mm-combo-label">${r.src}</span><span class="vxn-mm-combo-caret">▾</span></div>
+    <div class="vxn-mm-combo"><span class="vxn-mm-combo-label">${r.dst}</span><span class="vxn-mm-combo-caret">▾</span></div>
+    <div class="vxn-mm-depth"><i style="${fill}"></i><b></b></div>
+    <button class="curve-btn" data-kind="curve" data-row="${i}" title="Curve — ${LABEL(r.curve)}">${svg(r.curve)}</button>
+    <div class="vxn-mm-combo"><span class="vxn-mm-combo-label">${r.scale}</span><span class="vxn-mm-combo-caret">▾</span></div>
+    <button class="curve-btn" data-kind="scurve" data-row="${i}" title="Scale curve — ${LABEL(r.scurve)}">${svg(r.scurve)}</button>
+    <button class="vxn-mm-bin">✕</button>`;
+  rowsEl.appendChild(el);
+});
+
+// ── picker ────────────────────────────────────────────────────────────────
+const picker = document.getElementById('picker');
+let anchor = null;
+
+function openPicker(btn) {
+  const row = +btn.dataset.row, kind = btn.dataset.kind, cur = ROWS[row][kind];
+  anchor = btn;
+  picker.innerHTML = `
+    <div class="picker-title"><span>Slot ${row + 1} — ${kind === 'curve' ? 'route curve' : 'scale curve'}</span><em>${LABEL(cur)}</em></div>
+    <div class="picker-grid">
+      <span></span>${SHP.map(s => `<span class="ch">${s}</span>`).join('')}
+      ${POL_ROWS.map((pi) => `<span class="rh">${POL[pi]}</span>` + SHP.map((s, si) => {
+        const c = pi * 3 + si;
+        return `<button class="opt ${c === cur ? 'sel' : ''}" data-code="${c}" title="${LABEL(c)} — code ${c}">${svg(c, true)}</button>`;
+      }).join('')).join('')}
+    </div>
+    <div class="picker-foot">dotted = identity (y&thinsp;=&thinsp;v) · shaded = source range this polarity expects</div>`;
+  picker.hidden = false;
+  const r = btn.getBoundingClientRect(), pr = picker.getBoundingClientRect();
+  let left = r.left + r.width / 2 - pr.width / 2;
+  left = Math.max(8, Math.min(left, innerWidth - pr.width - 8));
+  let top = r.bottom + 6;
+  if (top + pr.height > innerHeight - 8) top = Math.max(8, r.top - pr.height - 6);
+  picker.style.left = left + 'px';
+  picker.style.top = top + 'px';
+  btn.classList.add('open');
+}
+function closePicker() {
+  picker.hidden = true;
+  if (anchor) anchor.classList.remove('open');
+  anchor = null;
+}
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.curve-btn');
+  if (btn) { const was = btn === anchor; closePicker(); if (!was) openPicker(btn); return; }
+  const opt = e.target.closest('.opt');
+  if (opt && anchor) {
+    const code = +opt.dataset.code, row = +anchor.dataset.row, kind = anchor.dataset.kind;
+    ROWS[row][kind] = code;
+    anchor.innerHTML = svg(code);
+    anchor.title = (kind === 'curve' ? 'Curve — ' : 'Scale curve — ') + LABEL(code);
+    closePicker();            // picking dismisses it
+    return;
+  }
+  if (!picker.contains(e.target)) closePicker();
+});
+addEventListener('keydown', (e) => { if (e.key === 'Escape') closePicker(); });
+addEventListener('resize', closePicker);
+
+// Demo/screenshot hook: ?open=2 or ?open=2,scurve opens that row's picker on load.
+const q = new URLSearchParams(location.search).get('open');
+if (q !== null) {
+  const [r, kind] = q.split(',');
+  const btn = document.querySelector(`.curve-btn[data-row="${r || 0}"][data-kind="${kind || 'curve'}"]`);
+  if (btn) openPicker(btn);
+}
+</script>
