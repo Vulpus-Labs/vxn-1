@@ -974,6 +974,13 @@ html, body {
   gap: 3px;
   overflow-y: auto;
   font-size: 11px;
+  /* Reserve the scrollbar's width. macOS draws overlay scrollbars, which take
+   * no layout space, so without this the bar sits on top of the last column —
+   * the bin button — rather than beside it. Padding rather than
+   * `scrollbar-gutter: stable`, which the WKWebView the plugin renders in does
+   * not support at the OS versions we target. The header is a child of this
+   * list too, so it stays aligned with the rows it labels. */
+  padding-right: 10px;
 }
 .mm-overlay-row {
   display: grid;
