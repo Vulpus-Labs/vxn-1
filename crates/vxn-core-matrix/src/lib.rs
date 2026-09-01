@@ -120,6 +120,16 @@ pub mod storage;
 /// carries a lane loop after it.
 pub mod eval;
 
+/// Post-sum target smoothing: [`OnePoleBank`](smoothing::OnePoleBank) and
+/// [`CascadeBank`](smoothing::CascadeBank), plus
+/// [`class_rows`](smoothing::class_rows), which turns a roster's declared
+/// `Smoothing` column into the rows a bank smooths.
+///
+/// Filled in by ticket 0335. The recurrence, the state, the snap and the settle
+/// predicates are shared; *when* to advance a lane stays each synth's render
+/// loop's decision.
+pub mod smoothing;
+
 /// [`TestRoster`](test_roster::TestRoster) — a synthetic roster with all gains
 /// 1.0 and no taper, so a mechanism assertion measures the evaluator's
 /// arithmetic and nothing else (ADR 0003 §5).

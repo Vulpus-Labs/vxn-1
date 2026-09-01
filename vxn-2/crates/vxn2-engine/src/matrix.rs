@@ -103,6 +103,7 @@
 use vxn2_dsp::smoother::one_pole_coeff;
 use vxn2_dsp::stack::STACK_LANES;
 use vxn_core_matrix::matrix_enum;
+use vxn_core_matrix::smoothing::{CascadeBank, class_count, class_rows, row_of};
 
 use crate::modulation::ModBlock;
 
@@ -551,79 +552,68 @@ impl DestId {
     }
 }
 
-/// Destinations the [`PitchSmoother`] cascade smooths, **derived** from the
-/// `smooth = quantum_cascade` column rather than listed a second time, in
-/// discriminant order. Smoother rows are indexed by position in this list; use
-/// [`pitch_smoother_row`] to name one rather than writing the position down.
+/// Every destination's declared smoothing class, indexed by **storage** row —
+/// the roster column [`crate::matrix::DestId::smoothing`] declares, flattened
+/// into the slice the shared bank derives its rows from.
 ///
-/// Before 0332 this was a hand-kept constant with a hand-kept `is_pitch_shaped`
-/// predicate beside it, the two held together only by a test. Both are now the
-/// same column of the same row.
-pub const PITCH_DESTS: [DestId; N_PITCH_DESTS] = {
-    let mut out = [DestId::None; N_PITCH_DESTS];
+/// Sentinel-free, like every other roster table: row `i` is
+/// `DestId::ALL[i + 1]`.
+pub const DEST_SMOOTHING: [Smoothing; N_DESTS] = {
+    let mut out = [Smoothing::Block; N_DESTS];
     let mut i = 0;
-    let mut n = 0;
-    while i < DestId::ALL.len() {
-        if matches!(DestId::ALL[i].smoothing(), Smoothing::QuantumCascade) {
-            out[n] = DestId::ALL[i];
-            n += 1;
-        }
+    while i < N_DESTS {
+        out[i] = DestId::ALL[i + 1].smoothing();
         i += 1;
     }
     out
 };
 
-/// Count of [`PITCH_DESTS`] — the [`PitchSmoother`]'s row count.
-pub const N_PITCH_DESTS: usize = {
-    let mut n = 0;
-    let mut i = 0;
-    while i < DestId::ALL.len() {
-        if matches!(DestId::ALL[i].smoothing(), Smoothing::QuantumCascade) {
-            n += 1;
-        }
-        i += 1;
-    }
-    n
-};
+/// Count of destinations declaring `quantum_cascade` — the [`PitchSmoother`]'s
+/// row count.
+///
+/// Before 0332 this was a hand-kept constant with a hand-kept `is_pitch_shaped`
+/// predicate beside it, held together only by a test; 0332 made it the `smooth =`
+/// column, and 0335 made *counting* the column the shared crate's job
+/// ([`vxn_core_matrix::smoothing::class_count`]) so that vxn-1b derives its
+/// banks the same way.
+pub const N_PITCH_DESTS: usize = class_count(&DEST_SMOOTHING, Smoothing::QuantumCascade);
 
-/// [`LaneDestVals`] row index for each [`PITCH_DESTS`] entry, same order.
-/// Since the accumulator is dest-major, `dest_vals[PITCH_DEST_ROWS[i]]` is
-/// smoother row `i`'s per-lane target directly — no gather, no transpose.
-pub const PITCH_DEST_ROWS: [usize; N_PITCH_DESTS] = {
-    let mut rows = [0_usize; N_PITCH_DESTS];
+/// [`LaneDestVals`] row index for each cascade-smoothed destination, in roster
+/// order. Since the accumulator is dest-major, `dest_vals[PITCH_DEST_ROWS[i]]`
+/// is smoother row `i`'s per-lane target directly — no gather, no transpose.
+pub const PITCH_DEST_ROWS: [usize; N_PITCH_DESTS] =
+    class_rows(&DEST_SMOOTHING, Smoothing::QuantumCascade);
+
+/// The cascade-smoothed destinations themselves, in the same order as
+/// [`PITCH_DEST_ROWS`]. Kept for tests and documentation; the smoother itself
+/// only ever needs the rows.
+pub const PITCH_DESTS: [DestId; N_PITCH_DESTS] = {
+    let mut out = [DestId::None; N_PITCH_DESTS];
     let mut i = 0;
     while i < N_PITCH_DESTS {
-        rows[i] = match PITCH_DESTS[i].idx() {
-            Some(d) => d,
-            None => panic!("PITCH_DESTS entries are never None"),
-        };
+        out[i] = DestId::ALL[PITCH_DEST_ROWS[i] + 1];
         i += 1;
     }
-    rows
+    out
 };
 
 /// Which [`PitchSmoother`] row carries `dest`, or `None` for a destination the
 /// cascade does not smooth.
 ///
-/// [`PITCH_DESTS`] is derived from a column now, so its *order* is the dest
+/// [`PITCH_DEST_ROWS`] is derived from a column, so its *order* is the dest
 /// enum's discriminant order and moves whenever a cascade-smoothed dest is
 /// added. Every consumer therefore asks for its row by name; a written-down
 /// literal would be right until the next roster row and then silently address
-/// someone else's pitch.
+/// the wrong destination.
 ///
-/// `const`, so a caller naming a dest it knows is smoothed resolves the row at
-/// compile time. It returns an `Option` rather than panicking on a miss because
-/// it is `pub`: a runtime caller (0335's bank walks classes it did not choose)
-/// gets a value to branch on instead of an audio-thread panic.
+/// Total rather than panicking, and that is why it is `pub`: a runtime caller
+/// (a bank walking classes it did not choose) gets a value to branch on instead
+/// of an audio-thread panic.
 pub const fn pitch_smoother_row(dest: DestId) -> Option<usize> {
-    let mut i = 0;
-    while i < N_PITCH_DESTS {
-        if PITCH_DESTS[i] as u8 == dest as u8 {
-            return Some(i);
-        }
-        i += 1;
+    match dest.idx() {
+        Some(row) => row_of(&PITCH_DEST_ROWS, row),
+        None => None,
     }
-    None
 }
 
 /// The endpoint seam: what the shared routing mechanism needs to know about a
@@ -857,111 +847,47 @@ pub fn eval_dests(routes: &RouteList, sources: &LaneSourceVals, out: &mut LaneDe
     )
 }
 
-/// Per-lane × per-pitch-dest one-pole IIR. Reads its targets straight out of
-/// the block's dest-major [`LaneDestVals`] (rows [`PITCH_DEST_ROWS`]);
-/// per-sample `tick` glides state toward them.
-#[derive(Clone, Copy, Debug)]
-pub struct PitchSmoother {
-    /// First cascade stage (intermediate). Not the output — see `state`.
-    stage1: [[f32; STACK_LANES]; N_PITCH_DESTS],
-    /// Second cascade stage and the smoothed output (`current()` returns this).
-    state: [[f32; STACK_LANES]; N_PITCH_DESTS],
-    coeff: f32,
+/// The per-stack pitch cascade: [`vxn_core_matrix::smoothing::CascadeBank`]
+/// sized to the destinations declaring `quantum_cascade` and to a stack's lanes.
+///
+/// **The type and every method are the shared bank's as of 0335** — the two
+/// cascaded poles, the state, the snap, the convergence check. What stays here
+/// is the binding: which rows it smooths ([`PITCH_DEST_ROWS`], derived from the
+/// roster column), how its coefficient is cooked ([`pitch_smoother`]), and how a
+/// call site names a row ([`pitch_smoother_row`]).
+///
+/// Reads its targets straight out of the block's dest-major [`LaneDestVals`]
+/// with no copy — see [`pitch_targets`].
+pub type PitchSmoother = CascadeBank<N_PITCH_DESTS, STACK_LANES>;
+
+/// Build a [`PitchSmoother`] for a given control-block length and **tick rate**.
+///
+/// The time constant matches the control block: each stage smooths over ~1
+/// block (one tau ≈ block duration). At 64 samples / 48 kHz that is ~1.33 ms —
+/// fast enough that block edges read smooth, slow enough that an LFO at S&H
+/// reads as steps with sloped edges rather than instant jumps.
+///
+/// `tick_rate` is the rate the *smoother* advances at, not the sample rate: the
+/// engine ticks it once every `PITCH_SMOOTH_QUANTUM` samples, so it passes
+/// `sample_rate / PITCH_SMOOTH_QUANTUM`. Cooking the coefficient anywhere else
+/// would make the glide 16× faster than intended.
+#[inline]
+pub fn pitch_smoother(block_secs: f32, tick_rate: f32) -> PitchSmoother {
+    CascadeBank::new(one_pole_coeff(block_secs * 1000.0, tick_rate))
 }
 
-impl Default for PitchSmoother {
-    fn default() -> Self {
-        Self {
-            stage1: [[0.0; STACK_LANES]; N_PITCH_DESTS],
-            state: [[0.0; STACK_LANES]; N_PITCH_DESTS],
-            coeff: 1.0,
-        }
-    }
-}
-
-impl PitchSmoother {
-    /// Time constant matches the control block: each stage smooths over ~1
-    /// block (one tau ≈ block duration). At 64 samples / 48 kHz that's ~1.33 ms
-    /// — fast enough that block edges read smooth, slow enough that an LFO at
-    /// S&H reads as steps with sloped edges rather than instant jumps.
-    ///
-    /// Two cascaded one-poles (not one): a single pole is C0 but C1-broken —
-    /// at a saw/pulse LFO step the output value is continuous but pitch
-    /// *velocity* jumps 0 → max instantly, and that velocity step is the click.
-    /// Cascading a second pole makes the output slope start at 0, so sharp
-    /// LFO shapes routed to pitch ramp in without a click.
-    pub fn new(block_secs: f32, sample_rate: f32) -> Self {
-        Self {
-            stage1: [[0.0; STACK_LANES]; N_PITCH_DESTS],
-            state: [[0.0; STACK_LANES]; N_PITCH_DESTS],
-            coeff: one_pole_coeff(block_secs * 1000.0, sample_rate),
-        }
-    }
-
-    /// Zero both cascade stages (engine reset). Same effect as snapping to an
-    /// all-zero target, without materialising a whole [`LaneDestVals`] to snap
-    /// against.
-    pub fn clear(&mut self) {
-        self.stage1 = [[0.0; STACK_LANES]; N_PITCH_DESTS];
-        self.state = [[0.0; STACK_LANES]; N_PITCH_DESTS];
-    }
-
-    /// Advance one sample toward the pitch rows of `dests`, return current
-    /// smoothed state. Two cascaded one-poles: `stage1` chases the target,
-    /// `state` chases `stage1`. The second stage is what gives the output a
-    /// zero starting slope so sharp LFO-into-pitch steps ramp in without a
-    /// click.
-    ///
-    /// The target is the block accumulator itself: since [`LaneDestVals`] is
-    /// dest-major, row `PITCH_DEST_ROWS[i]` *is* this smoother row's per-lane
-    /// target and needs no copy (0328 — the old `targets_from` transpose).
-    #[inline]
-    pub fn tick(&mut self, dests: &LaneDestVals) -> &[[f32; STACK_LANES]; N_PITCH_DESTS] {
-        let a = self.coeff;
-        for i in 0..N_PITCH_DESTS {
-            let target = &dests[PITCH_DEST_ROWS[i]];
-            for k in 0..STACK_LANES {
-                self.stage1[i][k] += a * (target[k] - self.stage1[i][k]);
-                self.state[i][k] += a * (self.stage1[i][k] - self.state[i][k]);
-            }
-        }
-        &self.state
-    }
-
-    /// Snap state to the pitch rows of `dests` without smoothing (preset load,
-    /// voice steal). Both cascade stages snap so a re-armed smoother starts
-    /// settled, not mid-ramp.
-    pub fn snap_to(&mut self, dests: &LaneDestVals) {
-        for i in 0..N_PITCH_DESTS {
-            let target = dests[PITCH_DEST_ROWS[i]];
-            self.stage1[i] = target;
-            self.state[i] = target;
-        }
-    }
-
-    /// True when every lane of *both* cascade stages is within `eps` of its
-    /// target — the engine skips the tick + pitch recook entirely once a
-    /// smoother has settled (the common case: no active pitch-shaped matrix
-    /// route). Both stages must be checked: the output (`state`) can pass
-    /// through the target while `stage1` is still mid-ramp, and freezing
-    /// there would strand the output short of the real target.
-    pub fn converged(&self, dests: &LaneDestVals, eps: f32) -> bool {
-        for i in 0..N_PITCH_DESTS {
-            let target = &dests[PITCH_DEST_ROWS[i]];
-            for k in 0..STACK_LANES {
-                if (self.state[i][k] - target[k]).abs() > eps
-                    || (self.stage1[i][k] - target[k]).abs() > eps
-                {
-                    return false;
-                }
-            }
-        }
-        true
-    }
-
-    pub fn current(&self) -> &[[f32; STACK_LANES]; N_PITCH_DESTS] {
-        &self.state
-    }
+/// The target gather every [`PitchSmoother`] call passes: bank row `i` reads
+/// accumulator row `PITCH_DEST_ROWS[i]`.
+///
+/// A borrow rather than a copy, which is what 0328's dest-major layout bought —
+/// row `PITCH_DEST_ROWS[i]` of the accumulator *is* this smoother row's per-lane
+/// target. Spelled once so the tick, the snap and the convergence check cannot
+/// gather differently.
+#[inline]
+pub fn pitch_targets<'a>(
+    dests: &'a LaneDestVals,
+) -> impl FnMut(usize) -> &'a [f32; STACK_LANES] {
+    |i| &dests[PITCH_DEST_ROWS[i]]
 }
 
 /// # What is tested here, and what is not
@@ -1304,8 +1230,8 @@ mod tests {
             dest[pitch_idx][k] = 1.0;
             dest[op_pitch_idx][k] = 0.25;
         }
-        let mut s = PitchSmoother::default();
-        s.snap_to(&dest);
+        let mut s = pitch_smoother(64.0 / 48_000.0, 48_000.0 / 16.0);
+        s.snap_rows(pitch_targets(&dest));
         let pidx = PITCH_DESTS.iter().position(|&d| d == DestId::GlobalPitch).unwrap();
         let ridx = PITCH_DESTS.iter().position(|&d| d == DestId::Op1Pitch).unwrap();
         assert_eq!(PITCH_DEST_ROWS[pidx], pitch_idx);
@@ -1326,7 +1252,7 @@ mod tests {
     fn smoother_glides_toward_target_over_block_time() {
         let sr = 48_000.0;
         let block_secs = 64.0 / sr;
-        let mut s = PitchSmoother::new(block_secs, sr);
+        let mut s = pitch_smoother(block_secs, sr);
         // Any cascade row will do — this asserts the filter's glide, not which
         // dest sits where. Row order follows the `smooth = quantum_cascade`
         // column (0332), so naming a specific dest here would go stale.
@@ -1336,7 +1262,7 @@ mod tests {
         }
         // Run ~10 blocks worth of samples; should converge well past 99%.
         for _ in 0..(10 * 64) {
-            s.tick(&tgt);
+            s.tick_rows(pitch_targets(&tgt));
         }
         for k in 0..STACK_LANES {
             assert!(
@@ -1349,12 +1275,12 @@ mod tests {
 
     #[test]
     fn smoother_snap_jumps_immediately() {
-        let mut s = PitchSmoother::default();
+        let mut s = pitch_smoother(64.0 / 48_000.0, 48_000.0 / 16.0);
         let mut tgt = [[0.0; STACK_LANES]; N_DESTS];
         for k in 0..STACK_LANES {
             tgt[PITCH_DEST_ROWS[0]][k] = 0.75;
         }
-        s.snap_to(&tgt);
+        s.snap_rows(pitch_targets(&tgt));
         assert_eq!(s.current()[0][0], 0.75);
     }
 

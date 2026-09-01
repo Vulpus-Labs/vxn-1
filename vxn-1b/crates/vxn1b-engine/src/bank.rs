@@ -1285,6 +1285,14 @@ impl RenderBank {
                         let t = trig[v] && base_i == 0;
                         (self.env1[v].tick(t, gate[v]), self.env2[v].tick(t, gate[v]))
                     };
+                    // Amp is the one destination whose smoothing is *not* a
+                    // `Smoothing` class (ADR 0003 §3). What the shared bank
+                    // would filter is a dest's whole total; what is filtered
+                    // here is only the **static** part of the VCA coefficient —
+                    // the envelope part stays per-frame exact, because
+                    // smoothing it would smear the attack. That factoring is a
+                    // property of this VCA rather than of routing, so `Amp`
+                    // declares `block` and this pole lives in the render loop.
                     amp_c[v].stat = self.smooth.tick_amp_stat(v, tgt[v].amp_stat);
                     amp[v] = vca(active[v], gate[v], ctx.amp_env_bypass, &amp_c[v], e1, e2)
                         * self.free_fade[v];

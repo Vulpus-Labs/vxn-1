@@ -420,6 +420,21 @@ impl vxn_core_matrix::slot::DestEndpoint for DestId {
     }
 }
 
+/// Every destination's declared smoothing class, indexed by **storage** row —
+/// the `smooth =` column of [`DestId`]'s rows, flattened into the slice
+/// [`vxn_core_matrix::smoothing`] derives a bank's rows from (0335).
+///
+/// Sentinel-free like every other roster table: row `i` is `DestId::ALL[i + 1]`.
+pub const DEST_SMOOTHING: [vxn_core_matrix::roster::Smoothing; N_DESTS] = {
+    let mut out = [vxn_core_matrix::roster::Smoothing::Block; N_DESTS];
+    let mut i = 0;
+    while i < N_DESTS {
+        out[i] = DestId::ALL[i + 1].smoothing();
+        i += 1;
+    }
+    out
+};
+
 vxn_core_matrix::matrix_roster! {
     /// VXN1b's roster: the twelve sources, the sixteen destinations and their
     /// declared columns, as the shared mechanism reads them (0334).

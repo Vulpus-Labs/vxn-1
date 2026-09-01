@@ -27,13 +27,29 @@
 //! Empty case should be near-free relative to full. Throughput = active slot
 //! evaluations per call (16 for full, 0 for empty — `Elements` is mostly
 //! cosmetic for empty).
+//!
+//! ## The smoother (0335)
+//!
+//! - `matrix_smoother_tick` — one cascade tick over all eight `quantum_cascade`
+//!   destination rows × eight lanes. The engine ticks it once every
+//!   `PITCH_SMOOTH_QUANTUM` (16) samples per active stack, so a 64-frame block
+//!   with 16 stacks pays it 64 times.
+//! - `matrix_smoother_converged` — the predicate that lets the engine skip the
+//!   tick *and* the pitch recook entirely, which is the common case (no active
+//!   pitch-shaped route). It is the larger of the two and is paid whether or not
+//!   the tick is: it walks both cascade stages against the target and, on a
+//!   settled patch, cannot stop early.
+//!
+//! These exist because 0335 restructured the cascade and had nothing to measure
+//! the restructure against — the loop shape it proposed turned out to be a
+//! regression, which is a conclusion this pair is what made available.
 
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use vxn2_dsp::stack::STACK_LANES;
 use vxn2_engine::matrix::{
     DestId, Polarity, Shape, LaneDestVals, LaneSourceVals, LaneSources, MatrixSlot, MatrixTable,
-    N_DESTS, N_SOURCES, N_SLOTS, PatchSources, RouteList, SourceId, StackScalarSources, eval_dests,
-    eval_sources,
+    N_DESTS, N_SOURCES, N_SLOTS, PatchSources, RouteList, SourceId, StackScalarSources,
+    eval_dests, eval_sources, pitch_smoother, pitch_targets,
 };
 
 fn build_patch_sources() -> PatchSources {
@@ -218,5 +234,47 @@ fn bench_matrix(c: &mut Criterion) {
     g.finish();
 }
 
-criterion_group!(benches, bench_matrix);
+/// A dest accumulator with every cascade row carrying a distinct, non-settling
+/// per-lane target, so neither the tick nor the convergence check can take a
+/// short cut the real engine wouldn't.
+fn smoother_targets() -> LaneDestVals {
+    let mut d: LaneDestVals = [[0.0; STACK_LANES]; N_DESTS];
+    for (row, lanes) in d.iter_mut().enumerate() {
+        for (k, v) in lanes.iter_mut().enumerate() {
+            *v = 0.37 * (row as f32 + 1.0) - 0.11 * k as f32;
+        }
+    }
+    d
+}
+
+fn bench_smoother(c: &mut Criterion) {
+    let mut g = c.benchmark_group("matrix");
+    let dests = smoother_targets();
+
+    // One element per (row, lane) advanced, so the figure reads per smoothed
+    // value rather than per call.
+    g.throughput(Throughput::Elements(
+        (vxn2_engine::matrix::N_PITCH_DESTS * STACK_LANES) as u64,
+    ));
+    g.bench_function("matrix_smoother_tick", |b| {
+        let mut s = pitch_smoother(64.0 / 48_000.0, 48_000.0 / 16.0);
+        b.iter(|| {
+            black_box(s.tick_rows(pitch_targets(black_box(&dests))));
+        })
+    });
+
+    g.bench_function("matrix_smoother_converged", |b| {
+        // Snapped, so `converged` walks every row and lane before answering
+        // true — the worst case, and the one the engine actually hits on a
+        // static patch.
+        let mut s = pitch_smoother(64.0 / 48_000.0, 48_000.0 / 16.0);
+        s.snap_rows(pitch_targets(&dests));
+        b.iter(|| {
+            black_box(s.converged(pitch_targets(black_box(&dests)), 1.0e-4));
+        })
+    });
+    g.finish();
+}
+
+criterion_group!(benches, bench_matrix, bench_smoother);
 criterion_main!(benches);

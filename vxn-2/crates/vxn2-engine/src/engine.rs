@@ -51,6 +51,7 @@ use crate::master::MasterState;
 use crate::matrix::{
     DestId, LaneDestVals, LaneSourceVals, LaneSources, MatrixSlot, MatrixTable, N_CLAP_DEPTH_SLOTS,
     N_DESTS, N_PITCH_DESTS, N_SLOTS, N_SOURCES, PatchSources, PitchSmoother, RouteList, Shape,
+    pitch_smoother, pitch_targets,
     SourceId, StackScalarSources, curve_split, eval_dests, eval_sources,
 };
 use crate::modulation::PatchMod;
@@ -603,7 +604,7 @@ impl Engine {
             lane_sources: [[0.0_f32; STACK_LANES]; N_SOURCES],
             // Smoothers tick once per quantum, so the coeff is derived from
             // the quantum rate; tau stays ≈ one control block.
-            pitch_smoothers: [PitchSmoother::new(
+            pitch_smoothers: [pitch_smoother(
                 block_size as f32 / sample_rate,
                 sample_rate / PITCH_SMOOTH_QUANTUM as f32,
             ); N_STACKS],
@@ -1590,7 +1591,7 @@ impl Engine {
             // smoother, level + pan ramps) so the new voice doesn't glide in from
             // the previous voice's modulation.
             if fresh {
-                self.pitch_smoothers[i].snap_to(&self.dest_vals[i]);
+                self.pitch_smoothers[i].snap_rows(pitch_targets(&self.dest_vals[i]));
                 // A re-used slot carries a fresh note — clear its filter state
                 // (kernels + interpolators) so the new voice starts clean
                 // (ADR 0004: `reset()` on note-on). Only when the filter is on;
@@ -2534,10 +2535,10 @@ impl Engine {
         if self.alloc.stacks[i].is_idle() {
             return;
         }
-        if self.pitch_smoothers[i].converged(&self.dest_vals[i], PITCH_SMOOTH_EPS_ST) {
+        if self.pitch_smoothers[i].converged(pitch_targets(&self.dest_vals[i]), PITCH_SMOOTH_EPS_ST) {
             return;
         }
-        let st = self.pitch_smoothers[i].tick(&self.dest_vals[i]);
+        let st = self.pitch_smoothers[i].tick_rows(pitch_targets(&self.dest_vals[i]));
         let stack = &mut self.alloc.stacks[i];
         project_pitch_state(stack, st);
         stack.apply_pitch_mult();
@@ -2592,10 +2593,10 @@ impl Engine {
             if self.alloc.stacks[i].is_idle() {
                 continue;
             }
-            if self.pitch_smoothers[i].converged(&self.dest_vals[i], PITCH_SMOOTH_EPS_ST) {
+            if self.pitch_smoothers[i].converged(pitch_targets(&self.dest_vals[i]), PITCH_SMOOTH_EPS_ST) {
                 continue;
             }
-            let st = self.pitch_smoothers[i].tick(&self.dest_vals[i]);
+            let st = self.pitch_smoothers[i].tick_rows(pitch_targets(&self.dest_vals[i]));
             let stack = &mut self.alloc.stacks[i];
             project_pitch_state(stack, st);
             stack.apply_pitch_mult();

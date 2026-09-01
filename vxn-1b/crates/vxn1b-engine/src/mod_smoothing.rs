@@ -37,41 +37,60 @@
 //! its own coefficients per frame ([`crate::bank`] `prepare_ramp`/`tick_coeffs`),
 //! which already absorbs their block-edge steps.
 //!
-//! ## Which dest gets which tier is now declared, not described
+//! ## Which dest gets which tier is declared, and now *read*
 //!
-//! The three tiers above used to live only in this prose and in the shape of
+//! The tiers above used to live only in this prose and in the shape of
 //! [`MotionSmoother`]'s fields — nothing tied them to the destinations they
-//! smooth, so a new dest simply stairstepped until someone noticed. As of 0332
-//! each destination's class is the `smooth =` column of its row in
-//! [`crate::matrix::DestId`], and reads as: `quantum_cascade` for `Pitch` and
-//! `XModSweep`, `quantum` for the three PWM dests, `CrossModAmount` and `Pan`,
-//! `block` for everything else.
+//! smooth, so a new dest simply stairstepped until someone noticed. 0332 made
+//! each destination's class the `smooth =` column of its row in
+//! [`crate::matrix::DestId`]; **0335 made this module read it.** The cascade's
+//! width and its row set are derived from the column
+//! ([`vxn_core_matrix::smoothing::class_rows`]), and a `const` assert holds the
+//! per-quantum bank to the `quantum` column, so declaring a new smoothed
+//! destination is a build error here rather than a silent stairstep.
 //!
-//! Two mismatches between that column and this module are deliberate:
+//! The filters themselves are [`vxn_core_matrix::smoothing`]'s — the same
+//! [`CascadeBank`] VXN2's pitch smoother is, and the same [`OnePoleBank`] under
+//! all four of the one-pole quantities. What stays in this module is the
+//! binding: which rows exist, which coefficient each bank is cooked at, and the
+//! per-lane gating the render loop needs.
+//!
+//! Two mismatches between the column and this module are deliberate:
 //!
 //! * **`Amp` declares `block`.** The per-frame one-pole below is applied to the
 //!   *non-envelope* part of the VCA coefficient only — the envelope part must
 //!   stay per-frame exact or the attack smears. That factoring is a property of
-//!   VXN1b's VCA, not of routing, so it stays here and the roster declares the
-//!   class the shared bank would apply to the whole total, which is none. It is
-//!   the one acknowledged exception in ADR 0003 §3.
+//!   VXN1b's VCA, not of routing, so it keeps its own bank at its own rate and
+//!   the roster declares the class the shared bank would apply to the whole
+//!   total, which is none. The one acknowledged exception in ADR 0003 §3.
 //! * **The three PWM dests share two smoothers.** `Pwm`, `Osc1Pwm` and
 //!   `Osc2Pwm` are summed *per oscillator* before the one-pole, so three rows of
 //!   one class land on two poles. Post-sum smoothing is linear, so that is
-//!   arithmetically the same filter — it is a layout detail, not a third tier.
+//!   arithmetically the same filter — a layout detail, not a third tier. The
+//!   `const` assert above knows about it and would fail if a *fourth* `quantum`
+//!   destination appeared without a row.
 //!
-//! Nothing here reads the column yet; the bank that does is
-//! [0335](../../../../tickets/open/0335-declared-target-smoothing.md). Declaring
-//! it early is what makes that ticket a consumer change rather than a pass over
-//! every destination in two synths.
+//! ## Why the ticking stays per-lane
 //!
-//! All state is fixed-size `[f32; N]` per smoothed quantity — allocation-free,
-//! `Copy`, NEON-friendly. A fresh note **snaps** its lane (both cascade stages
-//! and the one-poles) to the block target so the voice starts settled: static
-//! sources (velocity, key) land zipper-free and there's no glide from the stolen
-//! voice's stale state.
+//! VXN2 advances its whole stack every quantum. This synth advances **only
+//! lanes with a live route**, and the same branch decides whether to re-cook
+//! that lane's oscillator increment, pulse width, PM index or pan gains — tick
+//! and cook are one test. Flattening to a bank-wide tick would advance lanes
+//! that currently freeze, and on a pitch destination an ULP-scale difference
+//! integrates into phase drift. The class is shared; the schedule is this
+//! render loop's.
+//!
+//! All state is fixed-size `[f32; N]` per row — allocation-free, `Copy`,
+//! NEON-friendly. A fresh note **snaps** its lane (both cascade stages and the
+//! one-poles) to the block target so the voice starts settled: static sources
+//! (velocity, key) land zipper-free and there's no glide from the stolen voice's
+//! stale state.
 
+use vxn_core_matrix::roster::Smoothing;
+use vxn_core_matrix::smoothing::{CascadeBank, OnePoleBank, class_count, class_rows, row_of};
 use vxn_dsp::one_pole_coeff;
+
+use crate::matrix::{DEST_SMOOTHING, DestId};
 
 /// Lanes per bank — the shared DSP kernel width (kept in sync with [`crate::bank`]).
 const N: usize = vxn_dsp::CHANNELS_PER_LAYER;
@@ -90,203 +109,139 @@ const SLOW_MS: f32 = 5.0;
 /// or PWM (pulse-width fraction) alike.
 const SETTLE_EPS: f32 = 1.0e-4;
 
-/// The two pitch-family dests smoothed by the cascade, in this fixed order.
-/// Index 0 = `Pitch` (both oscs), 1 = `XModSweep` (mode-gated osc).
-pub const PITCH: usize = 0;
-pub const SWEEP: usize = 1;
-const N_PITCH: usize = 2;
-
-/// A one-pole smoother held per lane, for one smoothed quantity.
+/// Rows in the cascade bank — **derived** from the `smooth = quantum_cascade`
+/// column, not written down (0335).
 ///
-/// Every non-pitch dest smoothed here is the same recurrence —
-/// `state += coeff · (target − state)` — over a `[f32; N]` lane array. The
-/// coefficient is *not* a field: it belongs to the tier (`slow_coeff` per
-/// quantum, `amp_coeff` per frame) rather than to the quantity, so
-/// [`MotionSmoother`] owns it and passes it in. That keeps this type a plain
-/// `Copy` array, and keeps a new smoothed dest to one field instead of a field
-/// plus four hand-written methods.
-///
-/// The pitch cascade is deliberately **not** built on this: it is two poles with
-/// its own coefficient and a C1-continuity rationale (see the module docs).
-#[derive(Clone, Copy, Debug, Default)]
-struct LaneOnePole([f32; N]);
+/// The count and the row set both come from
+/// [`vxn_core_matrix::smoothing`], so declaring a new `quantum_cascade`
+/// destination widens this bank rather than silently stairstepping. The order is
+/// the roster's, which is why [`PITCH`] and [`SWEEP`] ask for their position by
+/// name: a literal would be right until a cascade dest is declared ahead of them.
+const N_PITCH: usize = class_count(&DEST_SMOOTHING, Smoothing::QuantumCascade);
 
-impl LaneOnePole {
-    /// Snap one lane straight to `target` — a fresh note starts settled rather
-    /// than gliding up from whatever the stolen voice left behind.
-    #[inline]
-    fn snap(&mut self, v: usize, target: f32) {
-        self.0[v] = target;
-    }
+/// Destination storage rows the cascade smooths, in roster order.
+const PITCH_ROWS: [usize; N_PITCH] = class_rows(&DEST_SMOOTHING, Smoothing::QuantumCascade);
 
-    /// This lane's current value, without advancing it.
-    #[inline]
-    fn current(&self, v: usize) -> f32 {
-        self.0[v]
-    }
-
-    /// Advance one lane a step toward `target` and return the new value.
-    #[inline]
-    fn tick(&mut self, v: usize, target: f32, coeff: f32) -> f32 {
-        self.0[v] += coeff * (target - self.0[v]);
-        self.0[v]
-    }
-
-    /// Whether this lane is worth ticking: a nonzero target, or residual state
-    /// still gliding back toward zero after a route turned off. When false the
-    /// render loop keeps its block-start value and skips the per-quantum recook.
-    #[inline]
-    fn active(&self, v: usize, target: f32) -> bool {
-        (target - self.0[v]).abs() > SETTLE_EPS || self.0[v].abs() > SETTLE_EPS
-    }
-
-    /// Whether this lane has arrived at `target` — distinct from [`Self::active`],
-    /// which also reports a lane displaced from zero with nothing to chase.
-    #[inline]
-    fn settled(&self, v: usize, target: f32) -> bool {
-        (self.0[v] - target).abs() <= SETTLE_EPS
+/// Cascade row carrying `dest`. A `const fn` wrapper so a bad name is a build
+/// error at the `const` below rather than an `unwrap` in a lane loop.
+const fn cascade_row(dest: DestId) -> usize {
+    match dest.idx() {
+        Some(d) => match row_of(&PITCH_ROWS, d) {
+            Some(r) => r,
+            None => panic!("this destination does not declare quantum_cascade"),
+        },
+        None => panic!("the sentinel is not a smoothed destination"),
     }
 }
 
-/// Generate one smoothed quantity's public API over a [`LaneOnePole`] field.
-///
-/// [`LaneOnePole`]'s own doc states the goal as *"keeps a new smoothed dest to
-/// one field instead of a field plus four hand-written methods"* — and until
-/// 0319 this file then wrote three to four hand-written delegating methods per
-/// quantity, twelve in all. Every body was a one-line forward whose only real
-/// content was which coefficient tier the quantity belongs to (`slow_coeff` per
-/// quantum, `amp_coeff` per frame), which is now the macro's second argument.
-///
-/// Doc comments pass through, because they are the part that is *not*
-/// boilerplate: each says which render-loop fast path that predicate gates.
-///
-/// Method names are given explicitly rather than concatenated — the existing
-/// names are two patterns, not one (`<q>_active` but `tick_<q>`), and this crate
-/// has no `paste` dependency to build identifiers with.
-///
-/// `pwm` is deliberately not expressed here: it is a *pair* of poles behind one
-/// name, so its three methods have a different shape rather than a different
-/// field.
-macro_rules! one_pole_api {
-    (
-        $field:ident, $coeff:ident;
-        $( $(#[$meta:meta])* $kind:ident = $name:ident; )+
-    ) => {
-        $( one_pole_api!(@m $kind, $name, $field, $coeff $(, #[$meta])*); )+
-    };
+/// Cascade row for `Pitch` (both oscillators).
+pub const PITCH: usize = cascade_row(DestId::Pitch);
+/// Cascade row for `XModSweep` (the mode-gated oscillator sweep).
+pub const SWEEP: usize = cascade_row(DestId::XModSweep);
 
-    (@m active, $name:ident, $field:ident, $coeff:ident $(, #[$meta:meta])*) => {
-        $(#[$meta])*
-        #[inline]
-        pub fn $name(&self, v: usize, target: f32) -> bool {
-            self.$field.active(v, target)
-        }
-    };
-    (@m settled, $name:ident, $field:ident, $coeff:ident $(, #[$meta:meta])*) => {
-        $(#[$meta])*
-        #[inline]
-        pub fn $name(&self, v: usize, target: f32) -> bool {
-            self.$field.settled(v, target)
-        }
-    };
-    (@m tick, $name:ident, $field:ident, $coeff:ident $(, #[$meta:meta])*) => {
-        $(#[$meta])*
-        #[inline]
-        pub fn $name(&mut self, v: usize, target: f32) -> f32 {
-            self.$field.tick(v, target, self.$coeff)
-        }
-    };
-    (@m current, $name:ident, $field:ident, $coeff:ident $(, #[$meta:meta])*) => {
-        $(#[$meta])*
-        #[inline]
-        pub fn $name(&self, v: usize) -> f32 {
-            self.$field.current(v)
-        }
-    };
-    (@m snap, $name:ident, $field:ident, $coeff:ident $(, #[$meta:meta])*) => {
-        $(#[$meta])*
-        #[inline]
-        pub fn $name(&mut self, v: usize, target: f32) {
-            self.$field.snap(v, target);
-        }
-    };
-}
+/// Rows in the per-quantum one-pole bank.
+///
+/// **Not** one row per `quantum` destination, and that is a layout decision
+/// rather than a drift: `Pwm`, `Osc1Pwm` and `Osc2Pwm` are summed *per
+/// oscillator* before the pole (0261), so three declared rows land on two
+/// smoothers. Post-sum smoothing is linear, so filtering the sum is the same
+/// filter as filtering each and summing — the class is shared, the fan-in is
+/// this synth's.
+const PWM1: usize = 0;
+const PWM2: usize = 1;
+const XMOD: usize = 2;
+const PAN: usize = 3;
+const N_SLOW: usize = 4;
+
+/// The per-quantum bank covers exactly the `quantum` destinations, with the
+/// three PWM rows folded to two. Pinned so that declaring a new `quantum` dest
+/// fails the build here instead of stairstepping unnoticed.
+const _: () = {
+    const N_QUANTUM: usize = class_count(&DEST_SMOOTHING, Smoothing::Quantum);
+    assert!(
+        N_SLOW == N_QUANTUM - 1,
+        "the per-quantum bank is one row short of the `quantum` column, because the three \
+         PWM dests share two poles. A new `quantum` destination needs a row here."
+    );
+};
 
 /// Per-lane motion smoothers for one render bank.
+///
+/// **Three shared banks and nothing else** as of 0335: the recurrences, the
+/// state, the snaps and the settle predicates are
+/// [`vxn_core_matrix::smoothing`]'s, and what stays here is the binding —
+/// which rows exist, which coefficient each bank is cooked at, and the
+/// per-lane gating the render loop needs.
+///
+/// The gating is why this type still exists rather than the render loop holding
+/// the banks directly. vxn-2 ticks its whole stack every quantum; vxn-1b ticks
+/// **only lanes with a live route**, and the same branch decides whether to
+/// re-cook that lane's oscillator increment, pulse width, PM index or pan gains.
+/// Advancing every lane instead would move state that currently freezes, and on
+/// a pitch destination an ULP-scale difference integrates into phase drift.
 #[derive(Clone, Copy, Debug)]
 pub struct MotionSmoother {
-    /// Cascade stage 1 (intermediate) for the pitch-family dests: `[dest][lane]`.
-    p_stage1: [[f32; N]; N_PITCH],
-    /// Cascade stage 2 (= smoothed output) for the pitch-family dests.
-    p_state: [[f32; N]; N_PITCH],
-    /// Per-oscillator PWM offsets, `[osc 1, osc 2]`. The three PWM dests are
-    /// summed per oscillator *before* the one-pole (0261), so this stays two
-    /// smoothers rather than three, and a patch routing only the combined `Pwm`
-    /// feeds both the same target — identical to before the split.
-    pwm: [LaneOnePole; 2],
-    /// The `CrossModAmount` dest *offset* (0242). The patch's own
-    /// `cross_mod_amount` is added on top by the render, so a patch with no
-    /// route on the dest holds exactly zero here.
-    xmod: LaneOnePole,
-    /// The non-env Amp coefficient. The only quantity on the *per-frame* tier —
-    /// see `amp_coeff`.
-    amp_stat: LaneOnePole,
-    /// The `Pan` dest (0260). Pan is a *position*, so unlike PWM/cross-mod there
-    /// is no patch scalar riding on top — this is the whole value the render
-    /// pans by.
-    pan: LaneOnePole,
-    /// Cascade coeff, calibrated at the *quantum* tick rate (`sr / PITCH_QUANTUM`).
-    pitch_coeff: f32,
-    /// Amp one-pole coeff, calibrated at the *per-frame* (base-sample) rate.
-    amp_coeff: f32,
-    /// PWM / cross-mod one-pole coeff, calibrated at the *quantum* tick rate.
-    slow_coeff: f32,
+    /// The `quantum_cascade` bank: `Pitch` and `XModSweep`, two poles each,
+    /// ticked per [`PITCH_QUANTUM`] samples.
+    pitch: CascadeBank<N_PITCH, N>,
+    /// The `quantum` bank: the two per-oscillator PWM offsets, the
+    /// `CrossModAmount` offset and `Pan`, one pole each, ticked per quantum.
+    ///
+    /// One bank rather than four smoothers because they share a coefficient —
+    /// the coefficient belongs to the class and the tick rate, not to the
+    /// quantity.
+    slow: OnePoleBank<N_SLOW, N>,
+    /// The non-envelope Amp coefficient — **not** a [`Smoothing`] class, and
+    /// the one acknowledged exception in ADR 0003 §3.
+    ///
+    /// `Amp` declares `block`, because what the shared bank would smooth is a
+    /// destination's whole total and that is not what happens here: only the
+    /// *static* part of the VCA coefficient is filtered, while the envelope part
+    /// stays per-frame exact or the attack smears. That factoring is a property
+    /// of this synth's VCA rather than of routing, so it keeps its own bank at
+    /// its own (per-frame) rate. It is a deliberate limit on the abstraction,
+    /// not a gap.
+    amp_stat: OnePoleBank<1, N>,
 }
+
+/// The single row of [`MotionSmoother::amp_stat`].
+const AMP: usize = 0;
 
 impl MotionSmoother {
     /// `sample_rate` is the base (non-oversampled) rate the render loop runs at.
+    ///
+    /// Each bank is cooked at the rate **it** is ticked at, which is the whole
+    /// reason the coefficient is the caller's to supply: pitch and the slow
+    /// group advance once per [`PITCH_QUANTUM`] samples, Amp every frame, and
+    /// the same time constant needs a different coefficient at each.
     pub fn new(sample_rate: f32) -> Self {
         // Cascade time constant ≈ one control block, but ticked per quantum, so
         // calibrate the coeff at the quantum rate (matches VXN2).
         let block_ms = vxn_dsp::CONTROL_BLOCK as f32 / sample_rate * 1000.0;
-        let pitch_coeff = one_pole_coeff(block_ms, sample_rate / PITCH_QUANTUM as f32);
-        // Amp glides every sample; PWM every quantum.
-        let amp_coeff = one_pole_coeff(SLOW_MS, sample_rate);
-        let slow_coeff = one_pole_coeff(SLOW_MS, sample_rate / PITCH_QUANTUM as f32);
+        let quantum_rate = sample_rate / PITCH_QUANTUM as f32;
         Self {
-            p_stage1: [[0.0; N]; N_PITCH],
-            p_state: [[0.0; N]; N_PITCH],
-            pwm: Default::default(),
-            xmod: LaneOnePole::default(),
-            amp_stat: LaneOnePole::default(),
-            pan: LaneOnePole::default(),
-            pitch_coeff,
-            amp_coeff,
-            slow_coeff,
+            pitch: CascadeBank::new(one_pole_coeff(block_ms, quantum_rate)),
+            slow: OnePoleBank::new(one_pole_coeff(SLOW_MS, quantum_rate)),
+            // Amp glides every sample; see the field's note on why.
+            amp_stat: OnePoleBank::new(one_pole_coeff(SLOW_MS, sample_rate)),
         }
     }
-
 
     /// Zero all state (bank reset). Coefficients are already cooked for the
     /// current sample rate, so only the state clears — and it clears wholesale,
     /// which is what stops a newly smoothed dest from being forgotten here.
     pub fn reset(&mut self) {
-        self.p_stage1 = [[0.0; N]; N_PITCH];
-        self.p_state = [[0.0; N]; N_PITCH];
-        self.pwm = Default::default();
-        self.xmod = LaneOnePole::default();
-        self.amp_stat = LaneOnePole::default();
-        self.pan = LaneOnePole::default();
+        self.pitch.clear();
+        self.slow.clear();
+        self.amp_stat.clear();
     }
 
     /// Snap one lane's pitch cascade (both stages) to the block targets, so a
     /// fresh note starts settled rather than gliding up from the previous voice.
     #[inline]
     pub fn snap_pitch(&mut self, v: usize, pitch_target: f32, sweep_target: f32) {
-        self.p_stage1[PITCH][v] = pitch_target;
-        self.p_state[PITCH][v] = pitch_target;
-        self.p_stage1[SWEEP][v] = sweep_target;
-        self.p_state[SWEEP][v] = sweep_target;
+        self.pitch.snap_lane(PITCH, v, pitch_target);
+        self.pitch.snap_lane(SWEEP, v, sweep_target);
     }
 
     /// Snap **every** smoother for lane `v` to its block targets, so a fresh
@@ -313,70 +268,92 @@ impl MotionSmoother {
         xmod_target: f32,
         amp_stat_target: f32,
     ) {
-        self.pwm[0].snap(v, pwm_targets.0);
-        self.pwm[1].snap(v, pwm_targets.1);
-        self.xmod.snap(v, xmod_target);
-        self.amp_stat.snap(v, amp_stat_target);
+        self.slow.snap_lane(PWM1, v, pwm_targets.0);
+        self.slow.snap_lane(PWM2, v, pwm_targets.1);
+        self.slow.snap_lane(XMOD, v, xmod_target);
+        self.amp_stat.snap_lane(AMP, v, amp_stat_target);
     }
 
-
-
-
-
-    one_pole_api! {
-        pan, slow_coeff;
-        /// Snap one lane's pan one-pole (0260). Separate from [`Self::snap_slow`]
-        /// because a *stolen* lane must not glide across the image from wherever
-        /// the previous note sat — it starts where its own patch puts it.
-        snap = snap_pan;
-        /// Whether this lane's pan is moving (or displaced), i.e. worth ticking.
-        active = pan_active;
-        /// Advance one lane's pan one-pole a quantum step and return the new value.
-        tick = tick_pan;
-        /// This lane's current smoothed pan without advancing it.
-        current = pan_current;
+    /// Snap one lane's pan one-pole (0260). Separate from [`Self::snap_slow`]
+    /// because a *stolen* lane must not glide across the image from wherever the
+    /// previous note sat — it starts where its own patch puts it.
+    #[inline]
+    pub fn snap_pan(&mut self, v: usize, target: f32) {
+        self.slow.snap_lane(PAN, v, target);
     }
 
-    one_pole_api! {
-        xmod, slow_coeff;
-        /// Whether lane `v`'s cross-mod one-pole needs ticking; when false the
-        /// render keeps the block-start PM index — and, with every lane inactive,
-        /// stays on the broadcast PM kernel entirely.
-        active = xmod_active;
-        /// Advance lane `v`'s cross-mod one-pole one quantum step and return the
-        /// smoothed PM-index *offset* (the patch amount is added by the render).
-        tick = tick_xmod;
-        /// Lane `v`'s current smoothed cross-mod offset, without advancing.
-        current = xmod_current;
+    /// Whether this lane's pan is moving (or displaced), i.e. worth ticking.
+    #[inline]
+    pub fn pan_active(&self, v: usize, target: f32) -> bool {
+        self.slow.lane_active(PAN, v, target, SETTLE_EPS)
     }
 
-    one_pole_api! {
-        amp_stat, amp_coeff;
-        /// Advance lane `v`'s non-env Amp one-pole one **frame** step and return the
-        /// smoothed static Amp coefficient. Ticked per sample (not per quantum)
-        /// because a block-held amplitude stair is itself an audible click on a slow
-        /// carrier — hence `amp_coeff` rather than `slow_coeff`.
-        tick = tick_amp_stat;
-        /// Lane `v`'s current smoothed Amp coefficient, without advancing.
-        current = amp_stat_current;
-        /// True when lane `v`'s Amp one-pole has arrived at `target` — the render
-        /// loop keeps its envelope-static constant-amp fast path only while this
-        /// holds for every active lane.
-        settled = amp_stat_settled;
+    /// Advance one lane's pan one-pole a quantum step and return the new value.
+    #[inline]
+    pub fn tick_pan(&mut self, v: usize, target: f32) -> f32 {
+        self.slow.tick_lane(PAN, v, target)
+    }
+
+    /// This lane's current smoothed pan without advancing it.
+    #[inline]
+    pub fn pan_current(&self, v: usize) -> f32 {
+        self.slow.current_lane(PAN, v)
+    }
+
+    /// Whether lane `v`'s cross-mod one-pole needs ticking; when false the
+    /// render keeps the block-start PM index — and, with every lane inactive,
+    /// stays on the broadcast PM kernel entirely.
+    #[inline]
+    pub fn xmod_active(&self, v: usize, target: f32) -> bool {
+        self.slow.lane_active(XMOD, v, target, SETTLE_EPS)
+    }
+
+    /// Advance lane `v`'s cross-mod one-pole one quantum step and return the
+    /// smoothed PM-index *offset* (the patch amount is added by the render).
+    #[inline]
+    pub fn tick_xmod(&mut self, v: usize, target: f32) -> f32 {
+        self.slow.tick_lane(XMOD, v, target)
+    }
+
+    /// Lane `v`'s current smoothed cross-mod offset, without advancing.
+    #[inline]
+    pub fn xmod_current(&self, v: usize) -> f32 {
+        self.slow.current_lane(XMOD, v)
+    }
+
+    /// Advance lane `v`'s non-env Amp one-pole one **frame** step and return the
+    /// smoothed static Amp coefficient. Ticked per sample (not per quantum)
+    /// because a block-held amplitude stair is itself an audible click on a slow
+    /// carrier — hence its own bank at the frame rate.
+    #[inline]
+    pub fn tick_amp_stat(&mut self, v: usize, target: f32) -> f32 {
+        self.amp_stat.tick_lane(AMP, v, target)
+    }
+
+    /// Lane `v`'s current smoothed Amp coefficient, without advancing.
+    #[inline]
+    pub fn amp_stat_current(&self, v: usize) -> f32 {
+        self.amp_stat.current_lane(AMP, v)
+    }
+
+    /// True when lane `v`'s Amp one-pole has arrived at `target` — the render
+    /// loop keeps its envelope-static constant-amp fast path only while this
+    /// holds for every active lane.
+    #[inline]
+    pub fn amp_stat_settled(&self, v: usize, target: f32) -> bool {
+        self.amp_stat.lane_settled(AMP, v, target, SETTLE_EPS)
     }
 
     /// Advance one lane's pitch cascade one quantum step toward the targets and
-    /// return the smoothed `(pitch, sweep)` offsets. `stage1` chases the target;
-    /// `state` (the output) chases `stage1` — the second stage is what gives a
+    /// return the smoothed `(pitch, sweep)` offsets. Stage 1 chases the target;
+    /// stage 2 (the output) chases stage 1 — the second stage is what gives a
     /// zero starting slope so sharp LFO-into-pitch steps ramp in without a click.
     #[inline]
     pub fn tick_pitch(&mut self, v: usize, pitch_target: f32, sweep_target: f32) -> (f32, f32) {
-        let a = self.pitch_coeff;
-        self.p_stage1[PITCH][v] += a * (pitch_target - self.p_stage1[PITCH][v]);
-        self.p_state[PITCH][v] += a * (self.p_stage1[PITCH][v] - self.p_state[PITCH][v]);
-        self.p_stage1[SWEEP][v] += a * (sweep_target - self.p_stage1[SWEEP][v]);
-        self.p_state[SWEEP][v] += a * (self.p_stage1[SWEEP][v] - self.p_state[SWEEP][v]);
-        (self.p_state[PITCH][v], self.p_state[SWEEP][v])
+        (
+            self.pitch.tick_lane(PITCH, v, pitch_target),
+            self.pitch.tick_lane(SWEEP, v, sweep_target),
+        )
     }
 
     /// Whether lane `v`'s pitch cascade needs ticking this block: any nonzero
@@ -388,12 +365,8 @@ impl MotionSmoother {
     /// hold energy the output has yet to see.
     #[inline]
     pub fn pitch_active(&self, v: usize, pitch_target: f32, sweep_target: f32) -> bool {
-        pitch_target.abs() > SETTLE_EPS
-            || sweep_target.abs() > SETTLE_EPS
-            || self.p_state[PITCH][v].abs() > SETTLE_EPS
-            || self.p_state[SWEEP][v].abs() > SETTLE_EPS
-            || self.p_stage1[PITCH][v].abs() > SETTLE_EPS
-            || self.p_stage1[SWEEP][v].abs() > SETTLE_EPS
+        self.pitch.lane_active(PITCH, v, pitch_target, SETTLE_EPS)
+            || self.pitch.lane_active(SWEEP, v, sweep_target, SETTLE_EPS)
     }
 
     /// Whether lane `v`'s PWM one-poles need ticking — on *either* oscillator
@@ -402,7 +375,8 @@ impl MotionSmoother {
     /// block-constant path exactly as before the split.
     #[inline]
     pub fn pwm_active(&self, v: usize, targets: (f32, f32)) -> bool {
-        self.pwm[0].active(v, targets.0) || self.pwm[1].active(v, targets.1)
+        self.slow.lane_active(PWM1, v, targets.0, SETTLE_EPS)
+            || self.slow.lane_active(PWM2, v, targets.1, SETTLE_EPS)
     }
 
     /// Advance lane `v`'s PWM one-poles one quantum step and return the smoothed
@@ -410,8 +384,8 @@ impl MotionSmoother {
     #[inline]
     pub fn tick_pwm(&mut self, v: usize, targets: (f32, f32)) -> (f32, f32) {
         (
-            self.pwm[0].tick(v, targets.0, self.slow_coeff),
-            self.pwm[1].tick(v, targets.1, self.slow_coeff),
+            self.slow.tick_lane(PWM1, v, targets.0),
+            self.slow.tick_lane(PWM2, v, targets.1),
         )
     }
 
@@ -419,14 +393,8 @@ impl MotionSmoother {
     /// advancing (block-start peek).
     #[inline]
     pub fn pwm_current(&self, v: usize) -> (f32, f32) {
-        (self.pwm[0].current(v), self.pwm[1].current(v))
+        (self.slow.current_lane(PWM1, v), self.slow.current_lane(PWM2, v))
     }
-
-
-
-
-
-
 }
 
 #[cfg(test)]
