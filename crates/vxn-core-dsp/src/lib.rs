@@ -58,6 +58,12 @@ pub mod fx;
 /// deleted its mono-summing per-sample entry point.
 pub mod chorus;
 
+/// Stereo BPM-syncable feedback delay: cubic read tap, DC-blocked feedback with
+/// optional HF damping, ping-pong routing and internal `WetFade` bypass. Moved
+/// by 0231 from `vxn2-dsp`, whose copy was the superset; vxn-1b's damping
+/// control came across with it, gated so `damping == 0` is a true skip.
+pub mod delay;
+
 /// Bucket-brigade delay line: the modulated-delay primitive the chorus is
 /// built on, with its filter banks, bucket saturation and clock jitter. Moved
 /// by 0229 with its only consumer.

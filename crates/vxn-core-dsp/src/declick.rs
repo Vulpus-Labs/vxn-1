@@ -137,6 +137,14 @@ impl WetFade {
     ///
     /// Call this **once per sample**, before using the weight — the edge is only
     /// reported on the tick it happens.
+    ///
+    /// The active/inactive latch behind the edge is updated from the state
+    /// **after** the tick, not before it. That is what makes the edge survive
+    /// the normal ownership pattern: on the sample a switch-off fade finally
+    /// lands, the owner's `is_active` gate goes false and it stops calling
+    /// `tick` at all. Latching the pre-tick state would leave "active" stuck on
+    /// through the whole idle stretch and swallow the next
+    /// [`EdgeAction::RisingClear`] — the re-enable the edge exists for.
     #[inline]
     pub fn tick(&mut self) -> (f32, EdgeAction) {
         let active = self.is_active();
@@ -145,13 +153,18 @@ impl WetFade {
         } else {
             EdgeAction::None
         };
-        self.was_active = active;
         if !active {
             // Settled off: do not tick the smoother, so `current()` stays
             // exactly 0.0 and the caller's passthrough stays bit-exact.
+            self.was_active = false;
             return (0.0, action);
         }
-        (self.mix.tick(), action)
+        let w = self.mix.tick();
+        // Latch the post-tick state — see the doc comment. A fade that reaches
+        // zero on this very sample is already inactive, and this is the last
+        // tick the owner will make before its gate closes.
+        self.was_active = self.is_active();
+        (w, action)
     }
 
     /// Is the effect contributing anything — enabled, or mid fade-out?
@@ -282,6 +295,40 @@ mod tests {
         f.set_enabled(true);
         let (_, edge) = f.tick();
         assert_eq!(edge, EdgeAction::RisingClear);
+    }
+
+    /// The ownership pattern the post-tick latch exists for: the owner gates on
+    /// `is_active`, so the moment the fade lands it stops calling `tick`
+    /// entirely. The next re-enable must still report `RisingClear` — with a
+    /// pre-tick latch it would not, because the last tick taken would have
+    /// recorded "active".
+    #[test]
+    fn an_owner_that_stops_ticking_when_the_fade_lands_still_gets_the_edge() {
+        let mut f = on_fade();
+        f.tick();
+        f.set_enabled(false);
+        // Exactly what a gated chain does: tick only while active.
+        while f.is_active() {
+            f.tick();
+        }
+        f.set_enabled(true);
+        assert_eq!(f.tick().1, EdgeAction::RisingClear, "re-enable must re-arm the clear");
+    }
+
+    /// The same, for an owner that keeps ticking through the idle stretch.
+    #[test]
+    fn ticking_through_the_settled_off_stretch_keeps_the_edge_armed() {
+        let mut f = on_fade();
+        f.tick();
+        f.set_enabled(false);
+        while !f.settled_off() {
+            f.tick();
+        }
+        for _ in 0..256 {
+            assert_eq!(f.tick(), (0.0, EdgeAction::None));
+        }
+        f.set_enabled(true);
+        assert_eq!(f.tick().1, EdgeAction::RisingClear, "re-enable must re-arm the clear");
     }
 
     /// The reason the edge is reported from `tick` and not `set_enabled`:

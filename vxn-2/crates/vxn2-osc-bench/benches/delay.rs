@@ -12,7 +12,7 @@
 //! the sample rate gives an RT factor (`thrpt / SR`).
 
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
-use vxn2_dsp::delay::{StereoDelay, StereoDelayParams};
+use vxn2_dsp::delay::{FxKernel as _, StereoDelay, StereoDelayParams};
 
 const SR: f32 = 48_000.0;
 const BLK: usize = 256;
@@ -25,10 +25,14 @@ fn build(on: bool) -> StereoDelay {
         sync: false,
         sync_index: 0,
         feedback: 0.45,
+        // vxn-2 does not expose the shared kernel's damping control; 0.0 is the
+        // gated path, so this bench measures what the plugin actually runs.
+        damping: 0.0,
         mix: 0.25,
         pingpong: false,
     };
-    d.set_params(&p, 120.0);
+    d.set_tempo(120.0);
+    d.set_params(&p);
     if on {
         // Warm the buffer + settle the time-smoother past its 100 ms glide.
         for n in 0..(SR as usize) {

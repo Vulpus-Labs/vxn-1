@@ -670,7 +670,10 @@ impl Engine {
     /// block boundary via [`Self::apply_block_params`].
     pub fn set_tempo(&mut self, bpm: f32) {
         self.tempo_bpm = bpm;
-        self.delay.set_params(&self.params.delay, self.tempo_bpm);
+        // The kernel resolves its own sync, so it holds the tempo; push it
+        // before the params so a synced time lands at the new BPM immediately.
+        self.delay.set_tempo(self.tempo_bpm);
+        self.delay.set_params(&self.params.delay);
     }
 
     /// Normalised `[-1, +1]` pitch bend. ±2 semitones.
@@ -847,7 +850,8 @@ impl Engine {
     /// exposed publicly so test code can mutate `engine.params` directly
     /// without going through the atomic store.
     pub fn apply_block_params(&mut self) {
-        self.delay.set_params(&self.params.delay, self.tempo_bpm);
+        self.delay.set_tempo(self.tempo_bpm);
+        self.delay.set_params(&self.params.delay);
         self.reverb.set_params(&self.params.reverb);
         self.phaser.set_from(&self.params.phaser);
         self.dynamics.set_from(&self.params.dynamics);
@@ -1128,7 +1132,7 @@ impl Engine {
             if delay_mix_mod != 0.0 {
                 let mut dp = self.params.delay;
                 dp.mix = (dp.mix + delay_mix_mod).clamp(0.0, 1.0);
-                self.delay.set_params(&dp, self.tempo_bpm);
+                self.delay.set_params(&dp);
             }
             if reverb_mix_mod != 0.0 {
                 let mut rp = self.params.reverb;

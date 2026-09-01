@@ -1280,6 +1280,10 @@ impl EngineParams {
                 shared.get(pb + OFF_DELAY + 1),
             ),
             feedback: shared.get(pb + OFF_DELAY + 3),
+            // vxn-1b's feedback-path damping, shared since 0231 and not a vxn-2
+            // control: 0.0 skips the filter outright, which is what keeps this
+            // delay's render bit-identical to the pre-move kernel.
+            damping: 0.0,
             mix: shared.get(pb + OFF_DELAY + 4),
             pingpong: shared.get(pb + OFF_DELAY + 5) >= 0.5,
         };
