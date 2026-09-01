@@ -53,7 +53,7 @@ use vxn_core_app::{ParamDesc, ParamKind};
 
 use crate::engine::{DEFAULT_SPLIT_POINT, KeyOp, KeyState};
 use crate::matrix::{
-    CURVE_NAMES, DEST_NAMES, DestId, MatrixSlot, MatrixTable, MatrixTableExt, N_SLOTS, Polarity,
+    CURVE_NAMES, DEST_NAMES, DestId, MatrixSlot, MatrixTable, MatrixTableExt, N_SLOTS,
     SHAPE_NAMES, SOURCE_NAMES, Shape, SourceId, curve_code, curve_split,
 };
 use crate::params::{PARAMS, ParamId, Params};
@@ -526,6 +526,9 @@ pub fn read_preset(s: &str) -> Result<(Meta, PluginState, Vec<String>), PresetEr
 mod tests {
     use super::*;
     use crate::engine::KeyMode;
+    // Only the tests build slots with an explicit polarity; the codec reaches
+    // the axis through `curve_code` / `curve_split` and never names a variant.
+    use crate::matrix::Polarity;
     use crate::params::{StackWidth, TOTAL_PARAMS, VoiceMode};
 
     fn meta(name: &str) -> Meta {

@@ -23,6 +23,27 @@
 //! Throughput is active slot evaluations per call — 16 for the scalar cases,
 //! 16 × 8 lanes for the banked ones — so the reported figure is per route
 //! evaluation and the scalar and banked numbers are directly comparable.
+//!
+//! ## The smoother (0335)
+//!
+//! - `matrix_smoother_quantum` — one per-quantum pass over a whole bank: the
+//!   pitch cascade plus the three one-pole quantities (PWM ×2, cross-mod, pan),
+//!   every lane live. The render loop runs this every `PITCH_QUANTUM` (16) samples
+//!   for the lanes whose masks are set, so this is the **worst case** — a patch
+//!   with a live route on all four families and no lane settled.
+//! - `matrix_smoother_amp` — the per-frame Amp one-pole across the bank. It is
+//!   the only quantity on the frame tier, so it is paid `PITCH_QUANTUM`× more
+//!   often than everything above and belongs in its own number.
+//! - `matrix_smoother_gate` — the predicates alone (`pitch_active`,
+//!   `pwm_active`, `xmod_active`, `pan_active`), no tick. On a static patch this
+//!   is the *whole* cost of the smoother, and it is paid whether or not anything
+//!   moves, so it is the figure that matters for the common case.
+//!
+//! Unlike VXN2's, this synth's smoother is ticked **per lane** behind those
+//! gates rather than bank-wide, and the same branch decides whether to re-cook
+//! that lane's oscillator increment, pulse width, PM index or pan gains. These
+//! cases price the tick and the gate; the re-cook they sit in front of belongs
+//! to `bank.rs` and is not measured here.
 
 use criterion::measurement::WallTime;
 use criterion::{
@@ -35,6 +56,7 @@ use vxn1b_engine::eval::{
 use vxn1b_engine::matrix::{
     DestId, MatrixSlot, MatrixTable, N_DESTS, N_SLOTS, N_SOURCES, Polarity, Shape, SourceId,
 };
+use vxn1b_engine::mod_smoothing::MotionSmoother;
 use vxn1b_engine::{RenderBank, SourceInputs};
 
 /// Lanes per bank — the width the render loop evaluates the matrix at.
@@ -184,6 +206,76 @@ fn bench_bank(
     });
 }
 
+/// Per-lane smoother targets that never settle: distinct per lane so no lane can
+/// read another's value, and none at zero so the `active` gates all report true
+/// and no case takes a short cut the worst case wouldn't.
+fn smoother_targets(v: usize) -> (f32, f32, (f32, f32), f32, f32, f32) {
+    let f = v as f32 / LANES as f32;
+    (
+        1.5 - 0.3 * f,  // pitch
+        -0.75 + f,      // sweep
+        (0.2 + f, 0.35 - 0.2 * f), // pwm (osc 1, osc 2)
+        0.4 + 0.1 * f,  // xmod
+        0.6 - 0.4 * f,  // amp_stat
+        -0.8 + 2.0 * f, // pan
+    )
+}
+
+fn bench_smoother(c: &mut Criterion) {
+    let mut g = c.benchmark_group("matrix");
+    let sr = 48_000.0;
+
+    // One element per (lane, smoothed quantity) advanced: pitch, sweep, two PWM
+    // poles, cross-mod and pan — six per lane.
+    g.throughput(Throughput::Elements((LANES * 6) as u64));
+    g.bench_function("matrix_smoother_quantum", |b| {
+        let mut s = MotionSmoother::new(sr);
+        b.iter(|| {
+            for v in 0..LANES {
+                let (p, sw, pwm, xm, _, pan) = smoother_targets(v);
+                black_box(s.tick_pitch(v, p, sw));
+                black_box(s.tick_pwm(v, pwm));
+                black_box(s.tick_xmod(v, xm));
+                black_box(s.tick_pan(v, pan));
+            }
+        })
+    });
+
+    g.throughput(Throughput::Elements(LANES as u64));
+    g.bench_function("matrix_smoother_amp", |b| {
+        let mut s = MotionSmoother::new(sr);
+        b.iter(|| {
+            for v in 0..LANES {
+                let (_, _, _, _, amp, _) = smoother_targets(v);
+                black_box(s.tick_amp_stat(v, amp));
+            }
+        })
+    });
+
+    // The gates on a *settled* bank — snapped to the targets they are then asked
+    // about, which is the static-patch case the render loop takes.
+    g.throughput(Throughput::Elements((LANES * 4) as u64));
+    g.bench_function("matrix_smoother_gate", |b| {
+        let mut s = MotionSmoother::new(sr);
+        for v in 0..LANES {
+            let (p, sw, pwm, xm, amp, pan) = smoother_targets(v);
+            s.snap_pitch(v, p, sw);
+            s.snap_slow(v, pwm, xm, amp);
+            s.snap_pan(v, pan);
+        }
+        b.iter(|| {
+            for v in 0..LANES {
+                let (p, sw, pwm, xm, _, pan) = smoother_targets(v);
+                black_box(s.pitch_active(black_box(v), p, sw));
+                black_box(s.pwm_active(black_box(v), pwm));
+                black_box(s.xmod_active(black_box(v), xm));
+                black_box(s.pan_active(black_box(v), pan));
+            }
+        })
+    });
+    g.finish();
+}
+
 fn bench_matrix(c: &mut Criterion) {
     // The source table is 12 wide and the dest table 16 — assert rather than
     // assume, so a roster change shows up here as a failure rather than as a
@@ -198,5 +290,5 @@ fn bench_matrix(c: &mut Criterion) {
     g.finish();
 }
 
-criterion_group!(benches, bench_matrix);
+criterion_group!(benches, bench_matrix, bench_smoother);
 criterion_main!(benches);

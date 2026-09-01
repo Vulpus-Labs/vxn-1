@@ -5,4 +5,12 @@
 /// Suppresses smooth carriers by f^4 while preserving the full amplitude of a
 /// slope discontinuity — the same probe used by the note-off-click harness (0079).
 // Canonical in vxn-core-dsp (0226); re-exported so `common::worst_d4` resolves.
+//
+// `allow(unused_imports)` because this module is compiled **once per test
+// binary** and only some of them use the probe — `note_on_click`,
+// `note_off_click` and `dynamics_integration` do, the rest pull other helpers
+// from here. Without the allow every one of those other binaries warns. Do not
+// "fix" the warning by deleting the re-export: four call sites resolve through
+// it.
+#[allow(unused_imports)]
 pub use vxn_core_dsp::test_util::worst_d4;

@@ -519,7 +519,7 @@ pub fn decode_and_apply(buf: &[u8], engine: &mut Engine) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vxn1b_engine::matrix::{DestId, Polarity, Shape, SourceId};
+    use vxn1b_engine::matrix::{DestId, Shape, SourceId};
     use vxn1b_engine::params::{ParamId, clap_id_of};
 
     // ── Golden byte table ───────────────────────────────────────────────────

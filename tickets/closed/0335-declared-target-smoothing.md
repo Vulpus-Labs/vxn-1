@@ -225,9 +225,20 @@ against the shipped behaviour; the behaviour was right and the doc now states it
 
 ### Left open
 
-- vxn-1b's smoother has no microbenchmark of its own — its ticking is per-lane
-  inside the render loop and does not factor out the way vxn-2's does. The
-  whole-render `route_profile` figure above is the coverage it has, alongside the
-  bit-identical null test.
+- ~~vxn-1b's smoother has no microbenchmark of its own.~~ **Closed 2026-09-01**:
+  three cases added to
+  [vxn1b-engine's matrix bench](../../vxn-1b/crates/vxn1b-engine/benches/matrix.rs) —
+  `matrix_smoother_quantum` (31.2 ns: the pitch cascade plus all three one-pole
+  quantities across eight lanes, nothing settled — the worst case),
+  `matrix_smoother_amp` (3.16 ns: the per-frame tier on its own, paid 16× more
+  often), and `matrix_smoother_gate` (17.8 ns: the four `active` predicates with
+  no tick).
+  - The gate number is the one worth having. On a static patch it is the
+    **entire** smoother cost per quantum, and at 17.8 ns against the full tick's
+    31.2 it is more than half — so the gating this synth keeps in order to skip
+    ticks is itself over half the price of not skipping them, at eight live
+    lanes. That is the measurement the "left open" note was hiding, and it is a
+    reason to look at the predicates before looking at the filters if this path
+    ever needs to get cheaper.
 - Out of scope and untouched, per the ticket: adding smoothing to destinations
   that lack it today. Behaviour-preserving means preserving the absences.

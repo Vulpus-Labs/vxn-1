@@ -1324,7 +1324,7 @@ mod tests {
     use vxn1b_engine::params::{ParamId as P, clap_id_of};
     use vxn1b_engine::params::MATRIX_SLOTS;
     use vxn1b_engine::{
-        DestId, KeyMode, MatrixField, PATCH_PARAMS, Polarity, ScopeOp, ScopeTap, Shape, SourceId,
+        DestId, KeyMode, MatrixField, PATCH_PARAMS, ScopeOp, ScopeTap, Shape, SourceId,
     };
 
     fn fresh() -> Box<ControllerState> {
