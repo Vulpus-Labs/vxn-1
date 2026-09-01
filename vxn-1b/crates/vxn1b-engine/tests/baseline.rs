@@ -65,7 +65,12 @@ const BLK: usize = 32;
 /// lands fails here**, that is why: take the printed
 /// `BASELINE render hash = 0x…` from that log and re-capture, exactly as the
 /// header prescribes. After that one correction the tripwire is live.
-const EXPECTED: u64 = 0xef1c_866f_d4a3_8540;
+///
+/// **Re-captured by ticket 0231** (E041), which moved the delay onto the shared
+/// kernel — a real DSP change, and the delay is in this patch. The previous
+/// value, `0xef1c_866f_d4a3_8540`, still verified on this machine at the commit
+/// before the migration, so the move is the whole of the difference.
+const EXPECTED: u64 = 0x5d7f_71bf_c17f_b2f2;
 
 /// E049's bar: the difference peak between two renders of the same patch must
 /// sit at or below this, which is beneath the 16-bit noise floor and far
