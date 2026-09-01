@@ -177,6 +177,29 @@ impl WetFade {
         self.enabled || self.mix.current() > 0.0
     }
 
+    /// Enabled, at full wet, and not mid-glide — so every sample of the coming
+    /// block would be weighted exactly 1.0.
+    ///
+    /// **Reached by a snap, not by a glide.** A fade that rides *up* to 1.0
+    /// stalls a ULP-scale distance short and stays there: `Smoothed`'s snap
+    /// threshold is an absolute 1e-6, and the one-pole's increment falls below
+    /// half a ULP near 1.0 while the remaining distance is still ~1.4e-5. So
+    /// this reads true for an effect that loaded already engaged (the first
+    /// `set` snaps) and false for one toggled on mid-render, which then keeps
+    /// blending at ~0.999986 — inaudible, and *not* something to "fix" here:
+    /// making the smoother land changes every render in the repo. See
+    /// `tests::the_bare_smoother_stalls_short_of_a_full_wet_target`, which
+    /// pins the behaviour so the next person meets it as a documented fact.
+    ///
+    /// The licence a block-processing owner needs to hand the whole block to its
+    /// kernel and skip the per-sample crossfade entirely: at weight 1.0 the
+    /// blend is the kernel's own output, so running it is arithmetic that
+    /// changes nothing (and, at `dry + 1.0 * (wet - dry)`, changes it by a ULP).
+    #[inline]
+    pub fn settled_full(&self) -> bool {
+        self.enabled && self.target == 1.0 && self.mix.current() == 1.0
+    }
+
     /// Bypassed *and* the fade has fully reached zero. Only now may the caller
     /// return its input bit-exactly.
     #[inline]
@@ -362,6 +385,50 @@ mod tests {
         f.set_enabled(true);
         f.snap();
         assert_eq!(f.current(), 0.25);
+    }
+
+    /// The stall this fade guards against, demonstrated on the bare smoother:
+    /// gliding up to 1.0, the one-pole's increment drops below half a ULP while
+    /// the remaining distance is still far above `Smoothed`'s absolute snap
+    /// threshold, so it stops moving and never arrives.
+    #[test]
+    fn the_bare_smoother_stalls_short_of_a_full_wet_target() {
+        let mut s = Smoothed::new(0.0, 10.0, SR);
+        s.set_target(1.0);
+        let mut last = -1.0;
+        let mut ticks = 0;
+        while s.current() != last {
+            last = s.current();
+            s.tick();
+            ticks += 1;
+            assert!(ticks < 1_000_000, "smoother is still moving — re-check this");
+        }
+        assert!(s.current() < 1.0, "smoother reached 1.0 — the stall is gone");
+        assert!(
+            1.0 - s.current() < 1.0e-4,
+            "stall distance should be ULP-scale, got {}",
+            1.0 - s.current()
+        );
+    }
+
+    #[test]
+    fn settled_full_is_only_true_at_a_steady_full_wet() {
+        let mut f = WetFade::new(10.0, SR);
+        assert!(!f.settled_full(), "fresh fade is bypassed");
+        f.set(true, 1.0);
+        assert!(f.settled_full(), "first set snaps — already fully wet");
+        f.set_mix(0.5);
+        assert!(!f.settled_full(), "a partial mix is not full wet");
+        for _ in 0..64 {
+            f.tick();
+        }
+        f.set_mix(1.0);
+        assert!(!f.settled_full(), "gliding back up is not settled yet");
+        // A glide up to 1.0 never lands (see the doc comment); a snap does.
+        f.snap();
+        assert!(f.settled_full());
+        f.set_enabled(false);
+        assert!(!f.settled_full(), "retargeted to 0 — the block is not steady");
     }
 
     #[test]

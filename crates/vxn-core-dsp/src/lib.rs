@@ -79,6 +79,10 @@ pub mod reverb;
 /// whose copy was the superset; `vxn-dsp` and `vxn2-dsp` re-export it.
 pub mod phaser;
 
+/// `StereoLimiter` as an `FxKernel`, so `Bypassable` can hold one. The limiter
+/// itself stays in `vxn-core-utils`; only the trait impl lives here (0232).
+pub mod limiter;
+
 /// One-pole TPT high-pass — the scalar kernel. Moved by 0227; vxn-1's 8-wide
 /// `PolyHpf` stays per-synth (SoA body, ADR 0002 §3).
 pub mod hpf;

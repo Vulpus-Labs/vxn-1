@@ -173,6 +173,27 @@ impl DynamicsBlock {
         self.gr_db_min = 0.0;
     }
 
+    /// Re-idle for a transport reset or a chain reset: drop the detector, settle
+    /// the wet to silence, and **un-prime**, so the next `set_from` snaps to the
+    /// patch value instead of gliding to it.
+    ///
+    /// The un-prime is the part that matters, and it is the same lesson
+    /// [`crate::declick::WetFade::reset`] carries: nothing is playing, so the
+    /// following parameter fan-in is a fresh load and should land the way a
+    /// patch load does. Snapping to the *current* enable flag and staying primed
+    /// leaves a chain whose `reset` promises "every slot fully bypassed" gliding
+    /// down from the old mix instead.
+    ///
+    /// This block still hand-rolls the fade `WetFade` was extracted from, so the
+    /// two spell the same thing twice. Unifying them is a bit-exactness question
+    /// for vxn-2's render, not a refactor to slip into a chain rewrite.
+    pub fn reset(&mut self) {
+        self.clear();
+        self.mix.snap(0.0);
+        self.enabled = false;
+        self.mix_primed = false;
+    }
+
     /// True while the block contributes anything to the output — either
     /// enabled, or mid switch-off fade before the wet has reached 0. The engine
     /// gates the oversampled span on this (not just `enabled`) so the fade-out
@@ -390,6 +411,38 @@ mod tests {
         let m = d.mix_current();
         assert!(m > 0.0, "first tick should advance mix from 0 (got {m})");
         assert!(m < 0.01, "first tick should not jump to target (got {m})");
+    }
+
+    /// `reset` must leave the block bypassed *and* un-primed, so a following
+    /// "off" fan-in is settled immediately rather than riding down from the old
+    /// mix — what `vxn1b-engine::fx::tests::reset_snaps_to_bypass` asserts one
+    /// level up.
+    #[test]
+    fn reset_unprimes_so_the_next_load_snaps() {
+        let mut d = DynamicsBlock::new(48_000.0);
+        d.set_from(&DynamicsParams { on: true, mix: 1.0, ..DynamicsParams::default() });
+        for _ in 0..64 {
+            let _ = d.process(0.4, -0.3);
+        }
+        d.reset();
+        assert!(!d.is_active(), "reset should leave the block bypassed");
+        d.set_from(&DynamicsParams { on: false, mix: 1.0, ..DynamicsParams::default() });
+        assert!(!d.is_active(), "off-after-reset must not ride down");
+        let (l, r) = d.process(0.42, -0.17);
+        assert_eq!(l.to_bits(), 0.42_f32.to_bits(), "not a bit-exact passthrough");
+        assert_eq!(r.to_bits(), (-0.17_f32).to_bits(), "not a bit-exact passthrough");
+
+        // The complement, on a block whose first post-reset load is the "on"
+        // one: it snaps to the patch mix rather than gliding up to it. (Above,
+        // the `off` fan-in already spent the prime — which is the same rule.)
+        let mut e = DynamicsBlock::new(48_000.0);
+        e.set_from(&DynamicsParams { on: true, mix: 1.0, ..DynamicsParams::default() });
+        for _ in 0..64 {
+            let _ = e.process(0.4, -0.3);
+        }
+        e.reset();
+        e.set_from(&DynamicsParams { on: true, mix: 0.4, ..DynamicsParams::default() });
+        assert_eq!(e.mix_current(), 0.4, "post-reset load should snap, not glide");
     }
 
     #[test]

@@ -82,9 +82,21 @@ pub trait FxKernel {
 /// Wraps a kernel that has no enable of its own, adding [`WetFade`] bypass with
 /// the edge-clear glue every consumer would otherwise hand-roll.
 ///
-/// This is the "off→on edge-reset" pattern vxn-1 spells as `limiter_fade` +
-/// an explicit `limiter_was_on`, and vxn-2 as `was_active` inside each effect.
-/// Ticket 0232 puts `StereoLimiter` behind it.
+/// This is the "off→on edge-reset" pattern vxn-1b spelled as
+/// `limiter_fade` + `limiter_on` + `limiter_primed` in its engine, and vxn-2 as
+/// a bare `limiter_was_on` with no fade at all. Ticket 0232 put `StereoLimiter`
+/// behind it, so both synths get the same declick and the same true skip.
+///
+/// # Three weights, three paths
+///
+/// - **Settled off** — return the input, untouched. Bit-exact, per the
+///   [`FxKernel`] contract.
+/// - **Settled full** — return the kernel's own output, with no blend at all.
+///   `dry + 1.0 * (wet - dry)` is not bitwise `wet`, and a master-bus effect
+///   that is simply *on* should not be paying a ULP for the fade it is not
+///   using. [`process_block`](Self::process_block) hands the whole block
+///   straight to the kernel in this state.
+/// - **Mid-fade** — the linear crossfade, per sample.
 pub struct Bypassable<K> {
     inner: K,
     fade: WetFade,
@@ -121,11 +133,32 @@ impl<K> Bypassable<K> {
     pub fn is_active(&self) -> bool {
         self.fade.is_active()
     }
+
+    /// The fade's current wet weight, without advancing it.
+    #[inline]
+    pub fn wet(&self) -> f32 {
+        self.fade.current()
+    }
 }
 
 impl<K: FxKernel> Bypassable<K> {
+    /// Fan a parameter snapshot into the wrapped kernel. The enable and the
+    /// fade are this wrapper's, not the kernel's.
+    #[inline]
+    pub fn set_params(&mut self, params: &K::Params) {
+        self.inner.set_params(params);
+    }
+
+    /// Re-idle: drop the kernel's audio state and settle the fade to silence,
+    /// un-primed, so the next `set_enabled` snaps the way a patch load does.
+    pub fn reset(&mut self) {
+        self.inner.reset();
+        self.fade.reset();
+    }
+
     /// Equal-gain dry/wet by the fade weight, with the stale-state clear applied
-    /// on the rising edge. Bit-exact passthrough once the fade has settled.
+    /// on the rising edge. Bit-exact passthrough once the fade has settled, and
+    /// the kernel's own output once it is fully wet.
     #[inline]
     pub fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
         let (w, edge) = self.fade.tick();
@@ -138,7 +171,50 @@ impl<K: FxKernel> Bypassable<K> {
             return (l, r);
         }
         let (wl, wr) = self.inner.process(l, r);
+        if w == 1.0 {
+            // Fully wet — the kernel's output *is* the answer. Same reasoning
+            // as the line above, at the other end of the fade, and it is what
+            // keeps `process_block`'s whole-block shortcut sample-identical to
+            // this path.
+            return (wl, wr);
+        }
         (l + w * (wl - l), r + w * (wr - r))
+    }
+
+    /// Process a block in place. Sample-identical to looping
+    /// [`process`](Self::process); the two steady states short-circuit.
+    ///
+    /// The settled-full case is the one worth having: a master-bus kernel with a
+    /// block entry point (a limiter's serial gain recurrence, say) keeps its
+    /// state in registers across the block instead of being re-entered per
+    /// sample through a crossfade that weights it 1.0.
+    #[inline]
+    pub fn process_block(&mut self, l: &mut [f32], r: &mut [f32]) {
+        debug_assert_eq!(l.len(), r.len(), "stereo block halves must match");
+        if self.fade.settled_off() {
+            // True skip. No tick: the fade's latch already reads inactive, so
+            // the next re-engage still reports its edge.
+            return;
+        }
+        if self.fade.settled_full() {
+            // One tick for the whole block, not none: the weight is 1.0 either
+            // way (a settled smoother's tick is idempotent), but the fade's
+            // active latch and its rising edge live in `tick`, and skipping it
+            // leaves the latch reading "inactive" — so the first sample that
+            // later falls to the per-sample path reports a `RisingClear` and
+            // wipes a running kernel's state mid-block.
+            let (_w, edge) = self.fade.tick();
+            if edge == crate::declick::EdgeAction::RisingClear {
+                self.inner.clear();
+            }
+            self.inner.process_block(l, r);
+            return;
+        }
+        for (ls, rs) in l.iter_mut().zip(r.iter_mut()) {
+            let (a, b) = self.process(*ls, *rs);
+            *ls = a;
+            *rs = b;
+        }
     }
 }
 
