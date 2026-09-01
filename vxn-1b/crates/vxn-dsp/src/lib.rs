@@ -58,7 +58,7 @@ pub use vxn_core_dsp::control::CONTROL_BLOCK;
 
 pub use adsr::{AdsrCore, AdsrShape, AdsrStage};
 pub use chorus::{ChorusParams, StereoChorus};
-pub use delay::{DelayLine, StereoDelay};
+pub use delay::{StereoDelay, StereoDelayParams};
 pub use dynamics::{DynamicsBlock, DynamicsParams};
 pub use fdn_reverb::{FdnReverb, FdnReverbParams};
 pub use halfband::{HalfbandFir, Oversampler};

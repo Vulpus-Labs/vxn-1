@@ -16,19 +16,20 @@
 //! CPU risk). What differs between slots is *where the bypass fade lives*, and
 //! E041 is in the middle of moving them all to one answer.
 //!
-//! - **Chorus, phaser and reverb** — bypass is inside the kernel, as a
-//!   `WetFade` (tickets 0228-0230). `FxChain` gates on `is_active()` and
+//! - **Chorus, phaser, reverb and delay** — bypass is inside the kernel, as a
+//!   `WetFade` (tickets 0228-0231). `FxChain` gates on `is_active()` and
 //!   otherwise just calls `process`; the dry/wet crossfade happens once, in the
-//!   kernel, against the mix the patch asked for. This is the idiom the rest
-//!   are migrating to.
-//! - **The remaining two** — a short outer bypass fade (a `Smoothed` 0..1)
+//!   kernel, against the mix the patch asked for. The stale-tail clear on the
+//!   off→on edge lives inside the kernel too, driven by
+//!   `EdgeAction::RisingClear`. This is the idiom the rest are migrating to.
+//! - **Dynamics, alone now** — a short outer bypass fade (a `Smoothed` 0..1)
 //!   held here, ramped 0↔1 over [`FX_FADE_MS`] and crossfaded against the dry
 //!   input. `Smoothed` snaps to its target within `SNAP_EPS`, so the fade
-//!   genuinely reaches 0 and the true-skip gate re-arms. These kernels are held
-//!   **internally on**, their own `mix` argument carrying the musical wet
-//!   amount while the outer fade owns bypass; on an off→on edge the slot's
-//!   kernel state is cleared so a re-enabled delay / reverb doesn't dump a
-//!   stale tail. Tickets 0231–0232 retire this half.
+//!   genuinely reaches 0 and the true-skip gate re-arms. The kernel is held
+//!   **internally on**, its own `mix` argument carrying the musical wet amount
+//!   while the outer fade owns bypass; on an off→on edge the slot's kernel
+//!   state is cleared so a re-enabled compressor doesn't reuse a stale envelope.
+//!   Ticket 0232 retires this last one.
 //!
 //! No slot ever carries both (E041's double-fade ban) — a kernel with an
 //! internal `WetFade` has no entry in `fades`/`on` at all.
@@ -39,7 +40,7 @@ use vxn_core_utils::{MeterBus, MeterTap};
 use vxn_dsp::phaser::FxKernel as _;
 use vxn_dsp::{
     ChorusParams, DynamicsBlock, DynamicsParams, FdnReverb, FdnReverbParams, PhaserParams,
-    StereoChorus, StereoDelay, StereoPhaser,
+    StereoChorus, StereoDelay, StereoDelayParams, StereoPhaser,
 };
 
 use crate::params::{ParamId, Params};
@@ -52,26 +53,28 @@ const FX_FADE_MS: f32 = 10.0;
 /// (not a param) — mirrors VXN1's hardcoded `0.3`.
 const DELAY_DAMPING: f32 = 0.3;
 
-/// Longest delay time the ring buffer must hold. Allocated once at
-/// construction. Deliberately **twice** the `delay_time` param ceiling (2 s):
-/// free-run mode can only ask for 2 s, but tempo sync resolves a subdivision
-/// *period*, and the slow end of the table runs well past the knob's range —
-/// `1/1` is 4 s at 60 BPM. Sizing the line to the knob would have silently
-/// clamped those, so the label would read `1/1` while the ear heard 2 s (0267).
-/// Costs ~768 KB more than a 2 s line at 48 kHz, per instance.
-pub(crate) const DELAY_MAX_SECONDS: f32 = 4.0;
+/// Longest delay time the ring buffer must hold. Deliberately **twice** the
+/// `delay_time` param ceiling (2 s): free-run mode can only ask for 2 s, but
+/// tempo sync resolves a subdivision *period*, and the slow end of the table
+/// runs well past the knob's range — `1/1` is 4 s at 60 BPM. Sizing the line to
+/// the knob would have silently clamped those, so the label would read `1/1`
+/// while the ear heard 2 s (0267).
+///
+/// Since 0231 this is the shared kernel's own capacity, re-exported rather than
+/// passed: `vxn-core-dsp` allocates for `MAX_DELAY_S` at construction and both
+/// synths get the same 4 s line. `crate::sync` clamps synced times against it.
+pub(crate) const DELAY_MAX_SECONDS: f32 = vxn_dsp::delay::MAX_DELAY_S;
 
-// Slot indices into the fade / on-state arrays, in chain order. Dynamics runs
-// FIRST (input compression / drive ahead of the modulation + time effects),
-// matching the faceplate order (Dynamics left of FX) and VXN2's FX bus.
+// Slot index into the fade / on-state arrays. Dynamics runs FIRST in the chain
+// (input compression / drive ahead of the modulation + time effects), matching
+// the faceplate order (Dynamics left of FX) and VXN2's FX bus.
 //
-// **Chorus, phaser and reverb are absent**: they own their bypass internally
-// since 0228-0230, so giving them fade slots here would be the double fade E041
-// bans. The chain still runs them in position — these indices address the fade
-// arrays, not the signal path.
+// **Every other effect is absent**: chorus, phaser, reverb and delay own their
+// bypass internally since 0228-0231, so giving them fade slots here would be the
+// double fade E041 bans. The chain still runs them in position — this index
+// addresses the fade arrays, not the signal path.
 const DYNAMICS: usize = 0;
-const DELAY: usize = 1;
-const N_SLOTS: usize = 2;
+const N_SLOTS: usize = 1;
 
 /// Block-rate snapshot of the FX params, fanned into the chain each control
 /// block. Character values map straight to each kernel's setter; the `*_on`
@@ -181,7 +184,9 @@ pub struct FxChain {
 /// Five byte-identical copies of this before 0319, differing only in the slot
 /// constant and the kernel field. A `dyn`-dispatched slot list would read
 /// better and be a deoptimisation — this is per-sample hot — so the repetition
-/// moves into a macro that expands to exactly the code that was there.
+/// moves into a macro that expands to exactly the code that was there. E041 has
+/// since taken four of the five inside their kernels; dynamics is the last user,
+/// and 0232 retires the macro with it.
 macro_rules! fx_slot {
     ($run:ident, $slot:ident, $kernel:ident) => {
         #[inline]
@@ -201,7 +206,7 @@ impl FxChain {
         Self {
             chorus: StereoChorus::new(sample_rate),
             phaser: StereoPhaser::new(sample_rate),
-            delay: StereoDelay::new(sample_rate, DELAY_MAX_SECONDS),
+            delay: StereoDelay::new(sample_rate),
             reverb: FdnReverb::new(sample_rate),
             dynamics: DynamicsBlock::new(sample_rate),
             fades: [fade; N_SLOTS],
@@ -220,12 +225,12 @@ impl FxChain {
     /// Silence all tails and snap every slot to fully bypassed. Called on engine
     /// reset alongside the voice/bank reset.
     pub fn reset(&mut self) {
-        // `reset`, not `clear`, for the two kernels whose bypass lives inside
-        // them: re-idling has to settle that fade too, not just empty the state.
+        // `reset`, not `clear`, for the kernels whose bypass lives inside them:
+        // re-idling has to settle that fade too, not just empty the state.
         self.chorus.reset();
         self.phaser.reset();
         self.reverb.reset();
-        self.delay.clear();
+        self.delay.reset();
         self.dynamics.clear();
         for f in &mut self.fades {
             f.snap(0.0);
@@ -238,7 +243,6 @@ impl FxChain {
     /// re-activates); the kernels are held internally on, so their own `mix`
     /// carries the wet amount and this chain's fade owns bypass.
     pub fn set_params(&mut self, p: &FxParams) {
-        self.retarget(DELAY, p.delay_on);
         self.retarget(DYNAMICS, p.dynamics_on);
 
         self.chorus.set_params(&ChorusParams {
@@ -256,14 +260,19 @@ impl FxChain {
             mix: p.phaser_mix,
             spread: p.phaser_stereo,
         });
-        self.delay.set_params(
-            p.delay_time,
-            p.delay_time,
-            p.delay_feedback,
-            DELAY_DAMPING,
-            p.delay_mix,
-            p.delay_pingpong,
-        );
+        // Sync is resolved upstream in `FxParams::from_params` (0267), so the
+        // kernel is handed a free time in ms and its own sync stays off; the
+        // 100 ms glide to that target still happens inside the kernel.
+        self.delay.set_params(&StereoDelayParams {
+            on: p.delay_on,
+            time_ms: p.delay_time * 1_000.0,
+            sync: false,
+            sync_index: 0,
+            feedback: p.delay_feedback,
+            damping: DELAY_DAMPING,
+            mix: p.delay_mix,
+            pingpong: p.delay_pingpong,
+        });
         self.reverb.set_params(&FdnReverbParams {
             on: p.reverb_on,
             size: p.reverb_size,
@@ -337,7 +346,6 @@ impl FxChain {
     /// slot. An unknown index is now a no-op.
     fn clear_slot(&mut self, slot: usize) {
         match slot {
-            DELAY => self.delay.clear(),
             DYNAMICS => self.dynamics.clear(),
             _ => {}
         }
@@ -375,8 +383,19 @@ impl FxChain {
         self.reverb.process(xl, xr)
     }
 
+    /// The delay slot, internal fade since 0231. `is_active()` covers the whole
+    /// switch-off glide, so the repeats ring out through the fade instead of
+    /// being cut at the slot boundary, and the kernel clears its own lines on
+    /// the off→on edge — what `clear_slot(DELAY)` used to do from here.
+    #[inline]
+    fn run_delay(&mut self, xl: f32, xr: f32) -> (f32, f32) {
+        if !self.delay.is_active() {
+            return (xl, xr);
+        }
+        self.delay.process(xl, xr)
+    }
+
     fx_slot!(run_dynamics, DYNAMICS, dynamics);
-    fx_slot!(run_delay, DELAY, delay);
 }
 
 /// Linear bypass crossfade: `g = 0` → dry input, `g = 1` → kernel wet output.
@@ -473,12 +492,15 @@ mod tests {
 
     #[test]
     fn toggling_off_settles_back_to_bit_exact_skip() {
-        // Turn an effect on, run it, then turn it off: after the fade settles the
-        // slot must return to a bit-exact passthrough (the true-skip path).
+        // The outer-fade half of the chain: turn dynamics on, run it, then turn
+        // it off. After the 10 ms `FX_FADE_MS` ramp reaches 0 the slot must be a
+        // bit-exact passthrough again — the true-skip path. (The in-kernel
+        // slots are covered by `assert_internal_fade_slot`, which allows for
+        // their much longer settle.)
         let mut fx = FxChain::new(SR);
         let mut p = all_off();
-        p.delay_on = true;
-        p.delay_mix = 0.5;
+        p.dynamics_on = true;
+        p.dynamics_drive = 12.0;
         fx.set_params(&p);
         for i in 0..4_000 {
             let (x, y) = sig(i);
@@ -487,7 +509,7 @@ mod tests {
             fx.process_block(&mut l, &mut r);
         }
         // Switch off and let the fade reach exactly 0.
-        p.delay_on = false;
+        p.dynamics_on = false;
         fx.set_params(&p);
         for i in 0..(SR * 0.2) as usize {
             let (x, y) = sig(i);
@@ -600,6 +622,20 @@ mod tests {
                 p.reverb_decay = 2.0;
             },
             |p| p.reverb_on = false,
+        );
+    }
+
+    #[test]
+    fn delay_slot_bypass_fades_and_settles() {
+        assert_internal_fade_slot(
+            "delay",
+            |p| {
+                p.delay_on = true;
+                p.delay_mix = 1.0;
+                p.delay_time = 0.05;
+                p.delay_feedback = 0.5;
+            },
+            |p| p.delay_on = false,
         );
     }
 
