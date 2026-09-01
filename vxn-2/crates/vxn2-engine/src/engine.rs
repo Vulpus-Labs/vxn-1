@@ -36,7 +36,7 @@ use vxn2_dsp::cleanup::CleanupFilter;
 use vxn2_dsp::algo::pitch_stack_component;
 use vxn2_dsp::delay::StereoDelay;
 use vxn2_dsp::dynamics::DynamicsBlock;
-use vxn2_dsp::limiter::StereoLimiter;
+use vxn2_dsp::limiter::{Bypassable, StereoLimiter};
 use vxn2_dsp::op::RatioMode;
 use vxn2_dsp::phaser::{FxKernel as _, StereoPhaser};
 use vxn2_dsp::filter::{OtaLadderCoeffs, OtaLadderKernel};
@@ -180,6 +180,12 @@ const FILTER_QUIESCENT_EPS: f32 = 1.0e-5;
 /// ~8 ms is long enough to bury the ~0.6 ms OS group-delay shift and the level
 /// step, short enough to feel instant when the user clicks the toggle.
 const FILTER_XFADE_MS: f32 = 8.0;
+
+/// Master-limiter bypass glide. The limiter is a gain stage that can be pulling
+/// several dB when it is switched off, so a hard step is an audible level jump;
+/// 10 ms masks it and still feels like a switch. Matches vxn-1b, whose engine
+/// had this fade before 0232 and where the number came from.
+const LIMITER_FADE_MS: f32 = 10.0;
 
 /// Preset-changeover fade window. A whole-patch swap moves every FX parameter
 /// at once — delay time, reverb size, filter cutoff — under whatever tail the
@@ -395,11 +401,10 @@ pub struct Engine {
     pub reverb: FdnReverb,
     pub master: MasterState,
     /// Optional brickwall limiter on the master bus (last in the FX chain).
-    /// Run only when `master.limiter_on` is set; bypassed otherwise.
-    pub limiter: StereoLimiter,
-    /// Whether the limiter ran last block, so it can be reset on the off→on
-    /// edge (clears stale lookahead instead of leaking an old transient).
-    limiter_was_on: bool,
+    /// Bypassed unless `master.limiter_on` is set; the wrapper owns the enable,
+    /// the switch-on/off glide and the lookahead clear on the off→on edge
+    /// (0232), so this engine holds no limiter bookkeeping of its own.
+    pub limiter: Bypassable<StereoLimiter>,
     pub params: EngineParams,
     sample_rate: f32,
     block_size: usize,
@@ -591,8 +596,11 @@ impl Engine {
             delay: StereoDelay::new(sample_rate),
             reverb: FdnReverb::new(sample_rate),
             master: MasterState::new(sample_rate),
-            limiter: StereoLimiter::new(sample_rate),
-            limiter_was_on: false,
+            limiter: Bypassable::new(
+                StereoLimiter::new(sample_rate),
+                LIMITER_FADE_MS,
+                sample_rate,
+            ),
             params: EngineParams::default(),
             sample_rate,
             block_size,
@@ -707,7 +715,6 @@ impl Engine {
         // snap below, after apply_block_params re-pushes the target) so a
         // transport restart doesn't glide the level in from a stale value.
         self.limiter.reset();
-        self.limiter_was_on = false;
         // Re-prime the base-filter smoothers: the first filtered block after a
         // reset snaps to the live param instead of gliding from a stale value.
         self.filter_smooth_primed = false;
@@ -1193,18 +1200,16 @@ impl Engine {
         self.os_span.tick(n);
 
         // Master limiter — last in the chain, after master gain, applied to the
-        // finished block on both render paths (VXN1 parity). Clear stale
-        // lookahead on the off→on edge so re-engaging can't leak an old
-        // transient. Off by default → an unchanged patch is bit-identical.
-        let limiter_on = self.params.master.limiter_on;
-        if limiter_on {
-            if !self.limiter_was_on {
-                self.limiter.reset();
-            }
-            self.limiter
-                .process_block(&mut out_l[..n], &mut out_r[..n]);
-        }
-        self.limiter_was_on = limiter_on;
+        // finished block on both render paths (VXN1 parity). The wrapper clears
+        // stale lookahead on the off→on edge so re-engaging can't leak an old
+        // transient, glides the switch rather than stepping it (which this
+        // engine did not do before 0232), skips the block outright while
+        // bypassed and settled, and hands the whole block to the limiter
+        // untouched while fully engaged. Off by default → an unchanged patch is
+        // bit-identical.
+        self.limiter.set_enabled(self.params.master.limiter_on);
+        self.limiter
+            .process_block(&mut out_l[..n], &mut out_r[..n]);
 
         // Patch-swap fade — last in the chain, after the limiter, so no
         // downstream gain stage can ride the ramp back up. `Pending` holds hard
