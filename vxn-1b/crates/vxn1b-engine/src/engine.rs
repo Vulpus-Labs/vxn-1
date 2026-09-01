@@ -62,7 +62,7 @@ use std::sync::Arc;
 
 use vxn_core_utils::{MeterBus, MeterTap, ScopeBus};
 use vxn_dsp::smoothing::Smoothed;
-use vxn_dsp::{CONTROL_BLOCK, MAX_OVERSAMPLE, StereoLimiter};
+use vxn_dsp::{Bypassable, CONTROL_BLOCK, MAX_OVERSAMPLE, StereoLimiter};
 
 /// Default split point (MIDI note) — middle C, matching VXN1
 /// ([`vxn-app` domain `DEFAULT_SPLIT_POINT`](../../../vxn-1/crates/vxn-app/src/domain.rs)).
@@ -309,18 +309,13 @@ pub struct Engine {
     /// Decimators + the OS-change / silence / mono bookkeeping.
     output: OutputStage,
     /// Master brickwall limiter, last in the signal path — *after* master
-    /// volume, so a master boost can't push past the ceiling. Bypassed unless
-    /// `limiter_on`, with a short dry↔limited crossfade on the toggle and a
-    /// lookahead reset on the off→on edge.
-    limiter: StereoLimiter,
-    limiter_fade: Smoothed,
-    limiter_on: bool,
-    /// Whether the limiter's on-state has been adopted since construction /
-    /// reset. The *first* block must snap the fade to the current setting, not
-    /// ramp into it: a patch that loads with Limit already on would otherwise
-    /// pass its first 10 ms — the note attack, i.e. exactly the peak the limiter
-    /// exists to catch — through dry. Only a later toggle crossfades.
-    limiter_primed: bool,
+    /// volume, so a master boost can't push past the ceiling. The wrapper owns
+    /// the enable, the dry↔limited crossfade on the toggle, the lookahead clear
+    /// on the off→on edge and the first-block snap (a patch that loads with
+    /// Limit already on must not pass its first 10 ms — the note attack, i.e.
+    /// exactly the peak the limiter exists to catch — through dry). All four
+    /// were spelled out here before 0232.
+    limiter: Bypassable<StereoLimiter>,
 }
 
 /// Layer level/mute fade, ms. Matches the FX chain's bypass fade — long enough
@@ -474,10 +469,11 @@ impl Engine {
             mix_scratch: [[0.0; CONTROL_BLOCK * MAX_OVERSAMPLE]; 2],
             os_bus: [[0.0; CONTROL_BLOCK * MAX_OVERSAMPLE]; 2],
             output: OutputStage::new(sample_rate),
-            limiter: StereoLimiter::new(sample_rate),
-            limiter_fade: Smoothed::new(0.0, LAYER_FADE_MS, sample_rate),
-            limiter_on: false,
-            limiter_primed: false,
+            limiter: Bypassable::new(
+                StereoLimiter::new(sample_rate),
+                LAYER_FADE_MS,
+                sample_rate,
+            ),
         }
     }
 
@@ -707,9 +703,6 @@ impl Engine {
         // after the transport restarts.
         self.output.reset();
         self.limiter.reset();
-        self.limiter_fade.snap(0.0);
-        self.limiter_on = false;
-        self.limiter_primed = false;
         // Drop any pending peaks so a re-started transport doesn't paint a
         // meter from before the reset.
         self.meters.clear();
@@ -881,32 +874,15 @@ impl Engine {
             *s = if v.is_finite() { v } else { 0.0 };
         }
 
-        // Master limiter, genuinely last: after master volume, so raising
-        // the master can't push the output past the ceiling. Re-engaging clears
-        // the lookahead first, or a stale transient leaks into the first block;
-        // the fade crossfades dry↔limited so the toggle can't step level. Off
-        // and settled it is a true skip, like the FX slots.
-        if limiter_on && !self.limiter_on {
-            self.limiter.reset();
-        }
-        self.limiter_on = limiter_on;
-        let target = if limiter_on { 1.0 } else { 0.0 };
-        if self.limiter_primed {
-            self.limiter_fade.set_target(target);
-        } else {
-            // First block since construction / reset: adopt the setting whole.
-            self.limiter_fade.snap(target);
-            self.limiter_primed = true;
-        }
-        if limiter_on || self.limiter_fade.current() != 0.0 {
-            for (ls, rs) in l.iter_mut().zip(r.iter_mut()) {
-                let (dl, dr) = (*ls, *rs);
-                let (wl, wr) = self.limiter.process(dl, dr);
-                let w = self.limiter_fade.tick();
-                *ls = dl + (wl - dl) * w;
-                *rs = dr + (wr - dr) * w;
-            }
-        }
+        // Master limiter, genuinely last: after master volume, so raising the
+        // master can't push the output past the ceiling. Since 0232 the shared
+        // `Bypassable` owns what this method used to spell out — re-engaging
+        // clears the lookahead first (or a stale transient leaks into the first
+        // block), the fade crossfades dry↔limited so the toggle can't step
+        // level, the first block snaps rather than ramping in, and off-and-
+        // settled is a true skip, like the FX slots.
+        self.limiter.set_enabled(limiter_on);
+        self.limiter.process_block(l, r);
 
         // Master-out meter tap — after master volume, the limiter and the
         // finite guard, so it reports exactly what leaves the plugin. The bus

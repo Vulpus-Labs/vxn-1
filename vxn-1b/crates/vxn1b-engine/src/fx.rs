@@ -13,26 +13,20 @@
 //! Every slot is a **true skip** when it is bypassed and its bypass has fully
 //! settled: the kernel's `process` is never called, so five idle effects cost
 //! five gate checks rather than five wet=0 multiplies through the DSP (the E037
-//! CPU risk). What differs between slots is *where the bypass fade lives*, and
-//! E041 is in the middle of moving them all to one answer.
+//! CPU risk).
 //!
-//! - **Chorus, phaser, reverb and delay** — bypass is inside the kernel, as a
-//!   `WetFade` (tickets 0228-0231). `FxChain` gates on `is_active()` and
-//!   otherwise just calls `process`; the dry/wet crossfade happens once, in the
-//!   kernel, against the mix the patch asked for. The stale-tail clear on the
-//!   off→on edge lives inside the kernel too, driven by
-//!   `EdgeAction::RisingClear`. This is the idiom the rest are migrating to.
-//! - **Dynamics, alone now** — a short outer bypass fade (a `Smoothed` 0..1)
-//!   held here, ramped 0↔1 over [`FX_FADE_MS`] and crossfaded against the dry
-//!   input. `Smoothed` snaps to its target within `SNAP_EPS`, so the fade
-//!   genuinely reaches 0 and the true-skip gate re-arms. The kernel is held
-//!   **internally on**, its own `mix` argument carrying the musical wet amount
-//!   while the outer fade owns bypass; on an off→on edge the slot's kernel
-//!   state is cleared so a re-enabled compressor doesn't reuse a stale envelope.
-//!   Ticket 0232 retires this last one.
+//! Since ticket 0232 closed E041 there is **one** answer to where the bypass
+//! lives: inside the kernel, as a `WetFade`. Every slot is the same three lines
+//! — gate on `is_active()`, otherwise call `process` — and the dry/wet crossfade
+//! happens once, in the kernel, against the mix the patch asked for. The
+//! stale-state clear on the off→on edge is the kernel's too, driven by
+//! `EdgeAction::RisingClear`.
 //!
-//! No slot ever carries both (E041's double-fade ban) — a kernel with an
-//! internal `WetFade` has no entry in `fades`/`on` at all.
+//! What this chain used to hold, and no longer does: a `Smoothed` fade and a
+//! latched on-state per slot, an outer crossfade against the dry input, and a
+//! `clear_slot` dispatch. Nothing here is allowed to wrap a kernel that already
+//! fades internally (E041's double-fade ban), and now nothing can — there is no
+//! outer fade left to wrap it with.
 
 use std::sync::Arc;
 
@@ -44,10 +38,6 @@ use vxn_dsp::{
 };
 
 use crate::params::{ParamId, Params};
-
-/// Bypass fade length. Long enough to mask an on/off click, short enough to feel
-/// instant — matches VXN1's 10 ms FX toggle fade.
-const FX_FADE_MS: f32 = 10.0;
 
 /// Delay high-frequency damping in the feedback path. Fixed internal default
 /// (not a param) — mirrors VXN1's hardcoded `0.3`.
@@ -64,17 +54,6 @@ const DELAY_DAMPING: f32 = 0.3;
 /// passed: `vxn-core-dsp` allocates for `MAX_DELAY_S` at construction and both
 /// synths get the same 4 s line. `crate::sync` clamps synced times against it.
 pub(crate) const DELAY_MAX_SECONDS: f32 = vxn_dsp::delay::MAX_DELAY_S;
-
-// Slot index into the fade / on-state arrays. Dynamics runs FIRST in the chain
-// (input compression / drive ahead of the modulation + time effects), matching
-// the faceplate order (Dynamics left of FX) and VXN2's FX bus.
-//
-// **Every other effect is absent**: chorus, phaser, reverb and delay own their
-// bypass internally since 0228-0231, so giving them fade slots here would be the
-// double fade E041 bans. The chain still runs them in position — this index
-// addresses the fade arrays, not the signal path.
-const DYNAMICS: usize = 0;
-const N_SLOTS: usize = 1;
 
 /// Block-rate snapshot of the FX params, fanned into the chain each control
 /// block. Character values map straight to each kernel's setter; the `*_on`
@@ -167,51 +146,21 @@ pub struct FxChain {
     delay: StereoDelay,
     reverb: FdnReverb,
     dynamics: DynamicsBlock,
-    /// Bypass fade per slot (0 = fully bypassed / skipped, 1 = fully wet).
-    fades: [vxn_dsp::smoothing::Smoothed; N_SLOTS],
     /// Meter publish target (0240/0241). `None` until the engine attaches one,
     /// so a bare `FxChain` (unit tests) runs with no metering and no branch cost
     /// beyond this check once per block.
     meters: Option<Arc<MeterBus>>,
-    /// Latched on-state per slot — drives the fade target and the rising-edge
-    /// state-clear.
-    on: [bool; N_SLOTS],
-}
-
-/// One serial FX slot's per-sample runner: skip entirely while bypassed and
-/// settled, otherwise run the kernel and crossfade it against the dry input.
-///
-/// Five byte-identical copies of this before 0319, differing only in the slot
-/// constant and the kernel field. A `dyn`-dispatched slot list would read
-/// better and be a deoptimisation — this is per-sample hot — so the repetition
-/// moves into a macro that expands to exactly the code that was there. E041 has
-/// since taken four of the five inside their kernels; dynamics is the last user,
-/// and 0232 retires the macro with it.
-macro_rules! fx_slot {
-    ($run:ident, $slot:ident, $kernel:ident) => {
-        #[inline]
-        fn $run(&mut self, xl: f32, xr: f32) -> (f32, f32) {
-            if !self.on[$slot] && self.fades[$slot].current() == 0.0 {
-                return (xl, xr);
-            }
-            let (wl, wr) = self.$kernel.process(xl, xr);
-            blend(xl, xr, wl, wr, self.fades[$slot].tick())
-        }
-    };
 }
 
 impl FxChain {
     pub fn new(sample_rate: f32) -> Self {
-        let fade = vxn_dsp::smoothing::Smoothed::new(0.0, FX_FADE_MS, sample_rate);
         Self {
             chorus: StereoChorus::new(sample_rate),
             phaser: StereoPhaser::new(sample_rate),
             delay: StereoDelay::new(sample_rate),
             reverb: FdnReverb::new(sample_rate),
             dynamics: DynamicsBlock::new(sample_rate),
-            fades: [fade; N_SLOTS],
             meters: None,
-            on: [false; N_SLOTS],
         }
     }
 
@@ -231,20 +180,14 @@ impl FxChain {
         self.phaser.reset();
         self.reverb.reset();
         self.delay.reset();
-        self.dynamics.clear();
-        for f in &mut self.fades {
-            f.snap(0.0);
-        }
-        self.on = [false; N_SLOTS];
+        self.dynamics.reset();
     }
 
-    /// Fan a block-rate param snapshot into the kernels and retarget the bypass
-    /// fades. Character params always update (cheap; ready for the moment a slot
-    /// re-activates); the kernels are held internally on, so their own `mix`
-    /// carries the wet amount and this chain's fade owns bypass.
+    /// Fan a block-rate param snapshot into the kernels. Every enable travels
+    /// with its own mix into the kernel that owns it; character params always
+    /// update, which is cheap and leaves each slot ready for the moment it
+    /// re-activates.
     pub fn set_params(&mut self, p: &FxParams) {
-        self.retarget(DYNAMICS, p.dynamics_on);
-
         self.chorus.set_params(&ChorusParams {
             on: p.chorus_on,
             rate_hz: p.chorus_rate,
@@ -281,7 +224,7 @@ impl FxChain {
             mix: p.reverb_mix,
         });
         self.dynamics.set_from(&DynamicsParams {
-            on: true,
+            on: p.dynamics_on,
             threshold_db: p.dynamics_threshold,
             ratio: p.dynamics_ratio,
             attack_ms: p.dynamics_attack,
@@ -330,27 +273,6 @@ impl FxChain {
         }
     }
 
-    /// Latch a slot's on-state, retarget its fade, and clear the kernel on the
-    /// off→on edge so a re-enabled tail-carrying effect starts clean.
-    fn retarget(&mut self, slot: usize, on: bool) {
-        if on && !self.on[slot] {
-            self.clear_slot(slot);
-        }
-        self.on[slot] = on;
-        self.fades[slot].set_target(if on { 1.0 } else { 0.0 });
-    }
-
-    /// Clear one slot's kernel state. `DYNAMICS` is spelled out rather than
-    /// left as the catch-all: as `_ =>` it meant any bogus index silently reset
-    /// the compressor, which is a real state change attributed to the wrong
-    /// slot. An unknown index is now a no-op.
-    fn clear_slot(&mut self, slot: usize) {
-        match slot {
-            DYNAMICS => self.dynamics.clear(),
-            _ => {}
-        }
-    }
-
     /// The chorus slot. Not an [`fx_slot!`]: since 0229 the kernel carries its
     /// own `WetFade`, so bypass is `is_active()` and the equal-power dry/wet
     /// blend is the kernel's own — an outer crossfade would have re-scaled it.
@@ -395,13 +317,17 @@ impl FxChain {
         self.delay.process(xl, xr)
     }
 
-    fx_slot!(run_dynamics, DYNAMICS, dynamics);
-}
-
-/// Linear bypass crossfade: `g = 0` → dry input, `g = 1` → kernel wet output.
-#[inline]
-fn blend(dry_l: f32, dry_r: f32, wet_l: f32, wet_r: f32, g: f32) -> (f32, f32) {
-    (dry_l + g * (wet_l - dry_l), dry_r + g * (wet_r - dry_r))
+    /// The dynamics slot, internal fade since 0232 — the last slot to give up
+    /// its outer one. `DynamicsBlock` has carried a `WetFade` since it moved to
+    /// `vxn-core-dsp` in 0227; this chain was holding it permanently on and
+    /// fading it from outside, which is the double fade E041 bans.
+    #[inline]
+    fn run_dynamics(&mut self, xl: f32, xr: f32) -> (f32, f32) {
+        if !self.dynamics.is_active() {
+            return (xl, xr);
+        }
+        self.dynamics.process(xl, xr)
+    }
 }
 
 #[cfg(test)]
@@ -490,51 +416,15 @@ mod tests {
         assert!(diverged, "dynamics on did not change the signal");
     }
 
-    #[test]
-    fn toggling_off_settles_back_to_bit_exact_skip() {
-        // The outer-fade half of the chain: turn dynamics on, run it, then turn
-        // it off. After the 10 ms `FX_FADE_MS` ramp reaches 0 the slot must be a
-        // bit-exact passthrough again — the true-skip path. (The in-kernel
-        // slots are covered by `assert_internal_fade_slot`, which allows for
-        // their much longer settle.)
-        let mut fx = FxChain::new(SR);
-        let mut p = all_off();
-        p.dynamics_on = true;
-        p.dynamics_drive = 12.0;
-        fx.set_params(&p);
-        for i in 0..4_000 {
-            let (x, y) = sig(i);
-            let mut l = [x];
-            let mut r = [y];
-            fx.process_block(&mut l, &mut r);
-        }
-        // Switch off and let the fade reach exactly 0.
-        p.dynamics_on = false;
-        fx.set_params(&p);
-        for i in 0..(SR * 0.2) as usize {
-            let (x, y) = sig(i);
-            let mut l = [x];
-            let mut r = [y];
-            fx.process_block(&mut l, &mut r);
-        }
-        // Now settled off — assert bit-exact passthrough.
-        for i in 0..1_000 {
-            let (x, y) = sig(i);
-            let mut l = [x];
-            let mut r = [y];
-            fx.process_block(&mut l, &mut r);
-            assert_eq!(l[0].to_bits(), x.to_bits(), "L not skipped after settle i={i}");
-            assert_eq!(r[0].to_bits(), y.to_bits(), "R not skipped after settle i={i}");
-        }
-    }
-
     /// Drive a slot on, then off, and assert the two properties every
     /// internal-`WetFade` slot owes: it settles back to a bit-exact skip, and
     /// its switch-off glides instead of stepping.
     ///
-    /// Shared because 0228 and 0229 both need it and 0230-0232 will too —
-    /// these slots have no outer fade left, so this is the only cover their
-    /// bypass has.
+    /// Shared because 0228-0232 each need it — no slot has an outer fade left,
+    /// so this is the only cover any of their bypasses has. It replaced a
+    /// bespoke `toggling_off_settles_back_to_bit_exact_skip`, which asserted a
+    /// subset of the same thing against whichever slot still had a 10 ms outer
+    /// fade to be the last of.
     fn assert_internal_fade_slot(name: &str, on: fn(&mut FxParams), off: fn(&mut FxParams)) {
         let mut fx = FxChain::new(SR);
         let mut p = all_off();
@@ -636,6 +526,20 @@ mod tests {
                 p.delay_feedback = 0.5;
             },
             |p| p.delay_on = false,
+        );
+    }
+
+    #[test]
+    fn dynamics_slot_bypass_fades_and_settles() {
+        assert_internal_fade_slot(
+            "dynamics",
+            |p| {
+                p.dynamics_on = true;
+                p.dynamics_mix = 1.0;
+                p.dynamics_drive = 24.0;
+                p.dynamics_threshold = -30.0;
+            },
+            |p| p.dynamics_on = false,
         );
     }
 

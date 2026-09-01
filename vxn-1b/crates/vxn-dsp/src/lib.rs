@@ -64,7 +64,7 @@ pub use fdn_reverb::{FdnReverb, FdnReverbParams};
 pub use halfband::{HalfbandFir, Oversampler};
 pub use hpf::PolyHpf;
 pub use lfo::{LfoCore, LfoShape};
-pub use limiter::StereoLimiter;
+pub use limiter::{Bypassable, StereoLimiter};
 pub use math::{fast_exp2, fast_sine, fast_tanh, lookup_sine, xorshift64};
 pub use noise::{NoiseColor, PolyNoise};
 pub use oscillator::Waveform;
