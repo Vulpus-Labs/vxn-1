@@ -265,9 +265,10 @@ impl<const N: usize> Default for RouteList<N> {
 
 impl<const N: usize> RouteList<N> {
     /// Resolve a patch's slots into active routes — **the** entry point, for
-    /// every evaluator in either synth.
+    /// every evaluator in either synth. The resolution itself is
+    /// [`compile_slots`]; this is that plus the fixed-size array it lands in.
     ///
-    /// Three things are settled here and nowhere else:
+    /// Three things are settled there and nowhere else:
     ///
     /// - **The drop predicate.** Switched-off, unwired and zero-depth slots are
     ///   dropped here rather than branched over per lane. Two evaluators that
@@ -277,32 +278,34 @@ impl<const N: usize> RouteList<N> {
     ///   compile step makes that class of bug unrepresentable rather than merely
     ///   tested.
     /// - **The cook.** `cook_depth` runs on the **raw** depth, then the dest
-    ///   gain, folded into one `gain` factor. A synth must not pre-cook.
+    ///   gain, folded into one `gain` factor by
+    ///   [`slot_topology_gain`](crate::eval::slot_topology_gain), which is also
+    ///   what vxn-1b's Amp factoring calls. A synth must not pre-cook.
     /// - **The order.** Slot order is preserved, and the compaction is stable,
     ///   so two paths walking this list accumulate in the same order and round
     ///   identically.
     pub fn compile<S: SourceEndpoint, D: DestEndpoint>(table: &MatrixTable<S, D, N>) -> Self {
+        Self::from_slots(&table.slots)
+    }
+
+    /// [`compile`](RouteList::compile) from a bare slot slice, for a caller
+    /// whose table is not a [`MatrixTable<_, _, N>`](MatrixTable).
+    ///
+    /// Only [`crate::golden`] needs it — a case row list is any length up to the
+    /// roster's slot count, and that is an associated const the harness cannot
+    /// turn into an array length on stable. Panics if more than `N` routes
+    /// survive the drop predicate, which for a `MatrixTable<_, _, N>` cannot
+    /// happen and for anything else is a caller sizing its list wrong.
+    pub fn from_slots<S: SourceEndpoint, D: DestEndpoint>(slots: &[MatrixSlot<S, D>]) -> Self {
         let mut routes = [Route::INERT; N];
         let mut n = 0;
-        for slot in &table.slots {
-            // `is_active` is the switch *and* both endpoints, so a switched-off
-            // route never reaches a lane loop, exactly like an unwired one.
-            if !slot.is_active() || slot.depth == 0.0 {
-                continue;
-            }
-            let (Some(si), Some(di)) = (slot.source.idx(), slot.dest.idx()) else {
-                continue;
-            };
-            routes[n] = Route {
-                src: si as u8,
-                dest: di as u8,
-                polarity: slot.polarity,
-                shape: slot.shape,
-                gain: slot.dest.cook_depth(slot.depth) * slot.dest.gain(),
-                scale: slot.scale_src.idx().map(|sc| sc as u8),
-                scale_bipolar: slot.scale_src.is_bipolar(),
-                scale_shape: slot.scale_shape,
-            };
+        for route in compile_slots(slots) {
+            assert!(
+                n < N,
+                "{} slots compiled to more than the list's {N} routes",
+                slots.len()
+            );
+            routes[n] = route;
             n += 1;
         }
         Self { routes, n }
@@ -325,6 +328,59 @@ impl<const N: usize> RouteList<N> {
     pub fn is_empty(&self) -> bool {
         self.n == 0
     }
+}
+
+/// The compile step itself, over a plain slot slice: **the** statement of the
+/// drop predicate, the cook and the order, for every evaluator in either synth.
+///
+/// [`RouteList::compile`] is this plus an array to land in. It is separate
+/// because the fixed-width list is a storage decision and the resolution is not:
+/// [`crate::golden`]'s harness compiles a `Vec` of arbitrary length from a case
+/// row, and it must reach the *same* predicate rather than a second spelling of
+/// it — which is the failure mode this whole layer exists to close. vxn-1b's two
+/// evaluators once disagreed on exactly this test (at `868faef`, where the
+/// banked path honoured `enabled` and the scalar path did not) and only a parity
+/// test noticed.
+///
+/// Yields in slot order, skipping nothing else: the compaction is **stable**, so
+/// two paths walking the result accumulate in the same order and round
+/// identically.
+#[inline]
+pub fn compile_slots<S: SourceEndpoint, D: DestEndpoint>(
+    slots: &[MatrixSlot<S, D>],
+) -> impl Iterator<Item = Route> + '_ {
+    slots.iter().filter_map(|slot| {
+        // `is_active` is the switch *and* both endpoints, so a switched-off
+        // route never reaches a lane loop, exactly like an unwired one.
+        if !slot.is_active() || slot.depth == 0.0 {
+            return None;
+        }
+        let (Some(si), Some(di)) = (slot.source.idx(), slot.dest.idx()) else {
+            return None;
+        };
+        // The polarity is read only when there *is* a scale source. An unwired
+        // one is the identity, decided on `idx()` alone — and a roster's
+        // lookups are documented to panic out of range, so an endpoint type
+        // that forwards `is_bipolar` straight to its roster (which a
+        // roster-generic one must) would blow up on every unscaled route if
+        // this asked unconditionally. The scalar evaluator has always guarded
+        // it; this did not, and nothing noticed because both synths' generated
+        // enums happen to answer `false` for their sentinel.
+        let scale = slot.scale_src.idx().map(|sc| sc as u8);
+        Some(Route {
+            src: si as u8,
+            dest: di as u8,
+            polarity: slot.polarity,
+            shape: slot.shape,
+            // The one statement of `cook_depth · dest_gain`. vxn-1b's Amp
+            // factoring applies the same product on its own, so it is a named
+            // function rather than an expression spelled twice.
+            gain: crate::eval::slot_topology_gain(slot),
+            scale,
+            scale_bipolar: scale.is_some() && slot.scale_src.is_bipolar(),
+            scale_shape: slot.scale_shape,
+        })
+    })
 }
 
 #[cfg(test)]
@@ -489,6 +545,10 @@ mod tests {
         assert_eq!(list.active()[1].scale, Some(Src::Uni.idx().unwrap() as u8));
         assert!(!list.active()[1].scale_bipolar);
         assert_eq!(list.active()[2].scale, None);
+        // …and it does not carry a polarity read off the sentinel: the column
+        // is unread for an unscaled route, and asking would reach a roster
+        // lookup that is entitled to panic.
+        assert!(!list.active()[2].scale_bipolar);
     }
 
     /// A full table compiles to a full list — the array is exactly the table's

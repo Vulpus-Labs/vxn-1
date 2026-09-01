@@ -226,6 +226,133 @@ pub trait MatrixRoster: Copy {
     fn dest_labels() -> &'static [&'static str];
 }
 
+/// Declare a synth's [`MatrixRoster`] from the enums and tables
+/// [`matrix_enum!`](crate::matrix_enum) already generated for it.
+///
+/// A roster implementation is pure forwarding — every column already exists as
+/// an inherent method on the source or destination enum, and every table
+/// already exists as a generated const. Writing it out is a dozen one-line
+/// methods that say nothing, twice, once per synth; that is the shape of
+/// duplication [E049](../../../../epics/open/E049-shared-matrix-routing.md)
+/// exists to remove, so it is generated too.
+///
+/// ```
+/// use vxn_core_matrix::{matrix_enum, matrix_roster};
+/// use vxn_core_matrix::roster::MatrixRoster;
+///
+/// matrix_enum! {
+///     Src, fallback = None, names = S_NAMES, labels = S_LABELS,
+///     roster_names = RS_NAMES, roster_labels = RS_LABELS, polarity;
+///     sentinel None = 0, "none", "—";
+///     Lfo = 1, "lfo", "LFO", bi, tier = patch_global;
+/// }
+/// matrix_enum! {
+///     Dst, fallback = None, names = D_NAMES, labels = D_LABELS,
+///     roster_names = RD_NAMES, roster_labels = RD_LABELS, roster_gains = RD_GAIN;
+///     sentinel None = 0, "none", "—";
+///     Pitch = 1, "pitch", "Pitch", gain = 12.0, taper = cubic,
+///             tier = per_lane, smooth = quantum_cascade;
+/// }
+/// matrix_roster! {
+///     /// This synth's roster.
+///     Roster, source = Src, dest = Dst, slots = 16,
+///     source_names = RS_NAMES, source_labels = RS_LABELS,
+///     dest_names = RD_NAMES, dest_labels = RD_LABELS,
+/// }
+/// assert_eq!(Roster::N_SOURCES, 1);
+/// assert_eq!(Roster::cook_depth(0, 0.5), 0.125);
+/// ```
+///
+/// # Storage index, not discriminant
+///
+/// Every method takes the **storage** index `0..N`, which is one less than the
+/// wire discriminant because the sentinel is discriminant 0 and does not cross
+/// the seam ([ADR 0003](../../../../adrs/0003-vxn-core-matrix.md) §2). The
+/// generated body therefore reads `ALL[i + 1]`, and an index past the roster
+/// panics on that lookup — which is the trait's stated contract, and the
+/// behaviour a mistyped index in a test wants.
+#[macro_export]
+macro_rules! matrix_roster {
+    (
+        $(#[$meta:meta])*
+        $name:ident, source = $src:ty, dest = $dst:ty, slots = $slots:expr,
+        source_names = $snames:ident, source_labels = $slabels:ident,
+        dest_names = $dnames:ident, dest_labels = $dlabels:ident $(,)?
+    ) => {
+        $(#[$meta])*
+        #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+        pub struct $name;
+
+        impl $crate::roster::MatrixRoster for $name {
+            const N_SOURCES: usize = $snames.len();
+            const N_DESTS: usize = $dnames.len();
+            const N_SLOTS: usize = $slots;
+
+            #[inline]
+            fn source_is_bipolar(src: u8) -> bool {
+                <$src>::ALL[src as usize + 1].is_bipolar()
+            }
+            #[inline]
+            fn dest_gain(dest: u8) -> f32 {
+                <$dst>::ALL[dest as usize + 1].gain()
+            }
+            #[inline]
+            fn cook_depth(dest: u8, depth: f32) -> f32 {
+                <$dst>::ALL[dest as usize + 1].cook_depth(depth)
+            }
+            #[inline]
+            fn dest_tier(dest: u8) -> $crate::roster::Tier {
+                <$dst>::ALL[dest as usize + 1].tier()
+            }
+            #[inline]
+            fn source_tier(src: u8) -> $crate::roster::Tier {
+                <$src>::ALL[src as usize + 1].tier()
+            }
+            #[inline]
+            fn dest_smoothing(dest: u8) -> $crate::roster::Smoothing {
+                <$dst>::ALL[dest as usize + 1].smoothing()
+            }
+            #[inline]
+            fn source_names() -> &'static [&'static str] {
+                &$snames
+            }
+            #[inline]
+            fn dest_names() -> &'static [&'static str] {
+                &$dnames
+            }
+            #[inline]
+            fn source_labels() -> &'static [&'static str] {
+                &$slabels
+            }
+            #[inline]
+            fn dest_labels() -> &'static [&'static str] {
+                &$dlabels
+            }
+        }
+
+        // The sentinel-free tables are one shorter than `ALL`, and the whole
+        // `+ 1` above rests on that. Pinned rather than assumed: a source enum
+        // that lost its sentinel row would otherwise shift every lookup by one
+        // and no test downstream could see it.
+        const _: () = {
+            assert!(
+                <$src>::ALL.len() == $snames.len() + 1,
+                concat!(
+                    stringify!($name),
+                    ": the source enum must be the roster table plus one sentinel row"
+                )
+            );
+            assert!(
+                <$dst>::ALL.len() == $dnames.len() + 1,
+                concat!(
+                    stringify!($name),
+                    ": the dest enum must be the roster table plus one sentinel row"
+                )
+            );
+        };
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

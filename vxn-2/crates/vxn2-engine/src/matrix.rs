@@ -102,10 +102,6 @@
 
 use vxn2_dsp::smoother::one_pole_coeff;
 use vxn2_dsp::stack::STACK_LANES;
-use vxn_core_matrix::curve::{
-    bend_exp, bend_lin, bend_log, clamp_unit, fold_bipolar, fold_unipolar, pol_abs, pol_bipolar,
-    pol_direct, shape_exp, shape_lin, shape_log,
-};
 use vxn_core_matrix::matrix_enum;
 
 use crate::modulation::ModBlock;
@@ -668,6 +664,26 @@ impl vxn_core_matrix::slot::DestEndpoint for DestId {
     }
 }
 
+vxn_core_matrix::matrix_roster! {
+    /// VXN2's roster: the eleven sources, the fifty-one destinations and their
+    /// declared columns, as the shared mechanism reads them (0334).
+    ///
+    /// Pure forwarding to the enums' generated inherent methods. The shared
+    /// evaluator is generic over it, but not because the lane loop reads a
+    /// column — a compiled [`Route`] already carries the folded gain and the
+    /// scale source's polarity. It reads the roster to *size* the accumulators:
+    /// the `const {}` guards in [`vxn_core_matrix::storage`] turn a 51-dest
+    /// roster handed VXN1b's 16-wide buffer into a compile error rather than a
+    /// silently half-used one.
+    ///
+    /// Indices here are **storage** indices, `0..N`, one less than the wire
+    /// discriminant. Anything past the roster panics, which is the trait's
+    /// contract.
+    Vxn2Roster, source = SourceId, dest = DestId, slots = N_SLOTS,
+    source_names = ROSTER_SOURCE_NAMES, source_labels = ROSTER_SOURCE_LABELS,
+    dest_names = ROSTER_DEST_NAMES, dest_labels = ROSTER_DEST_LABELS,
+}
+
 /// One matrix route: two endpoints, a **raw** depth, the two shaping axes, the
 /// player's on/off switch and an optional scale VCA.
 ///
@@ -805,99 +821,40 @@ pub fn eval_sources(
     out[(SourceId::VoiceRand as usize) - 1] = lanes.voice_rand;
 }
 
-/// Walk the block's compiled routes, accumulating `curve(source) · gain · scale`
-/// into `out`. Zeroes `out` before accumulating, so the caller can hand in any
-/// buffer.
+/// Walk the block's compiled routes, accumulating `shaped(source) · (gain ·
+/// scale)` into `out`. Zeroes `out` before accumulating, so the caller can hand
+/// in any buffer.
+///
+/// **The lane loop itself moved to [`vxn_core_matrix::eval::eval_dests_bank`]
+/// in 0334** and is no longer written here; this is the roster-and-widths
+/// binding, and the two synths now run the same arithmetic in the same order by
+/// construction rather than by two copies agreeing. Everything the shape of that
+/// loop rests on — the association, the fifteen hoisted dispatch arms,
+/// `clamp_unit` over `f32::clamp` — is documented where the loop is, and the
+/// warnings there apply to anyone editing it on VXN2's behalf.
+///
+/// What stays VXN2's, and is unchanged: this runs **once per active stack**
+/// while its input is a pure function of the patch, which is why 0333 hoisted
+/// [`RouteList::compile`] to once per block; the four deliberate one-block
+/// dest→source feedback paths around the call; `scatter_stack_pitch` mutating
+/// `out` in place between here and the smoother's target capture; the
+/// cross-stack lane-0 reduction that produces patch-global dests; and the
+/// `TargetFlags` gating that keeps un-targeted paths bit-identical. None of
+/// those crossed the seam.
 ///
 /// Takes a [`RouteList`], not a [`MatrixTable`] (0333). Switched-off, unwired
 /// and zero-depth slots never arrive; nor does the depth taper or the dest-gain
-/// lookup, both already folded into [`Route::gain`]. That matters here because
-/// this function runs **once per active stack** while its input is a pure
-/// function of the patch: up to sixteen repeats of work that belongs once per
-/// block.
+/// lookup, both already folded into [`Route::gain`].
 ///
 /// `scale` is the secondary-source VCA: each route's per-lane contribution is
 /// multiplied by [`scale_norm`] of its scale source's value, read from the same
 /// `[source][lane]` table as the primary source, bent by the route's
 /// `scale_shape`. An unscaled route leaves the per-lane factor at `1.0`.
-///
-/// Curve match happens once per route — the `(polarity, shape)` pair is
-/// dispatched outside the lane loop, so each arm's body is straight-line (no
-/// branch per lane — see the module's inner-loop note). The scale factor is
-/// resolved for the whole lane row *before* the curve dispatch, so the polarity
-/// branch never lands in the hot inner loop either.
 #[inline]
 pub fn eval_dests(routes: &RouteList, sources: &LaneSourceVals, out: &mut LaneDestVals) {
-    for d in out.iter_mut() {
-        d.fill(0.0);
-    }
-    for r in routes.active() {
-        // The per-route VCA, resolved for every lane before the accumulate.
-        // Declared inside the loop: it is a fixed-size stack array either way,
-        // and this keeps the unscaled arm a plain all-ones local rather than a
-        // reset of a carried one. Measured neutral against the hoisted form on
-        // `matrix_eval_full`; kept as the form that reads as what it is.
-        let mut scale = [1.0_f32; STACK_LANES];
-        // Both halves of `scale_norm` — the polarity fold and the bend — are
-        // per-route constants, so they are dispatched *here*, once, and each arm
-        // is a straight-line lane loop. Calling `scale_norm` per lane instead
-        // puts a bool test and a 3-way match in the loop body, which nearly
-        // doubles the whole eval — see the module's inner-loop note.
-        if let Some(sc) = r.scale {
-            let sv = &sources[sc as usize];
-            macro_rules! scale_arm {
-                ($fold:path, $bend:path) => {
-                    for k in 0..STACK_LANES {
-                        scale[k] = $bend(clamp_unit($fold(sv[k])));
-                    }
-                };
-            }
-            match (r.scale_bipolar, r.scale_shape) {
-                (false, Shape::Lin) => scale_arm!(fold_unipolar, bend_lin),
-                (false, Shape::Exp) => scale_arm!(fold_unipolar, bend_exp),
-                (false, Shape::Log) => scale_arm!(fold_unipolar, bend_log),
-                (true, Shape::Lin) => scale_arm!(fold_bipolar, bend_lin),
-                (true, Shape::Exp) => scale_arm!(fold_bipolar, bend_exp),
-                (true, Shape::Log) => scale_arm!(fold_bipolar, bend_log),
-            }
-        }
-        // Polarity × shape is dispatched once per route, so each arm expands to
-        // one straight-line lane loop with both maps inlined — the 3×3 split
-        // costs nothing in the loop body that the old flat enum didn't
-        // (`matrix_eval_full` is unchanged at ~111 ns across the split).
-        //
-        // Both rows are hoisted out of the lane loop: source-major `sv` and
-        // dest-major `acc` are each `[f32; STACK_LANES]` contiguous, which is
-        // what lets the accumulate vectorise (0328).
-        //
-        // `shaped · (gain · scale)` — the association is deliberate. This loop
-        // grouped it `shaped · depth · scale` until 0333; the shared route
-        // carries `cook_depth · dest_gain` as one pre-folded factor, which is
-        // also how VXN1b's evaluators and the shared golden harness group it.
-        // Float multiplication is not associative, so this is a real (last-bit)
-        // change, judged by E049's null test rather than by an unchanged hash.
-        let sv = &sources[r.src as usize];
-        let acc = &mut out[r.dest as usize];
-        let g = r.gain;
-        macro_rules! curve_arm {
-            ($pol:path, $shape:path) => {
-                for k in 0..STACK_LANES {
-                    acc[k] += $shape($pol(sv[k])) * (g * scale[k]);
-                }
-            };
-        }
-        match (r.polarity, r.shape) {
-            (Polarity::Direct, Shape::Lin) => curve_arm!(pol_direct, shape_lin),
-            (Polarity::Direct, Shape::Exp) => curve_arm!(pol_direct, shape_exp),
-            (Polarity::Direct, Shape::Log) => curve_arm!(pol_direct, shape_log),
-            (Polarity::Bipolar, Shape::Lin) => curve_arm!(pol_bipolar, shape_lin),
-            (Polarity::Bipolar, Shape::Exp) => curve_arm!(pol_bipolar, shape_exp),
-            (Polarity::Bipolar, Shape::Log) => curve_arm!(pol_bipolar, shape_log),
-            (Polarity::Abs, Shape::Lin) => curve_arm!(pol_abs, shape_lin),
-            (Polarity::Abs, Shape::Exp) => curve_arm!(pol_abs, shape_exp),
-            (Polarity::Abs, Shape::Log) => curve_arm!(pol_abs, shape_log),
-        }
-    }
+    vxn_core_matrix::eval::eval_dests_bank::<Vxn2Roster, N_SOURCES, N_DESTS, STACK_LANES>(
+        routes.active(), sources, out,
+    )
 }
 
 /// Per-lane × per-pitch-dest one-pole IIR. Reads its targets straight out of

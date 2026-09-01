@@ -25,7 +25,7 @@
 //! be hiding which of the two — the arithmetic or the expectation — was
 //! approximate.
 //!
-//! ## Two paths, and why the runner insists on two
+//! ## Four paths, and why the runner insists on more than one
 //!
 //! [`run_case`] evaluates every case through **every** path
 //! [`eval_paths`] offers and requires them to agree **bit-exactly**. Float
@@ -33,35 +33,40 @@
 //! already vxn-1b's stated contract between its scalar and banked evaluators;
 //! this generalises that guarantee instead of re-deriving it per synth.
 //!
-//! The two paths here are the two spellings this crate documents in
-//! [`curve`](crate::curve): the **dispatchers** ([`shape`], [`scale_norm`]),
-//! which is what a scalar one-value-at-a-time caller uses, and the **free
-//! function arms** (`pol_abs` / `shape_log` / `fold_bipolar` / `bend_exp`, …)
-//! expanded per route with every decision hoisted above the lane loop, which is
-//! what both synths' lane loops use. They differ in loop nesting, in whether
-//! routes are compacted before the loop, and in how the nine polarity × shape
-//! and six fold × bend decisions are dispatched — which is exactly where a
-//! reassociation would hide.
+//! Two of the paths are the harness's own, and are the two spellings this crate
+//! documents in [`curve`](crate::curve): the **dispatchers** ([`shape`],
+//! [`scale_norm`]), which is what a scalar one-value-at-a-time caller uses, and
+//! the **free function arms** (`pol_abs` / `shape_log` / `fold_bipolar` /
+//! `bend_exp`, …) expanded per route with every decision hoisted above the lane
+//! loop. They differ in loop nesting, in whether routes are compacted before the
+//! loop, and in how the nine polarity × shape and six fold × bend decisions are
+//! dispatched — which is exactly where a reassociation would hide.
 //!
-//! [`run_case`] therefore **fails loudly when fewer than
-//! [`MIN_EVAL_PATHS`] paths exist**, rather than reporting "all paths agree"
-//! about a set of one. When
-//! [0334](../../../../tickets/open/0334-share-the-evaluator.md) lands the
-//! shared evaluator it registers here as a further path and the whole table
-//! covers it for free; if a later change ever removes a path, the vacuous
-//! comparison is a failure, not a silent pass.
+//! The other two are [`crate::eval`]'s, registered by
+//! [0334](../../../../tickets/open/0334-share-the-evaluator.md): the scalar
+//! per-voice reference and the banked lane loop, which is to say **the code both
+//! synths ship**. The whole of [`CASES`] covers them without a line of new case
+//! data, and the reassociation sweep covers the grouping the exact-dyadic table
+//! cannot see. Keeping the harness's own pair alongside them is deliberate: the
+//! shipped pair agreeing with itself proves a transposition preserved
+//! arithmetic, while agreeing with a pair written independently of it is the
+//! stronger claim.
+//!
+//! [`run_case`] **fails loudly when fewer than [`MIN_EVAL_PATHS`] paths exist**,
+//! rather than reporting "all paths agree" about a set of one. If a later change
+//! ever removes a path, the vacuous comparison is a failure, not a silent pass.
 //!
 //! ## The synths run the same table
 //!
-//! Two paths that both live in this module would only prove the harness
-//! consistent with itself, and until 0334 lands neither synth's shipped
-//! evaluator is one of them. So each synth bridges: it maps the four synthetic
-//! sources and destinations onto four of its own that have unit gain and no
-//! taper, runs [`CASES`] through its *own* `eval_dests`, and checks the result
-//! against [`expected_totals`]. That is what makes deleting a synth's
-//! mechanism tests a move rather than a loss — `vxn1b_engine::eval` and
-//! `vxn2_engine::matrix` each have one such bridge, and it covers every arm the
-//! deleted tests covered plus the ones they didn't.
+//! Since 0334 each synth's evaluator *is* one of the paths above, so the
+//! coverage is direct. The per-synth bridges predate that and stay: each maps
+//! the four synthetic sources and destinations onto four of its own that have
+//! unit gain and no taper, runs [`CASES`] through its own `eval_dests`, and
+//! checks the result against [`expected_totals`]. What they now assert is the
+//! *binding* rather than the mechanism — that this synth's roster, widths and
+//! endpoint enums reach the shared evaluator intact — which is the half a
+//! roster-generic test cannot see. `vxn1b_engine::eval` and
+//! `vxn2_engine::matrix` each have one.
 //!
 //! ## Adding a case
 //!
@@ -80,7 +85,10 @@ use crate::curve::{
     shape_lin, shape_log,
 };
 use crate::roster::MatrixRoster;
+use crate::slot::{DestEndpoint, MatrixSlot, RouteList, SourceEndpoint};
 use crate::storage::{DestLanes, SourceLanes, assert_source_width, clear_dests};
+
+use core::marker::PhantomData;
 
 use Polarity::{Abs, Bipolar, Direct};
 use Shape::{Exp, Lin, Log};
@@ -255,12 +263,18 @@ pub struct EvalPath<const NS: usize, const ND: usize, const L: usize> {
 
 /// Every evaluator path this crate offers for roster `R`, at these widths.
 ///
-/// Today that is the two spellings [`curve`](crate::curve) documents — the
-/// dispatchers and the hoisted arms — which are the same pair vxn-1b already
-/// contracts to keep bit-exact.
-/// [0334](../../../../tickets/open/0334-share-the-evaluator.md) appends the
-/// shared evaluator here and the whole of [`CASES`] covers it without a line
-/// of new test code.
+/// **Four**, in two pairs. The first two are the harness's own reference
+/// spellings — the [`curve`](crate::curve) dispatchers, and the hoisted free
+/// function arms — written independently of anything that ships, which is what
+/// makes them worth comparing against. The second two are what *does* ship,
+/// registered by 0334: [`crate::eval`]'s scalar and banked forms, the ones both
+/// synths now run. The whole of [`CASES`] covers them without a line of new case
+/// data, and the reassociation sweep covers the grouping the case table cannot
+/// see.
+///
+/// Two pairs rather than one is the point. The shared pair agreeing with itself
+/// would prove only that a transposition preserved arithmetic; agreeing with a
+/// pair nobody wrote with the shipped evaluator in view is the stronger claim.
 pub fn eval_paths<R: MatrixRoster, const NS: usize, const ND: usize, const L: usize>()
 -> Vec<EvalPath<NS, ND, L>> {
     vec![
@@ -272,7 +286,167 @@ pub fn eval_paths<R: MatrixRoster, const NS: usize, const ND: usize, const L: us
             name: "banked/hoisted",
             eval: eval_banked::<R, NS, ND, L>,
         },
+        EvalPath {
+            name: "shared/scalar",
+            eval: eval_shared_scalar::<R, NS, ND, L>,
+        },
+        EvalPath {
+            name: "shared/banked",
+            eval: eval_shared_bank::<R, NS, ND, L>,
+        },
     ]
+}
+
+// ── the shipped evaluator, as two more paths ────────────────────────────────
+
+/// A [`SourceEndpoint`] over a roster's bare storage index, so a case row can be
+/// turned into the [`MatrixSlot`] the shipped evaluator takes.
+///
+/// A synth crosses this seam with its own `SourceId`; a case row has only a
+/// number and [`NONE`], so it needs an endpoint type of its own. Everything
+/// keyed on the source is asked of `R`, which is what keeps this an adapter
+/// rather than a third roster.
+///
+/// `is_bipolar` forwards to `R` **without** guarding the sentinel, deliberately:
+/// a roster's lookups panic out of range by contract
+/// ([`crate::roster::MatrixRoster`]), so this adapter turns "something read an
+/// unwired scale source's polarity" into a loud failure on cases that have one.
+/// [`crate::slot::compile_slots`] did exactly that until 0334 and nothing
+/// noticed, because both synths' generated enums happen to answer `false` for
+/// their own sentinel.
+#[derive(Debug)]
+pub struct RosterSource<R>(u8, PhantomData<R>);
+
+/// A [`DestEndpoint`] over a roster's bare storage index — the destination twin
+/// of [`RosterSource`].
+///
+/// `gain` and `cook_depth` are the identity at the sentinel for the same reason
+/// the synths' generated enums make them so: an unwired slot is dropped before
+/// either is read, and the identity is the answer that cannot mislead if one
+/// ever is.
+#[derive(Debug)]
+pub struct RosterDest<R>(u8, PhantomData<R>);
+
+impl<R> Clone for RosterSource<R> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<R> Copy for RosterSource<R> {}
+impl<R> Clone for RosterDest<R> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<R> Copy for RosterDest<R> {}
+
+impl<R: MatrixRoster> SourceEndpoint for RosterSource<R> {
+    #[inline]
+    fn idx(self) -> Option<usize> {
+        (self.0 != NONE).then_some(self.0 as usize)
+    }
+    #[inline]
+    fn is_bipolar(self) -> bool {
+        R::source_is_bipolar(self.0)
+    }
+}
+
+impl<R: MatrixRoster> DestEndpoint for RosterDest<R> {
+    #[inline]
+    fn idx(self) -> Option<usize> {
+        (self.0 != NONE).then_some(self.0 as usize)
+    }
+    #[inline]
+    fn gain(self) -> f32 {
+        if self.0 == NONE { 1.0 } else { R::dest_gain(self.0) }
+    }
+    #[inline]
+    fn cook_depth(self, depth: f32) -> f32 {
+        if self.0 == NONE {
+            depth
+        } else {
+            R::cook_depth(self.0, depth)
+        }
+    }
+}
+
+/// Width of the [`RouteList`] the banked path compiles a case into.
+///
+/// The path could hand [`crate::eval::eval_dests_bank`] a bare `Vec<Route>` and
+/// skip this, but then the real list type — the one both synths hold, sized and
+/// allocation-free — would be the one thing in the pipeline the case table did
+/// not cover. So the harness names a width instead. `R::N_SLOTS` will not serve:
+/// it is an associated const, and stable Rust does not accept one as an array
+/// length. 16 is both synths' table width, and at least as wide as any roster
+/// the runner admits (`check_and_expand` rejects a case with more routes than
+/// `R::N_SLOTS`), so nothing can compile past it — and
+/// [`RouteList::from_slots`] asserts rather than truncating if something ever
+/// does.
+const SLOT_WIDTH: usize = 16;
+
+/// Case rows as the slots a patch would hold — the input both shipped paths
+/// take, so neither gets a differently-prepared table.
+fn as_slots<R: MatrixRoster>(routes: &[Route]) -> Vec<MatrixSlot<RosterSource<R>, RosterDest<R>>> {
+    routes
+        .iter()
+        .map(|r| {
+            let (polarity, shape) = r.axes();
+            MatrixSlot {
+                source: RosterSource(r.source, PhantomData),
+                dest: RosterDest(r.dest, PhantomData),
+                depth: r.depth,
+                polarity,
+                shape,
+                enabled: r.enabled,
+                scale_src: RosterSource(r.scale_src, PhantomData),
+                scale_shape: r.bend(),
+            }
+        })
+        .collect()
+}
+
+/// Path 3 — the shipped scalar evaluator, [`crate::eval::eval_dests`], run once
+/// per lane.
+///
+/// One lane at a time is what that function is: a per-voice reference walking
+/// raw slots. Running it `L` times and transposing the results back is therefore
+/// also a cross-lane-leakage check on every *other* path — lane `l` of a bank
+/// has to equal a one-voice evaluation on lane `l`'s inputs, and here that is
+/// enforced on every case rather than in a test of its own.
+fn eval_shared_scalar<R: MatrixRoster, const NS: usize, const ND: usize, const L: usize>(
+    routes: &[Route],
+    src: &SourceLanes<NS, L>,
+    out: &mut DestLanes<ND, L>,
+) {
+    let slots = as_slots::<R>(routes);
+    for lane in 0..L {
+        let mut one = [0.0f32; NS];
+        for (s, row) in src.iter().enumerate() {
+            one[s] = row[lane];
+        }
+        let mut totals = [0.0f32; ND];
+        crate::eval::eval_dests::<R, _, _, NS, ND>(&slots, &one, &mut totals);
+        for (d, row) in out.iter_mut().enumerate() {
+            row[lane] = totals[d];
+        }
+    }
+}
+
+/// Path 4 — the shipped banked evaluator,
+/// [`crate::eval::eval_dests_bank`], over routes resolved by the shipped
+/// [`RouteList::from_slots`].
+///
+/// Compiles through the real compile step rather than a harness copy of it, so
+/// the drop predicate and the `cook_depth · dest_gain` fold are under test here
+/// too, not just the lane loop.
+fn eval_shared_bank<R: MatrixRoster, const NS: usize, const ND: usize, const L: usize>(
+    routes: &[Route],
+    src: &SourceLanes<NS, L>,
+    out: &mut DestLanes<ND, L>,
+) {
+    let slots = as_slots::<R>(routes);
+    let compiled = RouteList::<SLOT_WIDTH>::from_slots(&slots);
+    crate::eval::eval_dests_bank::<R, NS, ND, L>(compiled.active(), src, out);
 }
 
 /// Path 1 — one lane at a time, every decision taken inside the loop through
@@ -1055,6 +1229,18 @@ mod tests {
         );
         let names: HashSet<&str> = paths.iter().map(|p| p.name).collect();
         assert_eq!(names.len(), paths.len(), "two paths share a name");
+        // `MIN_EVAL_PATHS` alone would still be satisfied by the harness's own
+        // pair, and then the whole table would prove only that this module is
+        // consistent with itself — the exact failure the count guard exists to
+        // prevent, one level up. Name the shipped paths so dropping one is a
+        // failure here rather than a quiet loss of every case's coverage.
+        for shipped in ["shared/scalar", "shared/banked"] {
+            assert!(
+                names.contains(shipped),
+                "'{shipped}' is not registered: the case table would no longer \
+                 cover the evaluator both synths run"
+            );
+        }
     }
 
     /// Case names are what every failure message leads with, so a duplicate

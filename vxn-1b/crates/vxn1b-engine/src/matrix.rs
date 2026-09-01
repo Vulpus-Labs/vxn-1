@@ -420,6 +420,27 @@ impl vxn_core_matrix::slot::DestEndpoint for DestId {
     }
 }
 
+vxn_core_matrix::matrix_roster! {
+    /// VXN1b's roster: the twelve sources, the sixteen destinations and their
+    /// declared columns, as the shared mechanism reads them (0334).
+    ///
+    /// Pure forwarding to the enums' generated inherent methods — the tiers and
+    /// smoothing classes on their rows, the gains in [`ROSTER_DEST_GAIN`], the
+    /// tapers in [`DestId::cook_depth`]. It exists because the shared evaluator
+    /// is generic over a roster: not to read any of those columns (a compiled
+    /// route already carries everything the lane loop needs) but to size the
+    /// accumulators, via the `const {}` guards in
+    /// [`vxn_core_matrix::storage`] that make a roster handed the wrong-width
+    /// buffer a compile error.
+    ///
+    /// Indices here are **storage** indices, `0..N`, one less than the wire
+    /// discriminant. Anything past the roster panics, which is the trait's
+    /// contract.
+    Vxn1bRoster, source = SourceId, dest = DestId, slots = N_SLOTS,
+    source_names = ROSTER_SOURCE_NAMES, source_labels = ROSTER_SOURCE_LABELS,
+    dest_names = ROSTER_DEST_NAMES, dest_labels = ROSTER_DEST_LABELS,
+}
+
 /// One matrix route. `depth` mirrors the slot's CLAP param (0200, bipolar
 /// `[-1, 1]`) and stays **raw** — the taper is applied at compile time, not
 /// stored; `source`/`dest`/`curve`/`scale_src`/`enabled` are patch topology.

@@ -27,13 +27,8 @@
 //! Everything here is fixed-size and branch-light (curve dispatch is per slot,
 //! not per source) — allocation-free and NEON-friendly.
 
-use vxn_core_matrix::curve::{
-    bend_exp, bend_lin, bend_log, clamp_unit, fold_bipolar, fold_unipolar, pol_abs, pol_bipolar,
-    pol_direct, shape_exp, shape_lin, shape_log,
-};
-
 use crate::matrix::{
-    DestId, MatrixSlot, MatrixTable, N_DESTS, N_SLOTS, N_SOURCES, Polarity, Shape, SourceId,
+    DestId, MatrixTable, N_DESTS, N_SLOTS, N_SOURCES, SourceId, Vxn1bRoster,
 };
 
 /// The shaping arithmetic itself, re-exported from
@@ -185,62 +180,41 @@ pub fn lfo_rate_scale(total: f32) -> f32 {
     total.clamp(-LFO_RATE_OCTAVES, LFO_RATE_OCTAVES).exp2()
 }
 
-/// The **topology half** of a slot's gain: `cook_depth(depth) · gain(dest)`.
-/// Depends only on the patch, so a consumer that resolves routes once per block
-/// can hoist it out of its per-voice loop ([`crate::bank`]'s Amp factoring does).
-/// The same product [`RouteList::compile`] folds into [`Route::gain`], spelled
-/// once so the bank's Amp factoring and the compiled routes cannot drift.
+/// The topology half of a slot's gain, re-exported from
+/// [`vxn_core_matrix::eval`] (0334).
 ///
-/// Asks the destination for its gain rather than indexing [`DEST_GAIN`], which
-/// is equal for every real dest (asserted above) but not for the sentinel: the
-/// generated table is sentinel-free, so `DestId::None.index()`'s fold-to-0 would
-/// read `Pitch`'s 12 and quietly scale an unwired slot 12×. `gain()` answers
-/// 1.0 there, which is the identity a caller that forgot to check `is_active`
-/// would want.
-#[inline]
-pub(crate) fn slot_topology_gain(slot: &MatrixSlot) -> f32 {
-    slot.dest.cook_depth(slot.depth) * slot.dest.gain()
-}
-
-/// The **per-voice half** of a slot's gain: its `scale_src` VCA resolved against
-/// this voice's sources, or `1.0` for an unscaled slot (ADR 0009).
-#[inline]
-pub(crate) fn slot_scale(slot: &MatrixSlot, sources: &SourceVals) -> f32 {
-    match slot.scale_src.idx() {
-        Some(sc) => scale_norm(slot.scale_src.is_bipolar(), sources[sc], slot.scale_shape),
-        None => 1.0,
-    }
-}
-
-/// One slot's full gain — `cook_depth(depth) · DEST_GAIN[dest] · scale_norm`.
-/// The single statement of that product: [`eval_dests`] applies it to every
-/// dest, and [`crate::bank`]'s Amp factoring applies its two halves separately,
-/// so a new taper or scale rule lands in both without being written twice.
-#[inline]
-pub(crate) fn slot_gain(slot: &MatrixSlot, sources: &SourceVals) -> f32 {
-    slot_topology_gain(slot) * slot_scale(slot, sources)
-}
+/// [`slot_topology_gain`] is `cook_depth(depth) · gain(dest)` — the half that
+/// depends only on the patch, so a consumer resolving routes once per block
+/// hoists it out of its per-voice loop. It is the same product
+/// [`RouteList::compile`] folds into [`Route::gain`], and the same one
+/// [`crate::bank`]'s Amp factoring applies on its own; one function so the three
+/// cannot drift. Its companions in the shared crate are `slot_scale` (the
+/// per-voice half — the `scale_src` VCA, ADR 0009) and `slot_gain` (both
+/// folded), which is what [`eval_dests`] multiplies by.
+///
+/// Only the topology half is re-exported: it is what `bank` reaches for, and
+/// `slot_scale` / `slot_gain` are now the shared [`eval_dests`]'s own business
+/// rather than something this module composes. Reach for them at
+/// [`vxn_core_matrix::eval`] if a VXN1b caller ever needs one.
+pub(crate) use vxn_core_matrix::eval::slot_topology_gain;
 
 /// Accumulate every active slot's contribution into a per-dest total for one
-/// voice. Zeroes `out` first. Empty slots (`None` source/dest) and zero-depth
-/// slots are skipped. Curve dispatch is per slot (out of any inner loop);
-/// `scale_src` is resolved from the same [`SourceVals`] table, so it can never
-/// form a cycle.
+/// voice — [`vxn_core_matrix::eval::eval_dests`] bound to this synth's roster
+/// and widths (0334).
+///
+/// Zeroes `out` first. Empty slots (`None` source/dest), switched-off slots and
+/// zero-depth slots are skipped, on the same predicate
+/// [`RouteList::compile`] drops on — which is what keeps this and
+/// [`eval_dests_bank`] bit-exact against each other. Curve dispatch is per slot
+/// (out of any inner loop); `scale_src` is resolved from the same
+/// [`SourceVals`] table, so it can never form a cycle.
 #[inline]
 pub fn eval_dests(table: &MatrixTable, sources: &SourceVals, out: &mut DestVals) {
-    out.fill(0.0);
-    for slot in &table.slots {
-        // `is_active` is the switch *and* both endpoints — the same predicate
-        // `RouteList::compile` drops on, which is what keeps the two evaluators
-        // bit-exact against each other.
-        if !slot.is_active() || slot.depth == 0.0 {
-            continue;
-        }
-        let (Some(si), Some(di)) = (slot.source.idx(), slot.dest.idx()) else {
-            continue;
-        };
-        out[di] += shape(slot.polarity, slot.shape, sources[si]) * slot_gain(slot, sources);
-    }
+    vxn_core_matrix::eval::eval_dests::<Vxn1bRoster, _, _, N_SOURCES, N_DESTS>(
+        &table.slots,
+        sources,
+        out,
+    )
 }
 
 // ── bank-wide evaluation ────────────────────────────────────────────────────
@@ -271,93 +245,34 @@ pub type SourceLanesSoa<const L: usize> = [[f32; L]; N_SOURCES];
 /// Lane-major dest accumulator: `[dest][lane]`.
 pub type DestLanesSoa<const L: usize> = [[f32; L]; N_DESTS];
 
-/// [`eval_dests`] for a whole lane bank at once.
+/// [`eval_dests`] for a whole lane bank at once —
+/// [`vxn_core_matrix::eval::eval_dests_bank`] bound to this synth's roster and
+/// source/dest widths, const-generic over the lane count (0334).
 ///
-/// Identical arithmetic in an identical order — see [`RouteList`] — but
-/// transposed: the outer loop is routes, the inner loop is lanes, and every
-/// branch the scalar form ran per lane (sentinel, off switch, zero depth,
-/// polarity match, shape match, scale-source match, bipolar test, scale bend)
-/// has been hoisted above the inner loop or compiled away. What is left is a
-/// contiguous multiply-accumulate over `L` contiguous floats, which LLVM
-/// contracts to NEON.
+/// **The lane loop moved to the shared crate**; VXN2 runs the same one. Identical
+/// arithmetic to [`eval_dests`] in an identical order, but transposed: the outer
+/// loop is routes, the inner loop is lanes, and every branch the scalar form ran
+/// per lane (sentinel, off switch, zero depth, polarity, shape, scale source,
+/// bipolar test, scale bend) has been hoisted above the inner loop or compiled
+/// away by [`RouteList::compile`]. What is left is a contiguous
+/// multiply-accumulate over `L` contiguous floats, which LLVM contracts to NEON.
+/// The scatter goes too: `out[di] += …` with a runtime `di` serialised on a
+/// store-to-load chain whenever two slots shared a dest, and here a route owns
+/// its dest row for the whole inner loop.
 ///
-/// The scatter goes too. `out[di] += …` with a runtime `di` serialised on a
-/// store-to-load chain whenever two slots shared a dest; here a route owns its
-/// dest row for the whole inner loop.
+/// Everything that shape rests on — the `shaped · (gain · scale)` association,
+/// the fifteen hoisted dispatch arms, `clamp_unit` over `f32::clamp` — is
+/// documented where the loop now lives, and reads as a warning to anyone editing
+/// it on this synth's behalf.
 #[inline]
 pub fn eval_dests_bank<const L: usize>(
     routes: &RouteList,
     src: &SourceLanesSoa<L>,
     out: &mut DestLanesSoa<L>,
 ) {
-    for row in out.iter_mut() {
-        row.fill(0.0);
-    }
-    // The per-route VCA, resolved for every lane before the accumulate. Kept
-    // outside the route loop so it is written, not allocated, per route.
-    let mut scale = [1.0f32; L];
-    for r in routes.active() {
-        match r.scale {
-            None => scale = [1.0; L],
-            Some(sc) => {
-                let s = &src[sc as usize];
-                // Fold and bend are both per-route constants, so both are
-                // dispatched here — six straight-line arms rather than a
-                // `scale_norm` call carrying two branches into the lane loop.
-                // The arms are the shared crate's free functions, which is what
-                // keeps this loop's arithmetic and `scale_norm`'s the same
-                // arithmetic rather than two spellings that agree today.
-                macro_rules! vca {
-                    ($fold:path, $bend:path) => {
-                        for l in 0..L {
-                            scale[l] = $bend(clamp_unit($fold(s[l])));
-                        }
-                    };
-                }
-                match (r.scale_bipolar, r.scale_shape) {
-                    (false, Shape::Lin) => vca!(fold_unipolar, bend_lin),
-                    (false, Shape::Exp) => vca!(fold_unipolar, bend_exp),
-                    (false, Shape::Log) => vca!(fold_unipolar, bend_log),
-                    (true, Shape::Lin) => vca!(fold_bipolar, bend_lin),
-                    (true, Shape::Exp) => vca!(fold_bipolar, bend_exp),
-                    (true, Shape::Log) => vca!(fold_bipolar, bend_log),
-                }
-            }
-        }
-        let s = &src[r.src as usize];
-        let row = &mut out[r.dest as usize];
-        let g = r.gain;
-        // `shape(v) * (gain * scale)` — the association matters. The scalar
-        // form multiplies by `slot_gain`, which is `topology * scale` already
-        // folded, so grouping them the other way would round differently and
-        // cost the bit-exactness the parity test asserts.
-        macro_rules! accumulate {
-            ($shape:expr) => {
-                for l in 0..L {
-                    row[l] += $shape(s[l]) * (g * scale[l]);
-                }
-            };
-        }
-        // Polarity x shape, dispatched once per route. Nine arms, each a
-        // straight-line multiply-accumulate over L contiguous floats, built from
-        // the same shared maps and bends [`shape`] dispatches on.
-        macro_rules! arm {
-            ($pol:path, $bend:path) => {
-                accumulate!(|v: f32| $bend($pol(v)))
-            };
-        }
-        match (r.polarity, r.shape) {
-            (Polarity::Direct, Shape::Lin) => arm!(pol_direct, shape_lin),
-            (Polarity::Direct, Shape::Exp) => arm!(pol_direct, shape_exp),
-            (Polarity::Direct, Shape::Log) => arm!(pol_direct, shape_log),
-            (Polarity::Bipolar, Shape::Lin) => arm!(pol_bipolar, shape_lin),
-            (Polarity::Bipolar, Shape::Exp) => arm!(pol_bipolar, shape_exp),
-            (Polarity::Bipolar, Shape::Log) => arm!(pol_bipolar, shape_log),
-            (Polarity::Abs, Shape::Lin) => arm!(pol_abs, shape_lin),
-            (Polarity::Abs, Shape::Exp) => arm!(pol_abs, shape_exp),
-            (Polarity::Abs, Shape::Log) => arm!(pol_abs, shape_log),
-        }
-    }
+    vxn_core_matrix::eval::eval_dests_bank::<Vxn1bRoster, N_SOURCES, N_DESTS, L>(
+        routes.active(), src, out,
+    )
 }
 
 /// Transpose `L` voices' source tables into the lane-major layout
@@ -408,7 +323,7 @@ pub fn dests_for_lane<const L: usize>(soa: &DestLanesSoa<L>, lane: usize) -> Des
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::matrix::{MatrixSlot, default_patch};
+    use crate::matrix::{MatrixSlot, Polarity, Shape, default_patch};
 
     /// Slot with the default `Direct` polarity — the common case in tests.
     fn slot(source: SourceId, dest: DestId, depth: f32, shape: Shape) -> MatrixSlot {

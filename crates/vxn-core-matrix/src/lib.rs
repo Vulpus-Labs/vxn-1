@@ -107,8 +107,18 @@ pub mod slot;
 /// Lane-major matrix storage sized to a roster — the const-generic scheme, and
 /// the `const {}` guard that makes a roster/storage mismatch a compile error.
 ///
-/// Filled in by ticket 0329; ticket 0334 puts the evaluator on top of it.
+/// Filled in by ticket 0329; ticket 0334 put the evaluator on top of it.
 pub mod storage;
+
+/// The evaluator: [`eval_dests`](eval::eval_dests), the scalar per-voice
+/// reference, and [`eval_dests_bank`](eval::eval_dests_bank), the dest-major
+/// lane loop const-generic over the lane count — plus
+/// [`slot_topology_gain`](eval::slot_topology_gain) and its two companions, the
+/// gain primitives a synth's own fast paths re-apply piecewise.
+///
+/// Filled in by ticket 0334, the last and largest mechanism move: neither synth
+/// carries a lane loop after it.
+pub mod eval;
 
 /// [`TestRoster`](test_roster::TestRoster) — a synthetic roster with all gains
 /// 1.0 and no taper, so a mechanism assertion measures the evaluator's
