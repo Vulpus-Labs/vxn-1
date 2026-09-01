@@ -162,8 +162,9 @@ impl WetFade {
         let w = self.mix.tick();
         // Latch the post-tick state — see the doc comment. A fade that reaches
         // zero on this very sample is already inactive, and this is the last
-        // tick the owner will make before its gate closes.
-        self.was_active = self.is_active();
+        // tick the owner will make before its gate closes. `w` *is* the
+        // post-tick `mix.current()`, so this costs no extra load.
+        self.was_active = self.enabled || w > 0.0;
         (w, action)
     }
 
