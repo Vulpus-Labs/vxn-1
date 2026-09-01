@@ -57,7 +57,7 @@ pub(crate) const DELAY_MAX_SECONDS: f32 = vxn_dsp::delay::MAX_DELAY_S;
 
 /// Block-rate snapshot of the FX params, fanned into the chain each control
 /// block. Character values map straight to each kernel's setter; the `*_on`
-/// bools drive the bypass fades.
+/// bools travel with their slot's mix into the kernel that owns the fade.
 #[derive(Clone, Copy, Debug)]
 pub struct FxParams {
     pub chorus_on: bool,
@@ -379,8 +379,9 @@ mod tests {
     #[test]
     fn all_off_is_bit_exact_passthrough() {
         // The default patch has every effect off: the chain must be a bit-exact
-        // passthrough from the first sample (fades start snapped to 0), so
-        // render-parity vs a no-FX render holds.
+        // passthrough from the first sample (each kernel's `WetFade` snaps to
+        // bypassed on its first `set`), so render-parity vs a no-FX render
+        // holds.
         let mut fx = FxChain::new(SR);
         fx.set_params(&all_off());
         for i in 0..2_000 {

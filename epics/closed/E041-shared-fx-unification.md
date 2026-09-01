@@ -2,7 +2,7 @@
 id: E041
 product: monorepo
 title: "Shared FX unification — one declick idiom, portable kernels across vxn-1 / vxn-1b / vxn-2 (behavioural, flagged re-baselines)"
-status: open
+status: closed
 created: 2026-08-02
 ---
 
@@ -66,7 +66,45 @@ all kernels migrated).
       epic; the claim came from stale doc comments. No mix-law change, no
       mid-mix dip, no compensation curve. See 0230's close-out.)
 - [ ] **0231** — Delay: vxn-2-superset kernel + damping gate; vxn-1/1b adopt.
-- [ ] **0232** — Limiter bypass wrapper + MasterFx/FxChain rewrites.
+- [ ] **0232** — Limiter bypass wrapper + MasterFx/FxChain rewrites. (vxn-1's
+      `MasterFx` was archived before this ran; what shipped is
+      `Bypassable<StereoLimiter>` under both live synths and vxn-1b's chain.)
+
+## Close-out (2026-09-01)
+
+All five tickets closed; the three E040 prerequisites (0225-0227) closed
+earlier. What the epic promised, and what actually happened:
+
+- **Portable kernels.** `vxn-core-dsp` holds `StereoPhaser`, `StereoChorus`,
+  `FdnReverb`, `StereoDelay` and `DynamicsBlock`, plus
+  `Bypassable<StereoLimiter>`; `vxn-dsp` and `vxn2-dsp` are re-export shims.
+  Porting an effect between synths is now its `Params` mapping and nothing else.
+- **One declick idiom.** `BypassXfade` no longer exists as a type anywhere in the
+  repo, and neither engine holds an outer bypass fade: every enable is a
+  `WetFade` inside the kernel, gated by `is_active()` at the call site. The
+  double-fade ban is structural rather than a convention — there is no outer
+  fade left to double with.
+- **vxn-2 unchanged.** Render hash `0x95ac9a59d27aaddd` across the whole epic.
+- **vxn-1b re-baselined once**, in `0f41bca`, for the delay adoption — the only
+  ticket here that changed what the ear gets. Listened in Reaper first.
+
+Two premises did not survive contact, both recorded in their tickets: 0230's
+"largest perceptual change" mix-law framing (vxn-2 had been equal-power for six
+weeks when the epic was written) and 0231's "equal-power → linear mix" plus its
+feedback-cap change (unreachable from the param range). Both came from doc
+comments that had gone stale, which is worth remembering the next time an epic
+is planned by reading them.
+
+Two bugs fell out of consuming `WetFade` properly for the first time, both in
+the same place: the active latch. 0231 found it written pre-tick, so an owner
+that gates on `is_active` and stops ticking never saw the next `RisingClear`;
+0232 found the same failure re-introduced by a block fast path that skipped the
+tick. Both fixed and pinned.
+
+One finding is deferred: [0344](../../tickets/open/0344-smoothed-glide-never-lands.md)
+— a `Smoothed` glide never lands on a target near 1.0, so an effect toggled on
+mid-render sits ~-97 dBFS under its patch mix. The fix re-baselines both synths,
+which this epic's rules forbid, so it is its own ticket.
 
 ## Acceptance
 
