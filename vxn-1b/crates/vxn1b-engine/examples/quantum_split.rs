@@ -182,6 +182,7 @@ fn build(routes: usize, dual: bool, os: f32, fx: f32) -> Engine {
                     shape: r.3,
                     enabled: true,
                     scale_src: r.4,
+                    scale_polarity: Polarity::Direct,
                     scale_shape: Shape::Lin,
                 };
             }

@@ -1,6 +1,6 @@
 //! The **curve-shaping vocabulary**: the two axes a route's response
 //! decomposes into, the flat code preset files still spell them as, and the
-//! scale VCA that folds a secondary source into `[0, 1]`.
+//! scale VCA that maps a secondary source into `[0, 1]`.
 //!
 //! This is the code that prompted [E049](../../../../epics/closed/E049-shared-matrix-routing.md).
 //! Adding the `abs` polarity, the polarity/shape split and the scale-VCA bend
@@ -13,6 +13,15 @@
 //! A slot's shaping is a [`Polarity`] that maps the source's *range*, then a
 //! [`Shape`] that bends the *response* within it. Polarity runs first, so
 //! `Bipolar` + `Exp` squares the AC-coupled value rather than the raw one.
+//!
+//! The **scale VCA has the same two axes** (0341). It used to have only the
+//! bend, because its output has to land in `[0, 1]` and the fold that gets it
+//! there was taken to leave no room for a polarity choice. It does: the
+//! polarity *is* the choice of how to land there, and [`ScaleFold`] enumerates
+//! the four maps the three settings resolve to. `Abs` is the one that costs
+//! real behaviour when missing — `voice-position` scaling a route can only mean
+//! "the voices on one side of the spread" without it, never "the voices at both
+//! edges", which is exactly the case `Abs` was added to the primary axis for.
 //!
 //! ## Two spellings of the same dispatch
 //!
@@ -603,6 +612,60 @@ pub fn fold_bipolar(v: f32) -> f32 {
     (v + 1.0) * 0.5
 }
 
+/// The scale VCA's **resolved** range map: one of four arms, with the slot's
+/// [`Polarity`] and the scale source's own polarity already collapsed together.
+///
+/// Two decisions become one per-slot constant here, which is the whole point.
+/// `Polarity::Direct` is the only setting that consults the source — it means
+/// "land in `[0, 1]` the way this source naturally does" — while `Abs` and
+/// `Bipolar` are range maps in their own right and ignore it. So the lane loop
+/// dispatches on **four** arms, not six, and the arm count grew from 6 to 12
+/// with the bend rather than to 18.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ScaleFold {
+    /// [`fold_unipolar`] — `Direct` on a unipolar source. The default, and the
+    /// identity.
+    #[default]
+    Passthrough,
+    /// [`fold_bipolar`] — `Direct` on a bipolar source: `(v + 1)·0.5`, so the
+    /// source's centre sits the VCA half open.
+    Fold,
+    /// [`pol_abs`] — `Abs`, whichever way the source swings: `|v|`. The gate
+    /// opens at **both** extremes of a bipolar source and shuts at its centre;
+    /// the identity on a unipolar one, exactly as on the primary axis.
+    Rectify,
+    /// [`pol_bipolar`] — `Bipolar`, whichever way the source swings: `2v − 1`,
+    /// which the clamp then floors at 0. The gate stays shut over the source's
+    /// lower half and opens across the upper — a threshold-ish gate. On an
+    /// already-bipolar source only `v ≥ 0.5` opens it at all; blunt, but a
+    /// legitimate setting rather than a case to design around.
+    AcCouple,
+}
+
+impl ScaleFold {
+    /// Collapse a slot's scale [`Polarity`] and its scale source's own polarity
+    /// into the one arm the lane loop dispatches on.
+    ///
+    /// `bipolar` is read **only** under [`Polarity::Direct`]. That is the
+    /// asymmetry worth stating: the other two settings are absolute range maps,
+    /// so a patch that picks one sounds the same whichever source is wired into
+    /// the VCA.
+    #[inline]
+    pub const fn resolve(polarity: Polarity, bipolar: bool) -> Self {
+        match polarity {
+            Polarity::Direct => {
+                if bipolar {
+                    ScaleFold::Fold
+                } else {
+                    ScaleFold::Passthrough
+                }
+            }
+            Polarity::Abs => ScaleFold::Rectify,
+            Polarity::Bipolar => ScaleFold::AcCouple,
+        }
+    }
+}
+
 /// Clamp to the VCA's `[0, 1]`.
 ///
 /// `max`/`min` rather than [`f32::clamp`]: `clamp` carries a `min > max`
@@ -677,34 +740,57 @@ pub fn bend_unit(shape: Shape, v: f32) -> f32 {
     }
 }
 
-/// Normalise a scale source's value to the `[0, 1]` VCA range, then bend it by
-/// `shape`: unipolar sources pass through, bipolar ones map `(v + 1)·0.5`.
+/// The scale VCA's range map, dispatched on a value at a time. The scalar twin
+/// of the arms a lane loop expands.
+#[inline]
+pub fn scale_fold(fold: ScaleFold, v: f32) -> f32 {
+    match fold {
+        ScaleFold::Passthrough => fold_unipolar(v),
+        ScaleFold::Fold => fold_bipolar(v),
+        ScaleFold::Rectify => pol_abs(v),
+        ScaleFold::AcCouple => pol_bipolar(v),
+    }
+}
+
+/// Map a scale source's value into the `[0, 1]` VCA range by `polarity`, clamp
+/// it there, then bend it by `shape` — the scale VCA's own two axes, in order.
 ///
 /// `bipolar` is the scale *source's* own polarity — hence a bare `bool` rather
 /// than a source id, which is the one thing this crate deliberately does not
-/// know about. Each synth reads it off its own `SourceId` at the call site.
+/// know about. Each synth reads it off its own `SourceId` at the call site. It
+/// is consulted only under [`Polarity::Direct`]; see [`ScaleFold::resolve`].
 ///
-/// Clamped **before** the bend, so the bend only ever sees `[0, 1]` and
-/// therefore can't leave it — on a non-negative input `Exp` is `v²` and `Log`
-/// is `√v`, both fixing 0 and 1 and monotonic between. `0 → the route
-/// contributes nothing`, `1 → the route at its full configured depth`,
-/// whichever bend is set.
+/// ## Why the clamp sits between them
 ///
-/// [`Shape::Lin`] is exact identity, so an unbent VCA is bit-identical to one
-/// from before the bend existed.
+/// The VCA has to land in `[0, 1]` whatever the polarity does, and that
+/// requirement is what fixes the order rather than an argument against a
+/// polarity axis existing at all (0341 — an earlier revision of this note read
+/// the requirement as the latter). Clamping **before** the bend means the bend
+/// only ever sees `[0, 1]` and therefore can't leave it: on a non-negative
+/// input `Exp` is `v²` and `Log` is `√v`, both fixing 0 and 1 and monotonic
+/// between. `0 → the route contributes nothing`, `1 → the route at its full
+/// configured depth`, whichever bend is set.
+///
+/// The tempting alternative — map by polarity, then fold whatever comes out —
+/// degenerates: a unipolar source under `Bipolar` would be `2v − 1` folded back
+/// by `(v + 1)·0.5`, an exact round trip to `v`, making the setting a no-op.
+///
+/// [`Polarity::Direct`] with [`Shape::Lin`] is the pre-0341 arithmetic
+/// unchanged — it *is* the fold-and-bend this used to be, so a patch that
+/// predates the polarity axis renders bit-identically.
 ///
 /// A lane loop should **not** call this per lane: both decisions are per-slot
-/// constants, so hoist them and expand the six [`fold_unipolar`] ×
-/// [`bend_lin`] arms instead. Doing that cut vxn-2's fully-scaled 16-slot eval
-/// by ~47%.
+/// constants, so hoist them into a [`ScaleFold`] and expand the arms instead.
+/// Doing that cut vxn-2's fully-scaled 16-slot eval by ~47%. Dispatch the range
+/// map and the bend **separately** — six expanded loops rather than the twelve
+/// a fused `(fold, bend)` match costs; [`crate::eval::eval_dests_bank`] carries
+/// the measurement.
 #[inline]
-pub fn scale_norm(bipolar: bool, v: f32, shape: Shape) -> f32 {
-    let n = clamp_unit(if bipolar {
-        fold_bipolar(v)
-    } else {
-        fold_unipolar(v)
-    });
-    bend_unit(shape, n)
+pub fn scale_norm(bipolar: bool, v: f32, polarity: Polarity, shape: Shape) -> f32 {
+    bend_unit(
+        shape,
+        clamp_unit(scale_fold(ScaleFold::resolve(polarity, bipolar), v)),
+    )
 }
 
 #[cfg(test)]
@@ -806,26 +892,133 @@ mod tests {
         assert_eq!(shape_log(-1.0), -1.0);
     }
 
+    /// `Direct` is the pre-0341 arithmetic, unchanged. Every assertion here
+    /// predates the polarity axis and none of its numbers moved — which is the
+    /// bit-identical-patch claim at its smallest scale.
     #[test]
-    fn scale_norm_folds_clamps_then_bends() {
+    fn scale_norm_direct_folds_clamps_then_bends() {
+        use Polarity::Direct;
         // Unipolar passes through.
-        assert_eq!(scale_norm(false, 0.3, Shape::Lin), 0.3);
-        assert_eq!(scale_norm(false, 1.0, Shape::Lin), 1.0);
+        assert_eq!(scale_norm(false, 0.3, Direct, Shape::Lin), 0.3);
+        assert_eq!(scale_norm(false, 1.0, Direct, Shape::Lin), 1.0);
         // Bipolar folds: centre → half, extremes → the gate's ends.
-        assert_eq!(scale_norm(true, 0.0, Shape::Lin), 0.5);
-        assert_eq!(scale_norm(true, 1.0, Shape::Lin), 1.0);
-        assert_eq!(scale_norm(true, -1.0, Shape::Lin), 0.0);
+        assert_eq!(scale_norm(true, 0.0, Direct, Shape::Lin), 0.5);
+        assert_eq!(scale_norm(true, 1.0, Direct, Shape::Lin), 1.0);
+        assert_eq!(scale_norm(true, -1.0, Direct, Shape::Lin), 0.0);
         // Out-of-range input is clamped, not wrapped.
-        assert_eq!(scale_norm(false, 1.7, Shape::Lin), 1.0);
-        assert_eq!(scale_norm(false, -0.4, Shape::Lin), 0.0);
+        assert_eq!(scale_norm(false, 1.7, Direct, Shape::Lin), 1.0);
+        assert_eq!(scale_norm(false, -0.4, Direct, Shape::Lin), 0.0);
         // Every bend fixes 0 and 1 and stays inside them.
         for shape in Shape::ALL {
-            assert_eq!(scale_norm(false, 0.0, shape), 0.0);
-            assert_eq!(scale_norm(false, 1.0, shape), 1.0);
+            assert_eq!(scale_norm(false, 0.0, Direct, shape), 0.0);
+            assert_eq!(scale_norm(false, 1.0, Direct, shape), 1.0);
             for v in [-2.0f32, -0.1, 0.0, 0.3, 0.9, 1.0, 3.0] {
-                let n = scale_norm(false, v, shape);
+                let n = scale_norm(false, v, Direct, shape);
                 assert!((0.0..=1.0).contains(&n), "{shape:?}/{v} → {n}");
             }
+        }
+    }
+
+    /// `Abs` is the setting the axis was added for: the gate opens at **both**
+    /// extremes of a bipolar source — "the voices at both edges of the spread" —
+    /// and is the identity on a unipolar one, exactly as on the primary axis.
+    #[test]
+    fn scale_norm_abs_opens_at_both_extremes() {
+        use Polarity::Abs;
+        assert_eq!(scale_norm(true, -1.0, Abs, Shape::Lin), 1.0);
+        assert_eq!(scale_norm(true, 1.0, Abs, Shape::Lin), 1.0);
+        assert_eq!(scale_norm(true, 0.0, Abs, Shape::Lin), 0.0);
+        assert_eq!(scale_norm(true, -0.5, Abs, Shape::Lin), 0.5);
+        // Identity on a unipolar source — nothing to rectify.
+        for v in [0.0f32, 0.25, 0.6, 1.0] {
+            assert_eq!(scale_norm(false, v, Abs, Shape::Lin), v);
+        }
+        // The source's own polarity is not consulted at all here.
+        for v in [-2.0f32, -0.3, 0.0, 0.4, 1.0, 3.0] {
+            assert_eq!(
+                scale_norm(true, v, Abs, Shape::Lin),
+                scale_norm(false, v, Abs, Shape::Lin)
+            );
+        }
+    }
+
+    /// `Bipolar` is the threshold-ish gate: shut over the source's lower half,
+    /// opening across its upper. On an already-bipolar source the clamp does
+    /// most of the work — only `v ≥ 0.5` opens it at all.
+    #[test]
+    fn scale_norm_bipolar_gates_on_the_upper_half() {
+        use Polarity::Bipolar;
+        assert_eq!(scale_norm(false, 0.0, Bipolar, Shape::Lin), 0.0);
+        assert_eq!(scale_norm(false, 0.5, Bipolar, Shape::Lin), 0.0);
+        assert_eq!(scale_norm(false, 0.75, Bipolar, Shape::Lin), 0.5);
+        assert_eq!(scale_norm(false, 1.0, Bipolar, Shape::Lin), 1.0);
+        // Everything at or below the halfway point is floored by the clamp.
+        for v in [-1.0f32, -0.2, 0.0, 0.3, 0.49] {
+            assert_eq!(scale_norm(false, v, Bipolar, Shape::Lin), 0.0);
+        }
+    }
+
+    /// Whatever the polarity, the VCA lands in `[0, 1]` — the invariant the
+    /// clamp-then-bend order exists to hold. A NaN source shuts the gate rather
+    /// than poisoning the dest accumulator (see [`clamp_unit`]).
+    #[test]
+    fn scale_norm_lands_in_unit_range_for_every_combination() {
+        for polarity in Polarity::ALL {
+            for shape in Shape::ALL {
+                for bipolar in [false, true] {
+                    for v in [-3.0f32, -1.0, -0.4, 0.0, 0.3, 0.5, 1.0, 4.0] {
+                        let n = scale_norm(bipolar, v, polarity, shape);
+                        assert!(
+                            (0.0..=1.0).contains(&n),
+                            "{polarity:?}/{shape:?}/bipolar={bipolar}/{v} → {n}"
+                        );
+                    }
+                    assert_eq!(scale_norm(bipolar, f32::NAN, polarity, shape), 0.0);
+                }
+            }
+        }
+    }
+
+    /// [`ScaleFold::resolve`] collapses two decisions into four arms, and
+    /// [`scale_fold`] must be exactly the free functions those arms are — the
+    /// same equality [`dispatchers_agree_with_the_arms_bitwise`] asserts for the
+    /// primary axis, and for the same reason.
+    #[test]
+    fn scale_fold_resolves_to_four_arms_bitwise() {
+        assert_eq!(
+            ScaleFold::resolve(Polarity::Direct, false),
+            ScaleFold::Passthrough
+        );
+        assert_eq!(ScaleFold::resolve(Polarity::Direct, true), ScaleFold::Fold);
+        // `Abs` and `Bipolar` ignore the source's own polarity — this is what
+        // keeps the lane loop's range-map dispatch at four arms, not six.
+        for bipolar in [false, true] {
+            assert_eq!(
+                ScaleFold::resolve(Polarity::Abs, bipolar),
+                ScaleFold::Rectify
+            );
+            assert_eq!(
+                ScaleFold::resolve(Polarity::Bipolar, bipolar),
+                ScaleFold::AcCouple
+            );
+        }
+        for v in [-2.0f32, -1.0, -0.25, 0.0, 0.25, 1.0, 3.0] {
+            assert_eq!(
+                scale_fold(ScaleFold::Passthrough, v).to_bits(),
+                fold_unipolar(v).to_bits()
+            );
+            assert_eq!(
+                scale_fold(ScaleFold::Fold, v).to_bits(),
+                fold_bipolar(v).to_bits()
+            );
+            assert_eq!(
+                scale_fold(ScaleFold::Rectify, v).to_bits(),
+                pol_abs(v).to_bits()
+            );
+            assert_eq!(
+                scale_fold(ScaleFold::AcCouple, v).to_bits(),
+                pol_bipolar(v).to_bits()
+            );
         }
     }
 

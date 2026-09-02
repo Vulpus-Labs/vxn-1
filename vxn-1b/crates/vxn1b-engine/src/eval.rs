@@ -345,6 +345,7 @@ mod tests {
             shape,
             enabled: true,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
         }
     }
@@ -395,6 +396,7 @@ mod tests {
                     // dropped identically by both evaluators.
                     enabled: ((pick >> 48) % 3) != 0,
                     scale_src: SourceId::from_u8(((pick >> 40) % (N_SOURCES as u64 + 1)) as u8),
+                    scale_polarity: Polarity::Direct,
                     scale_shape: [Shape::Lin, Shape::Exp, Shape::Log]
                         [((pick >> 52) % 3) as usize],
                 };
@@ -495,6 +497,8 @@ mod tests {
             let mut t = MatrixTable::default();
             for (i, r) in case.routes.iter().enumerate() {
                 let (polarity, shape) = vxn_core_matrix::curve::curve_split(r.curve);
+                let (scale_polarity, scale_shape) =
+                    vxn_core_matrix::curve::curve_split(r.scale_curve);
                 t.slots[i] = MatrixSlot {
                     source: endpoint(r.source, &GOLDEN_SOURCES),
                     dest: if r.dest == NONE {
@@ -507,7 +511,8 @@ mod tests {
                     shape,
                     enabled: r.enabled,
                     scale_src: endpoint(r.scale_src, &GOLDEN_SOURCES),
-                    scale_shape: Shape::from_u8(r.scale_bend),
+                    scale_polarity,
+                    scale_shape,
                 };
             }
             let mut sources = [0.0f32; N_SOURCES];

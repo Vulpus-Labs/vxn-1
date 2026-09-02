@@ -409,7 +409,7 @@ impl SharedParams {
                     // right one for any table where the two differ.
                     slot.is_active(),
                     slot.scale_src as u8,
-                    slot.scale_shape as u8,
+                    crate::matrix::curve_code(slot.scale_polarity, slot.scale_shape),
                 ))
             }),
             matrix_extra_depth: std::array::from_fn(|s| {
@@ -515,7 +515,7 @@ impl SharedParams {
                 crate::matrix::curve_code(slot.polarity, slot.shape),
                 slot.is_active(),
                 slot.scale_src as u8,
-                slot.scale_shape as u8,
+                crate::matrix::curve_code(slot.scale_polarity, slot.scale_shape),
             );
             self.matrix_meta[s].store(packed, Ordering::Relaxed);
         }
@@ -675,7 +675,7 @@ impl SharedParams {
             active: (packed & 0x01) != 0,
             depth,
             scale_src: ((packed >> 1) & 0x7F) as u8,
-            scale_shape: ((packed >> 12) & 0x0F) as u8,
+            scale_curve: ((packed >> 12) & 0x0F) as u8,
         }
     }
 
@@ -697,7 +697,7 @@ impl SharedParams {
             row.curve,
             row.active,
             row.scale_src,
-            row.scale_shape,
+            row.scale_curve,
         );
         self.matrix_meta[slot].store(packed, Ordering::Relaxed);
         if slot < N_MATRIX_CLAP_SLOTS {
@@ -724,20 +724,29 @@ pub struct MatrixRowRaw {
     /// free low-byte bits of the packed `matrix_meta` word (see
     /// [`pack_matrix_meta`]).
     pub scale_src: u8,
-    /// Response bend applied to the normalised scale value
-    /// ([`vxn2_engine::matrix::Shape`] as `u8`). Rides the curve byte's
+    /// The scale VCA's own flat `(polarity, shape)` code
+    /// ([`vxn2_engine::matrix::curve_code`], 0..=8). Rides the curve byte's
     /// high nibble, which was always zero before the field existed — so a
-    /// pre-E0xx blob decodes as `Lin`, an exact no-op.
-    pub scale_shape: u8,
+    /// pre-E0xx blob decodes as `direct`/`lin`, an exact no-op.
+    ///
+    /// The nibble held only a [`vxn2_engine::matrix::Shape`] until 0341, when
+    /// the VCA gained the polarity axis. It did not have to grow:
+    /// `curve_code(Direct, shape) == shape as u8`, so every value an existing
+    /// blob can hold still decodes to exactly the VCA it always meant, and
+    /// 3..=8 are simply values no old blob ever wrote.
+    pub scale_curve: u8,
 }
 
 /// Pack a matrix row's topology into one `u32`:
-/// `source<<24 | dest<<16 | scale_shape<<12 | curve<<8 | scale_src<<1 | active`.
+/// `source<<24 | dest<<16 | scale_curve<<12 | curve<<8 | scale_src<<1 | active`.
 ///
-/// The curve byte is split into nibbles: the low one holds the flat
-/// `(polarity, shape)` code (0..=8, see [`vxn2_engine::matrix::curve_code`]),
-/// the high one the scale shape. Both were zero in every pre-split blob, so
-/// old state decodes to its original meaning.
+/// The curve byte is split into nibbles, and both halves hold the *same* flat
+/// `(polarity, shape)` code (0..=8, see [`vxn2_engine::matrix::curve_code`]):
+/// the low one for the route, the high one for the scale VCA. Both were zero in
+/// every pre-split blob, so old state decodes to its original meaning — and the
+/// high nibble was already four bits wide when the VCA held only a shape, which
+/// is why giving it the full nine-value code at 0341 changed neither the word's
+/// size nor any field offset.
 ///
 /// `active` is bit 0; the scale source (≤ 11) rides bits 1..=7 of the low byte.
 /// A blob with those bits clear decodes to `scale_src = None`.
@@ -748,12 +757,12 @@ pub(crate) fn pack_matrix_meta(
     curve: u8,
     active: bool,
     scale_src: u8,
-    scale_shape: u8,
+    scale_curve: u8,
 ) -> u32 {
     ((source as u32) << 24)
         | ((dest as u32) << 16)
         | (((curve & 0x0F) as u32) << 8)
-        | (((scale_shape & 0x0F) as u32) << 12)
+        | (((scale_curve & 0x0F) as u32) << 12)
         | (((scale_src & 0x7F) as u32) << 1)
         | (active as u32)
 }
@@ -994,7 +1003,7 @@ impl vxn2_app::Vxn2Params for SharedParams {
             active: raw.active,
             depth: raw.depth,
             scale_src: raw.scale_src,
-            scale_shape: raw.scale_shape,
+            scale_curve: raw.scale_curve,
         }
     }
 
@@ -1008,7 +1017,7 @@ impl vxn2_app::Vxn2Params for SharedParams {
                 active: row.active,
                 depth: row.depth,
                 scale_src: row.scale_src,
-                scale_shape: row.scale_shape,
+                scale_curve: row.scale_curve,
             },
         );
     }
@@ -1651,7 +1660,7 @@ mod tests {
                 active: true,
                 depth: 0.5,
                 scale_src: 5, // mod-wheel
-                scale_shape: 0,
+                scale_curve: 0,
             },
         );
         let bytes = src.snapshot_bytes();
@@ -1678,7 +1687,7 @@ mod tests {
                 active: true,
                 depth: 0.3,
                 scale_src: 7, // stripped below to simulate the bits-clear case
-                scale_shape: 0,
+                scale_curve: 0,
             },
         );
         let mut bytes = src.snapshot_bytes();
@@ -1692,6 +1701,62 @@ mod tests {
         assert_eq!(row.scale_src, 0, "bits clear → unscaled");
         assert!(row.active, "active bit preserved");
         assert_eq!(row.source, 1);
+    }
+
+    /// The scale nibble held a bare [`Shape`] until 0341 and now holds the flat
+    /// nine-value curve code. Values 0..=2 must decode to exactly the VCAs they
+    /// always meant — `curve_code(Direct, shape) == shape as u8`, so an existing
+    /// blob's scaling is unchanged rather than merely close.
+    ///
+    /// The word is packed here by hand from the *pre*-0341 spelling (`shape as
+    /// u8` into the same nibble) rather than by asking today's packer, so the
+    /// test would still fail if the two ever disagreed.
+    #[test]
+    fn pre_0341_scale_nibble_decodes_to_the_same_vca() {
+        use crate::matrix::{Polarity, Shape};
+        for shape in [Shape::Lin, Shape::Exp, Shape::Log] {
+            let legacy_nibble = shape as u8; // what a pre-0341 blob wrote
+            let src = SharedParams::new();
+            src.set_matrix_row_raw(
+                3,
+                MatrixRowRaw {
+                    source: 2,
+                    dest: 17,
+                    curve: 0,
+                    active: true,
+                    depth: 0.25,
+                    scale_src: 5,
+                    scale_curve: legacy_nibble,
+                },
+            );
+            let bytes = src.snapshot_bytes();
+            let dst = SharedParams::new();
+            dst.load_bytes(&bytes).unwrap();
+            let row = dst.matrix_row_raw(3);
+            assert_eq!(row.scale_curve, legacy_nibble);
+            assert_eq!(
+                crate::matrix::curve_split(row.scale_curve),
+                (Polarity::Direct, shape),
+                "legacy scale nibble {legacy_nibble} changed meaning"
+            );
+        }
+    }
+
+    /// The word is still one `u32` and every field is still where it was: the
+    /// scale nibble did not have to grow to hold nine values, so 0341 moved no
+    /// offset and lengthened no blob.
+    #[test]
+    fn the_packed_matrix_word_keeps_its_field_offsets() {
+        let packed = pack_matrix_meta(0xAB, 0xCD, 0x0E, true, 0x5A, 0x08);
+        assert_eq!(packed >> 24, 0xAB, "source at 24..32");
+        assert_eq!((packed >> 16) & 0xFF, 0xCD, "dest at 16..24");
+        assert_eq!((packed >> 12) & 0x0F, 0x08, "scale curve at 12..16");
+        assert_eq!((packed >> 8) & 0x0F, 0x0E, "curve at 8..12");
+        assert_eq!((packed >> 1) & 0x7F, 0x5A, "scale source at 1..8");
+        assert_eq!(packed & 1, 1, "active at bit 0");
+        // Nine curve codes, four bits: the widest value the field can now carry
+        // still fits with room to spare.
+        assert!((crate::matrix::N_CURVES as u32) <= 0x10);
     }
 
     #[test]
@@ -1785,7 +1850,7 @@ mod tests {
                 active: true,
                 depth: 0.42,
                 scale_src: 0,
-                scale_shape: 0,
+                scale_curve: 0,
             },
         );
         src.set_matrix_row_raw(
@@ -1797,7 +1862,7 @@ mod tests {
                 active: true,
                 depth: -0.6,
                 scale_src: 0,
-                scale_shape: 0,
+                scale_curve: 0,
             },
         );
 
@@ -1965,7 +2030,7 @@ mod tests {
                 active: true,
                 depth: 0.5,
                 scale_src: 0,
-                scale_shape: 0,
+                scale_curve: 0,
             },
         );
         let bytes = src.snapshot_bytes();
@@ -2072,7 +2137,7 @@ mod tests {
                 active: true,
                 depth: 0.3,
                 scale_src: 0,
-                scale_shape: 0,
+                scale_curve: 0,
             },
         );
         // Slot 9 lives past N_MATRIX_CLAP_SLOTS; depth doesn't touch a
@@ -2098,7 +2163,7 @@ mod tests {
                 active: true,
                 depth: 0.5,
                 scale_src: 0,
-                scale_shape: 0,
+                scale_curve: 0,
             },
         );
         assert_eq!(s.take_dirty_matrix(), 1u64 << 0);
@@ -2140,7 +2205,7 @@ mod tests {
                 active: true,
                 depth: 0.42,
                 scale_src: 0,
-                scale_shape: 0,
+                scale_curve: 0,
             },
         );
         let bytes = src.snapshot_bytes();

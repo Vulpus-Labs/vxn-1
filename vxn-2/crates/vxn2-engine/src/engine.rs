@@ -50,7 +50,7 @@ use crate::default_patch;
 use crate::master::MasterState;
 use crate::matrix::{
     DestId, LaneDestVals, LaneSourceVals, LaneSources, MatrixSlot, MatrixTable, N_CLAP_DEPTH_SLOTS,
-    N_DESTS, N_PITCH_DESTS, N_SLOTS, N_SOURCES, PatchSources, PitchSmoother, RouteList, Shape,
+    N_DESTS, N_PITCH_DESTS, N_SLOTS, N_SOURCES, PatchSources, PitchSmoother, RouteList,
     pitch_smoother, pitch_targets,
     SourceId, StackScalarSources, curve_split, eval_dests, eval_sources,
 };
@@ -877,7 +877,9 @@ impl Engine {
             };
             let dest = DestId::from_u8(row.dest);
             // One flat wire byte, two model axes (see `matrix::curve_split`).
+            // The scale VCA carries its own pair in exactly the same encoding.
             let (polarity, shape) = curve_split(row.curve);
+            let (scale_polarity, scale_shape) = curve_split(row.scale_curve);
             self.matrix.slots[s] = MatrixSlot {
                 // The row's source verbatim, and the switch as a switch. This
                 // used to fold `!active` into `SourceId::None` so the evaluator
@@ -897,7 +899,8 @@ impl Engine {
                 // an inactive route is dropped whole at compile time, so the
                 // field is simply preserved rather than needing to be inert.
                 scale_src: SourceId::from_u8(row.scale_src),
-                scale_shape: Shape::from_u8(row.scale_shape),
+                scale_polarity,
+                scale_shape,
             };
         }
         // Apply the live assign mode before the block's note events so a
@@ -2702,6 +2705,7 @@ mod tests {
             polarity: Polarity::Direct,
         shape: Shape::Lin,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -2911,6 +2915,7 @@ mod tests {
             polarity: Polarity::Direct,
         shape: Shape::Lin,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -2976,6 +2981,7 @@ mod tests {
             polarity: Polarity::Direct,
         shape: Shape::Lin,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -3037,6 +3043,7 @@ mod tests {
             polarity: Polarity::Direct,
         shape: Shape::Lin,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -3098,6 +3105,7 @@ mod tests {
                     polarity: Polarity::Direct,
         shape: Shape::Lin,
                     scale_src: SourceId::None,
+                    scale_polarity: Polarity::Direct,
                     scale_shape: Shape::Lin,
                     enabled: true,
                 };
@@ -3137,6 +3145,7 @@ mod tests {
             polarity: Polarity::Direct,
         shape: Shape::Lin,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -3147,6 +3156,7 @@ mod tests {
             polarity: Polarity::Direct,
         shape: Shape::Lin,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -3253,6 +3263,7 @@ mod tests {
                     polarity: Polarity::Direct,
         shape: Shape::Lin,
                     scale_src: SourceId::None,
+                    scale_polarity: Polarity::Direct,
                     scale_shape: Shape::Lin,
                     enabled: true,
                 };
@@ -3367,6 +3378,7 @@ mod tests {
             polarity: Polarity::Direct,
         shape: Shape::Lin,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -3421,6 +3433,7 @@ mod tests {
             polarity: Polarity::Direct,
         shape: Shape::Lin,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -3464,6 +3477,7 @@ mod tests {
             polarity: Polarity::Direct,
         shape: Shape::Lin,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -3790,6 +3804,7 @@ mod tests {
             polarity: Polarity::Direct,
         shape: Shape::Lin,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -3839,6 +3854,7 @@ mod tests {
             polarity: Polarity::Direct,
         shape: Shape::Lin,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -3849,6 +3865,7 @@ mod tests {
             polarity: Polarity::Direct,
         shape: Shape::Lin,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -3862,6 +3879,7 @@ mod tests {
             polarity: Polarity::Direct,
         shape: Shape::Lin,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -3910,6 +3928,7 @@ mod tests {
             polarity: Polarity::Direct,
         shape: Shape::Lin,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -3943,6 +3962,7 @@ mod tests {
             polarity: Polarity::Direct,
         shape: Shape::Lin,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -3981,6 +4001,7 @@ mod tests {
             polarity: Polarity::Direct,
         shape: Shape::Lin,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -4024,6 +4045,7 @@ mod tests {
             polarity: Polarity::Direct,
         shape: Shape::Lin,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -4083,7 +4105,7 @@ mod tests {
                 active: true,
                 depth: 0.5,
                 scale_src: 0,
-                scale_shape: Shape::Lin as u8,
+                scale_curve: 0,
             },
         );
 
@@ -4266,6 +4288,37 @@ mod tests {
     /// wrong. `RouteList::compile` cooks; a rebuild that cooked as well would
     /// cube an already-cubed depth (0.5 → 0.125 → ~0.00195) and lose ~64× of a
     /// pitch route without failing anything that only looks at a slot.
+    /// The scale nibble is the VCA's whole curve, not just its bend (0341): a
+    /// row carrying `curve_code(Abs, Log)` must reach the slot as **both** axes.
+    ///
+    /// The wire's own end of the same claim — that a row can express a
+    /// non-`Direct` scale polarity at all, so 0340 has something to drive.
+    /// Reading only the low two bits here, as a shape-shaped decode would,
+    /// silently pins every patch to `Direct` while still passing every test
+    /// that never leaves it.
+    #[test]
+    fn a_wire_row_carries_the_scale_vcas_polarity_to_the_slot() {
+        use crate::matrix::{DestId, Polarity, Shape, SourceId, curve_code};
+        use crate::shared::MatrixRowRaw;
+
+        let mut e = Engine::new(SR, BLK);
+        e.params.matrix_rows[0] = MatrixRowRaw {
+            source: SourceId::Lfo1 as u8,
+            dest: DestId::Op1Level as u8,
+            curve: 0,
+            active: true,
+            depth: 0.5,
+            scale_src: SourceId::VoiceSpread as u8,
+            scale_curve: curve_code(Polarity::Abs, Shape::Log),
+        };
+        e.apply_block_params();
+        assert_eq!(e.matrix.slots[0].scale_polarity, Polarity::Abs);
+        assert_eq!(e.matrix.slots[0].scale_shape, Shape::Log);
+        // The route's own axes are a separate nibble and stay untouched.
+        assert_eq!(e.matrix.slots[0].polarity, Polarity::Direct);
+        assert_eq!(e.matrix.slots[0].shape, Shape::Lin);
+    }
+
     #[test]
     fn apply_block_params_keeps_depth_raw_and_the_route_carries_the_taper() {
         use crate::matrix::{DestId, RouteList, SourceId};
@@ -4280,7 +4333,7 @@ mod tests {
             active: true,
             depth: 0.0,
             scale_src: 0,
-            scale_shape: Shape::Lin as u8,
+            scale_curve: 0,
         };
         e.params.mtx_depths[0] = 0.5;
         // Non-pitch dest at the same depth: passthrough.
@@ -4291,7 +4344,7 @@ mod tests {
             active: true,
             depth: 0.0,
             scale_src: 0,
-            scale_shape: Shape::Lin as u8,
+            scale_curve: 0,
         };
         e.params.mtx_depths[1] = 0.5;
         // Non-CLAP slot: depth rides in the row.
@@ -4303,7 +4356,7 @@ mod tests {
             active: true,
             depth: -0.5,
             scale_src: 0,
-            scale_shape: Shape::Lin as u8,
+            scale_curve: 0,
         };
         e.apply_block_params();
 
@@ -4464,6 +4517,7 @@ mod tests {
             polarity: Polarity::Direct,
         shape: Shape::Lin,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -4506,6 +4560,7 @@ mod tests {
             polarity: Polarity::Direct,
         shape: Shape::Lin,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -4552,7 +4607,7 @@ mod tests {
                 active: false,
                 depth: 0.03,
                 scale_src: 0,
-                scale_shape: Shape::Lin as u8,
+                scale_curve: 0,
             },
         );
         let mut e = Engine::new(SR, BLK);
@@ -4751,6 +4806,7 @@ mod tests {
                 polarity: Polarity::Direct,
         shape: Shape::Lin,
                 scale_src: SourceId::None,
+                scale_polarity: Polarity::Direct,
                 scale_shape: Shape::Lin,
                 enabled: true,
             };
@@ -4958,7 +5014,7 @@ mod tests {
             active: true,
             depth: 1.0,
             scale_src: SourceId::ModWheel as u8,
-            scale_shape: Shape::Lin as u8,
+            scale_curve: 0,
         };
         e.mod_wheel = 0.0;
         e.note_on(60, 100);
@@ -5010,6 +5066,7 @@ mod tests {
             polarity: Polarity::Direct,
         shape: Shape::Lin,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -5057,6 +5114,7 @@ mod tests {
             polarity: Polarity::Direct,
         shape: Shape::Lin,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -5068,6 +5126,7 @@ mod tests {
             polarity: Polarity::Direct,
         shape: Shape::Lin,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -5172,6 +5231,7 @@ mod tests {
                 polarity: Polarity::Direct,
         shape: Shape::Lin,
                 scale_src: SourceId::None,
+                scale_polarity: Polarity::Direct,
                 scale_shape: Shape::Lin,
                 enabled: true,
             };

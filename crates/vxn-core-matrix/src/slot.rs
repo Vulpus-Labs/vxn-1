@@ -40,7 +40,7 @@
 //! *exactly* full at 32 bits. A shared slot type deliberately says nothing about
 //! how a synth spells one on disk.
 
-use crate::curve::{Polarity, Shape};
+use crate::curve::{Polarity, ScaleFold, Shape};
 
 // ── the endpoint seam ───────────────────────────────────────────────────────
 
@@ -122,12 +122,22 @@ pub struct MatrixSlot<S, D> {
     /// The sentinel is identity. A *leaf* value, read from the same source
     /// table as the primary source, so it can never form a cycle.
     pub scale_src: S,
+    /// Range mapping on the scale source, applied before [`Self::scale_shape`]
+    /// — the VCA's own polarity axis (0341), the same three settings the
+    /// primary axis has.
+    ///
+    /// `Direct` is "land in `[0, 1]` the way this source naturally does", which
+    /// is the fold the VCA has always applied, so it is the pre-0341
+    /// arithmetic exactly. `Abs` opens the gate at both extremes of a bipolar
+    /// source — `voice-position` scaling a route by "the voices at both edges"
+    /// rather than by one side of the spread. `Bipolar` is a threshold-ish
+    /// gate over the source's upper half. See
+    /// [`scale_norm`](crate::curve::scale_norm) for why the clamp sits between
+    /// the two axes.
+    pub scale_polarity: Polarity,
     /// Response bend on the normalised scale value, so the VCA need not be a
     /// straight line — `velocity` scaling an envelope route wants `Exp` so soft
     /// playing backs the route off faster than linear.
-    ///
-    /// No polarity twin: the VCA folds by the scale *source's* own polarity and
-    /// has to land in `[0, 1]` regardless.
     pub scale_shape: Shape,
 }
 
@@ -145,6 +155,7 @@ impl<S: Default, D: Default> Default for MatrixSlot<S, D> {
             shape: Shape::Lin,
             enabled: false,
             scale_src: S::default(),
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
         }
     }
@@ -216,9 +227,11 @@ pub struct Route {
     pub gain: f32,
     /// The VCA's source index, or `None` for an unscaled route.
     pub scale: Option<u8>,
-    /// Whether that VCA source is bipolar, so the fold hoists out of the lane
-    /// loop with everything else.
-    pub scale_bipolar: bool,
+    /// The VCA's range map with the slot's scale polarity and the scale
+    /// source's own polarity **already collapsed together**, so the lane loop
+    /// dispatches on one four-valued constant rather than on two fields. See
+    /// [`ScaleFold::resolve`].
+    pub scale_fold: ScaleFold,
     /// Bend on the VCA, hoisted for the same reason.
     pub scale_shape: Shape,
 }
@@ -235,7 +248,7 @@ impl Route {
         shape: Shape::Lin,
         gain: 0.0,
         scale: None,
-        scale_bipolar: false,
+        scale_fold: ScaleFold::Passthrough,
         scale_shape: Shape::Lin,
     };
 }
@@ -377,7 +390,10 @@ pub fn compile_slots<S: SourceEndpoint, D: DestEndpoint>(
             // function rather than an expression spelled twice.
             gain: crate::eval::slot_topology_gain(slot),
             scale,
-            scale_bipolar: scale.is_some() && slot.scale_src.is_bipolar(),
+            scale_fold: ScaleFold::resolve(
+                slot.scale_polarity,
+                scale.is_some() && slot.scale_src.is_bipolar(),
+            ),
             scale_shape: slot.scale_shape,
         })
     })
@@ -540,15 +556,47 @@ mod tests {
 
         let list = RouteList::compile(&t);
         assert_eq!(list.active()[0].scale, Some(Src::Bi.idx().unwrap() as u8));
-        assert!(list.active()[0].scale_bipolar);
+        assert_eq!(list.active()[0].scale_fold, ScaleFold::Fold);
         assert_eq!(list.active()[0].scale_shape, Shape::Exp);
         assert_eq!(list.active()[1].scale, Some(Src::Uni.idx().unwrap() as u8));
-        assert!(!list.active()[1].scale_bipolar);
+        assert_eq!(list.active()[1].scale_fold, ScaleFold::Passthrough);
         assert_eq!(list.active()[2].scale, None);
         // …and it does not carry a polarity read off the sentinel: the column
         // is unread for an unscaled route, and asking would reach a roster
         // lookup that is entitled to panic.
-        assert!(!list.active()[2].scale_bipolar);
+        assert_eq!(list.active()[2].scale_fold, ScaleFold::Passthrough);
+    }
+
+    /// The scale polarity is collapsed into the fold at compile time, and
+    /// `Abs`/`Bipolar` do not consult the source's own polarity — which is what
+    /// keeps the lane loop's range-map dispatch at four arms, not six.
+    #[test]
+    fn scale_polarity_collapses_into_the_fold() {
+        for (scale_src, bi) in [(Src::Bi, true), (Src::Uni, false)] {
+            let mut t = Table::default();
+            t.slots[0] = Slot {
+                scale_src,
+                scale_polarity: Polarity::Abs,
+                ..wired(Src::Uni, Dst::Plain, 1.0)
+            };
+            t.slots[1] = Slot {
+                scale_src,
+                scale_polarity: Polarity::Bipolar,
+                ..wired(Src::Uni, Dst::Plain, 1.0)
+            };
+            t.slots[2] = Slot {
+                scale_src,
+                scale_polarity: Polarity::Direct,
+                ..wired(Src::Uni, Dst::Plain, 1.0)
+            };
+            let list = RouteList::compile(&t);
+            assert_eq!(list.active()[0].scale_fold, ScaleFold::Rectify);
+            assert_eq!(list.active()[1].scale_fold, ScaleFold::AcCouple);
+            assert_eq!(
+                list.active()[2].scale_fold,
+                if bi { ScaleFold::Fold } else { ScaleFold::Passthrough }
+            );
+        }
     }
 
     /// A full table compiles to a full list — the array is exactly the table's

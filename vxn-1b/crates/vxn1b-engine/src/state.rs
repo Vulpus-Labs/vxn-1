@@ -10,8 +10,8 @@
 //!   params ([`ParamId::MatrixSlot0Depth`]…), so they serialise in the `f32`
 //!   block like every other param — never in the topology bytes.
 //! - **Topology is not automatable, so it lives here.** Each slot's
-//!   `enabled`/`source`/`dest`/`polarity`/`shape`/`scale_src`/`scale_shape` is
-//!   packed as a fixed 7-byte record.
+//!   `enabled`/`source`/`dest`/`polarity`/`shape`/`scale_src`/`scale_polarity`/
+//!   `scale_shape` is packed as a fixed 8-byte record.
 //!
 //! Layout (little-endian):
 //!
@@ -27,8 +27,9 @@
 //!
 //! ```text
 //! params  : f32 × ParamId::COUNT          (inner per-synth block; 16 depths incl.)
-//! matrix  : [enabled, source, dest, polarity, shape, scale, scale-shape]
-//!           × N_SLOTS                                    (7 bytes/slot)
+//! matrix  : [enabled, source, dest, polarity, shape, scale, scale-polarity,
+//!            scale-shape]
+//!           × N_SLOTS                                    (8 bytes/slot)
 //! ```
 //!
 //! **No migration pre-release.** Older blobs are rejected on read — every layout
@@ -56,17 +57,20 @@ pub const MAGIC: [u8; 4] = *b"VX1B";
 /// written at an older version and read at a newer one would slide topology
 /// bytes into param slots rather than fail cleanly. The rejection three lines
 /// down is what makes that impossible; the version history is in the git log.
-pub const VERSION: u32 = 13;
+pub const VERSION: u32 = 14;
 
 /// Bytes per packed matrix-topology slot record: `[enabled, source, dest,
-/// polarity, shape, scale, scale_shape]`.
+/// polarity, shape, scale, scale_polarity, scale_shape]`.
 ///
 /// Widened from 5 at version 13, when the single `curve` byte became the
-/// `polarity`/`shape` pair and the scale VCA gained its own bend. The two axes
-/// are stored as separate bytes rather than the flat code preset files use —
-/// this format rejects older blobs outright (see [`VERSION`]), so it is free to
-/// store the honest shape instead of preserving a legacy encoding.
-const SLOT_RECORD: usize = 7;
+/// `polarity`/`shape` pair and the scale VCA gained its own bend, and from 7 at
+/// version 14, when the scale VCA gained its own polarity too (0341). Every
+/// axis is a separate byte rather than the flat code preset files use — this
+/// format rejects older blobs outright (see [`VERSION`]), so it is free to
+/// store the honest shape instead of preserving a legacy encoding. vxn-2 made
+/// the other choice on the same change, because its blob has no version gate to
+/// hide behind.
+const SLOT_RECORD: usize = 8;
 
 /// Inner per-synth param-block length (f32 count) — one [`LayerState`] carries
 /// this many values, ahead of its topology.
@@ -99,7 +103,7 @@ impl LayerState {
         Self { params, matrix }
     }
 
-    /// Write one layer: the inner param block, then one 7-byte topology record
+    /// Write one layer: the inner param block, then one 8-byte topology record
     /// per slot. Slot depths are already in the param block, so the topology
     /// carries only the switch, the endpoints and the shaping.
     fn write(&self, w: &mut impl Write) -> io::Result<()> {
@@ -117,6 +121,7 @@ impl LayerState {
                 slot.polarity as u8,
                 slot.shape as u8,
                 slot.scale_src as u8,
+                slot.scale_polarity as u8,
                 slot.scale_shape as u8,
             ])?;
         }
@@ -216,7 +221,7 @@ impl PluginState {
     }
 }
 
-/// Decode one 7-byte topology record.
+/// Decode one 8-byte topology record.
 ///
 /// Byte 0 is the player's on/off switch, and — unlike the pre-13 format, where
 /// it meant "is this slot wired at all" and a cleared bit discarded the record —
@@ -233,7 +238,8 @@ fn decode_slot(rec: [u8; SLOT_RECORD]) -> MatrixSlot {
         // depth is re-seeded from the param block by the caller.
         depth: 0.0,
         scale_src: SourceId::from_u8(rec[5]),
-        scale_shape: Shape::from_u8(rec[6]),
+        scale_polarity: Polarity::from_u8(rec[6]),
+        scale_shape: Shape::from_u8(rec[7]),
     }
 }
 
@@ -289,6 +295,7 @@ mod tests {
             polarity: Polarity::Direct,
             shape: Shape::Lin,
             enabled: true,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
@@ -299,6 +306,7 @@ mod tests {
             polarity: Polarity::Bipolar,
             shape: Shape::Lin,
             enabled: true,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             scale_src: SourceId::ModWheel,
         };
@@ -328,6 +336,7 @@ mod tests {
             polarity: Polarity::Direct,
             shape: Shape::Lin,
             enabled: true,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
@@ -405,6 +414,42 @@ mod tests {
         st.write(&mut buf).unwrap();
         let layer = LAYER_PARAMS * 4 + N_SLOTS * SLOT_RECORD;
         assert_eq!(buf.len(), 4 + 4 + 2 * layer + KEY_RECORD);
+    }
+
+    /// The record widened to 8 at version 14 (0341) and the version moved with
+    /// it. Both halves matter: this format is positional and unlengthed, so a
+    /// widened record read at the old version would slide topology bytes into
+    /// the *next* layer's param block and decode as plausible nonsense rather
+    /// than failing. Pinning the pair here is what makes that impossible to do
+    /// by accident.
+    #[test]
+    fn the_slot_record_is_eight_bytes_at_this_version() {
+        assert_eq!(SLOT_RECORD, 8);
+        assert_eq!(VERSION, 14);
+    }
+
+    /// The scale VCA's polarity survives a save/load on its own byte — and on
+    /// the layer that did *not* also set the route's own polarity, so a decoder
+    /// that read byte 6 as the route's axis would fail here rather than pass by
+    /// coincidence.
+    #[test]
+    fn scale_polarity_round_trips_per_layer() {
+        let mut st = nondefault_state();
+        st.layers[0].matrix.slots[0].scale_src = SourceId::Lfo1;
+        st.layers[0].matrix.slots[0].scale_polarity = Polarity::Abs;
+        st.layers[1].matrix.slots[5].scale_src = SourceId::ModWheel;
+        st.layers[1].matrix.slots[5].scale_polarity = Polarity::Bipolar;
+        st.layers[1].matrix.slots[5].scale_shape = Shape::Log;
+        let mut buf = Vec::new();
+        st.write(&mut buf).unwrap();
+        let back = PluginState::read(&mut &buf[..]).unwrap();
+        assert_eq!(back.layers[0].matrix.slots[0].scale_polarity, Polarity::Abs);
+        assert_eq!(back.layers[0].matrix.slots[0].polarity, Polarity::Direct);
+        assert_eq!(
+            back.layers[1].matrix.slots[5].scale_polarity,
+            Polarity::Bipolar
+        );
+        assert_eq!(back.layers[1].matrix.slots[5].scale_shape, Shape::Log);
     }
 
     #[test]

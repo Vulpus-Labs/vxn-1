@@ -116,7 +116,7 @@ fn reference_engine() -> Engine {
             active: true,
             depth,
             scale_src: 0,
-            scale_shape: 0,
+            scale_curve: 0,
         };
         // Slots < N_CLAP_DEPTH_SLOTS (8) read the CLAP depth; later slots read
         // the row depth. Set both so every route's depth lands regardless.

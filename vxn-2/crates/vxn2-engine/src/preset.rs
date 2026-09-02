@@ -25,7 +25,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::matrix::{CURVE_NAMES, DEST_NAMES, N_SLOTS, SHAPE_NAMES, SOURCE_NAMES};
+use crate::matrix::{CURVE_NAMES, DEST_NAMES, N_SLOTS, SOURCE_NAMES};
 use crate::params::{PARAMS, ParamDesc, ParamKind, TOTAL_PARAMS, id_of};
 use crate::shared::{MatrixRowRaw, N_EG_CURVES, N_KS_CURVES, ParamModel, SharedParams};
 
@@ -138,15 +138,22 @@ struct MatrixRowFile {
     /// presets with no key reading as unscaled.
     #[serde(rename = "scale-src", default = "default_scale_src", skip_serializing_if = "is_none_src")]
     scale_src: String,
-    /// Response bend on the scale VCA. Omitted when `lin` (the identity), so
-    /// presets written before the field existed — and every preset that keeps
-    /// a straight-line VCA — round-trip byte-identically.
+    /// The scale VCA's own curve — its polarity and its bend, as one flat
+    /// [`CURVE_NAMES`] spelling, the same nine the route's `curve` column takes
+    /// (0341). Omitted when `lin` (the identity), so presets written before the
+    /// field existed — and every preset that keeps a straight-line VCA —
+    /// round-trip byte-identically.
+    ///
+    /// `scale-shape` stays readable as an alias: the column used to hold a bare
+    /// shape name, and `lin`/`exp`/`log` are the first three curve spellings, so
+    /// an old file's value means the same thing under the wider vocabulary.
     #[serde(
-        rename = "scale-shape",
+        rename = "scale-curve",
+        alias = "scale-shape",
         default = "default_curve",
         skip_serializing_if = "is_lin_shape"
     )]
-    scale_shape: String,
+    scale_curve: String,
 }
 
 fn default_curve() -> String {
@@ -262,8 +269,8 @@ fn matrix_rows_file(matrix: &[MatrixRowRaw; N_SLOTS]) -> Vec<MatrixRowFile> {
             .get(row.scale_src as usize)
             .copied()
             .unwrap_or("none");
-        let scale_shape = SHAPE_NAMES
-            .get(row.scale_shape as usize)
+        let scale_curve = CURVE_NAMES
+            .get(row.scale_curve as usize)
             .copied()
             .unwrap_or("lin");
         out.push(MatrixRowFile {
@@ -273,7 +280,7 @@ fn matrix_rows_file(matrix: &[MatrixRowRaw; N_SLOTS]) -> Vec<MatrixRowFile> {
             curve: curve.to_string(),
             depth: row.depth as f64,
             scale_src: scale_src.to_string(),
-            scale_shape: scale_shape.to_string(),
+            scale_curve: scale_curve.to_string(),
         });
     }
     out
@@ -485,10 +492,10 @@ pub fn read_preset(
             ));
             0
         });
-        let scale_shape = name_to_u8(&SHAPE_NAMES, &row.scale_shape).unwrap_or_else(|| {
+        let scale_curve = name_to_u8(&CURVE_NAMES, &row.scale_curve).unwrap_or_else(|| {
             warnings.push(format!(
-                "matrix slot {}: unknown scale shape `{}` (using lin)",
-                row.slot, row.scale_shape
+                "matrix slot {}: unknown scale curve `{}` (using lin)",
+                row.slot, row.scale_curve
             ));
             0
         });
@@ -499,7 +506,7 @@ pub fn read_preset(
             active: source != 0 && dest != 0,
             depth,
             scale_src,
-            scale_shape,
+            scale_curve,
         };
     }
 
@@ -620,7 +627,7 @@ mod tests {
                 active: true,
                 depth: 0.5,
                 scale_src: SourceId::ModWheel as u8,
-                scale_shape: 0,
+                scale_curve: 0,
             },
         );
         let blob = ParamModel::snapshot_bytes(&src);
@@ -647,7 +654,7 @@ mod tests {
                 active: true,
                 depth: 0.5,
                 scale_src: 0,
-                scale_shape: 0,
+                scale_curve: 0,
             },
         );
         let blob = ParamModel::snapshot_bytes(&src);

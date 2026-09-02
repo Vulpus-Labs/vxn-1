@@ -346,6 +346,7 @@ struct AmpRoute {
     polarity: Polarity,
     shape: Shape,
     scale_src: SourceId,
+    scale_polarity: Polarity,
     scale_shape: Shape,
     /// `cook_depth(depth) · DEST_GAIN[Amp]` — see [`crate::eval::slot_topology_gain`].
     gain: f32,
@@ -396,6 +397,7 @@ impl AmpRoutes {
             polarity: Polarity::Direct,
             shape: Shape::Lin,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             gain: 0.0,
         };
@@ -414,6 +416,7 @@ impl AmpRoutes {
                 polarity: slot.polarity,
                 shape: slot.shape,
                 scale_src: slot.scale_src,
+                scale_polarity: slot.scale_polarity,
                 scale_shape: slot.scale_shape,
                 gain: crate::eval::slot_topology_gain(slot),
             };
@@ -1452,7 +1455,12 @@ fn amp_coeffs(routes: &AmpRoutes, sources: &crate::eval::SourceVals) -> AmpCoeff
     for r in &routes.routes[..routes.n] {
         let scale = match r.scale_src.idx() {
             Some(sc) => {
-                crate::eval::scale_norm(r.scale_src.is_bipolar(), sources[sc], r.scale_shape)
+                crate::eval::scale_norm(
+                    r.scale_src.is_bipolar(),
+                    sources[sc],
+                    r.scale_polarity,
+                    r.scale_shape,
+                )
             }
             None => 1.0,
         };
@@ -1834,6 +1842,7 @@ mod tests {
             polarity: Polarity::Direct,
             shape: Shape::Lin,
             enabled: true,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
@@ -1871,6 +1880,7 @@ mod tests {
             polarity: Polarity::Direct,
             shape: Shape::Lin,
             enabled: true,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
@@ -1908,6 +1918,7 @@ mod tests {
         m.slots[0] = MatrixSlot {
             source: SourceId::Env1, dest: DestId::Amp, depth: 1.0,
             polarity: Polarity::Direct, shape: Shape::Exp, enabled: true, scale_src: SourceId::None,
+         scale_polarity: Polarity::Direct,
          scale_shape: Shape::Lin };
         // A linear Env 2 route gated by a wheel sitting at zero: contributes
         // nothing this block, but a route that exists is still a route.
@@ -1919,6 +1930,7 @@ mod tests {
             shape: Shape::Lin,
             enabled: true,
             scale_src: SourceId::ModWheel,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
         };
         // A zero-depth route is not a route at all.
@@ -1930,6 +1942,7 @@ mod tests {
             shape: Shape::Lin,
             enabled: true,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
         };
         // And a non-Amp route is invisible here.
@@ -1941,6 +1954,7 @@ mod tests {
             shape: Shape::Lin,
             enabled: true,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
         };
 
@@ -1977,6 +1991,7 @@ mod tests {
             shape: Shape::Lin,
             enabled: true,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
         };
         let mut m = MatrixTable::default();
@@ -2094,6 +2109,7 @@ mod tests {
                 shape: curve,
                 enabled: true,
                 scale_src: SourceId::None,
+                scale_polarity: Polarity::Direct,
                 scale_shape: Shape::Lin,
             };
             let sources = crate::eval::eval_sources(&crate::eval::SourceInputs {
@@ -2129,6 +2145,7 @@ mod tests {
             polarity: Polarity::Direct,
             shape: Shape::Lin,
             enabled: true,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
@@ -2212,6 +2229,7 @@ mod tests {
             polarity: Polarity::Direct,
             shape: Shape::Lin,
             enabled: true,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
@@ -2284,6 +2302,7 @@ mod tests {
             polarity: Polarity::Direct,
             shape: Shape::Lin,
             enabled: true,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
@@ -2337,6 +2356,7 @@ mod tests {
             polarity: Polarity::Direct,
             shape: Shape::Lin,
             enabled: true,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
@@ -2473,6 +2493,7 @@ mod tests {
             shape: Shape::Lin,
             enabled: true,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
         }
     }
@@ -2784,6 +2805,7 @@ mod tests {
             polarity: Polarity::Direct,
             shape: Shape::Lin,
             enabled: true,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
@@ -2950,6 +2972,7 @@ mod tests {
             shape: Shape::Lin,
             enabled: true,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
         };
         m

@@ -39,8 +39,11 @@
 //! the **free function arms** (`pol_abs` / `shape_log` / `fold_bipolar` /
 //! `bend_exp`, …) expanded per route with every decision hoisted above the lane
 //! loop. They differ in loop nesting, in whether routes are compacted before the
-//! loop, and in how the nine polarity × shape and six fold × bend decisions are
-//! dispatched — which is exactly where a reassociation would hide.
+//! loop, and in how the nine polarity × shape and twelve fold × bend decisions
+//! are dispatched — which is exactly where a reassociation would hide. The
+//! harness's own banked path keeps the fused `(fold, bend)` spelling the shipped
+//! one measured its way out of, which is the point: two spellings that must
+//! agree bit-for-bit.
 //!
 //! The other two are [`crate::eval`]'s, registered by
 //! [0334](../../../../tickets/closed/0334-share-the-evaluator.md): the scalar
@@ -80,7 +83,7 @@
 //! between the intention and the assertion.
 
 use crate::curve::{
-    Polarity, Shape, bend_exp, bend_lin, bend_log, clamp_unit, curve_code, curve_split,
+    Polarity, ScaleFold, Shape, bend_exp, bend_lin, bend_log, clamp_unit, curve_code, curve_split,
     fold_bipolar, fold_unipolar, pol_abs, pol_bipolar, pol_direct, scale_norm, shape, shape_exp,
     shape_lin, shape_log,
 };
@@ -132,13 +135,34 @@ pub const ON: bool = true;
 /// A route's on/off switch, switched off.
 pub const OFF: bool = false;
 
-/// Scale bend: no bend. The `scale_bend` column is a raw byte, decoded with
-/// [`Shape::from_u8`], so that a case can also spell a byte past the table.
-pub const BEND_LIN: u8 = Lin as u8;
-/// Scale bend: square.
-pub const BEND_EXP: u8 = Exp as u8;
-/// Scale bend: root.
-pub const BEND_LOG: u8 = Log as u8;
+/// Scale curve: fold by the source's own polarity, no bend. The `scale_curve`
+/// column is a raw byte decoded with [`curve_split`], the same flat
+/// `(polarity, shape)` code as the primary axis, so a case can also spell a
+/// byte past the table.
+///
+/// The three `BEND_*` spellings are `Direct` on the scale polarity, which is
+/// the pre-0341 VCA — hence `curve_code(Direct, shape) == shape as u8`, and
+/// hence every case row written before the axis existed means what it always
+/// meant.
+pub const BEND_LIN: u8 = curve_code(Direct, Lin);
+/// Scale curve: fold, then square.
+pub const BEND_EXP: u8 = curve_code(Direct, Exp);
+/// Scale curve: fold, then root.
+pub const BEND_LOG: u8 = curve_code(Direct, Log);
+/// Scale curve: rectify (`|v|`), no bend — the gate open at **both** extremes
+/// of a bipolar source, shut at its centre.
+pub const SCALE_ABS: u8 = curve_code(Abs, Lin);
+/// Scale curve: rectify, then square.
+pub const SCALE_ABS_EXP: u8 = curve_code(Abs, Exp);
+/// Scale curve: rectify, then root.
+pub const SCALE_ABS_LOG: u8 = curve_code(Abs, Log);
+/// Scale curve: AC-couple (`2v − 1`), no bend — the threshold-ish gate over the
+/// source's upper half.
+pub const SCALE_BIPOLAR: u8 = curve_code(Bipolar, Lin);
+/// Scale curve: AC-couple, then square.
+pub const SCALE_BIPOLAR_EXP: u8 = curve_code(Bipolar, Exp);
+/// Scale curve: AC-couple, then root.
+pub const SCALE_BIPOLAR_LOG: u8 = curve_code(Bipolar, Log);
 
 /// One routing in a case, in the shape a slot reaches the evaluator in.
 ///
@@ -147,7 +171,7 @@ pub const BEND_LOG: u8 = Log as u8;
 /// spells `curve_code(Abs, Lin)` and reads as the pair — and it buys the
 /// coverage item a typed field could not express: a code past the table must
 /// degrade to `(Direct, Lin)` rather than alias onto a real curve, which is
-/// what a corrupt preset does. `scale_bend` is a raw byte for the same reason.
+/// what a corrupt preset does. `scale_curve` is a raw byte for the same reason.
 #[derive(Clone, Copy, Debug)]
 pub struct Route {
     /// Source storage index, or [`NONE`] for an unwired route.
@@ -160,8 +184,9 @@ pub struct Route {
     pub curve: u8,
     /// The per-route VCA's source index, or [`NONE`] for an unscaled route.
     pub scale_src: u8,
-    /// Bend applied to the VCA, as a raw [`Shape`] byte.
-    pub scale_bend: u8,
+    /// The VCA's own flat `(polarity, shape)` code — the same nine the primary
+    /// axis has, since 0341 — as a raw byte.
+    pub scale_curve: u8,
     /// The player's on/off switch. A switched-off route keeps its wiring and
     /// contributes nothing.
     pub enabled: bool,
@@ -175,7 +200,7 @@ pub const fn route(
     depth: f32,
     curve: u8,
     scale_src: u8,
-    scale_bend: u8,
+    scale_curve: u8,
     enabled: bool,
 ) -> Route {
     Route {
@@ -184,7 +209,7 @@ pub const fn route(
         depth,
         curve,
         scale_src,
-        scale_bend,
+        scale_curve,
         enabled,
     }
 }
@@ -209,10 +234,10 @@ impl Route {
         curve_split(self.curve)
     }
 
-    /// The VCA bend this route's raw byte stands for.
+    /// The two VCA axes this route's raw scale byte stands for.
     #[inline]
-    fn bend(&self) -> Shape {
-        Shape::from_u8(self.scale_bend)
+    fn scale_axes(&self) -> (Polarity, Shape) {
+        curve_split(self.scale_curve)
     }
 }
 
@@ -391,6 +416,7 @@ fn as_slots<R: MatrixRoster>(routes: &[Route]) -> Vec<MatrixSlot<RosterSource<R>
         .iter()
         .map(|r| {
             let (polarity, shape) = r.axes();
+            let (scale_polarity, scale_shape) = r.scale_axes();
             MatrixSlot {
                 source: RosterSource(r.source, PhantomData),
                 dest: RosterDest(r.dest, PhantomData),
@@ -399,7 +425,8 @@ fn as_slots<R: MatrixRoster>(routes: &[Route]) -> Vec<MatrixSlot<RosterSource<R>
                 shape,
                 enabled: r.enabled,
                 scale_src: RosterSource(r.scale_src, PhantomData),
-                scale_shape: r.bend(),
+                scale_polarity,
+                scale_shape,
             }
         })
         .collect()
@@ -472,10 +499,12 @@ fn eval_scalar<R: MatrixRoster, const NS: usize, const ND: usize, const L: usize
             let vca = if r.scale_src == NONE {
                 1.0
             } else {
+                let (scale_polarity, scale_bend) = r.scale_axes();
                 scale_norm(
                     R::source_is_bipolar(r.scale_src),
                     src[r.scale_src as usize][lane],
-                    r.bend(),
+                    scale_polarity,
+                    scale_bend,
                 )
             };
             let (polarity, bend) = r.axes();
@@ -496,7 +525,7 @@ struct Compiled {
     /// `cook_depth(depth) · dest_gain`, hoisted out of the lane loop.
     gain: f32,
     scale: u8,
-    scale_bipolar: bool,
+    scale_fold: ScaleFold,
     scale_bend: Shape,
 }
 
@@ -504,8 +533,13 @@ struct Compiled {
 ///
 /// This is the shape of vxn-1b's `eval_dests_bank`: inert routes dropped by
 /// compaction rather than branched over per lane, the taper and gain resolved
-/// once, and all fifteen per-route decisions (nine polarity × shape, six fold ×
-/// bend) dispatched *above* the lane loop into the free-function arms.
+/// once, and all twenty-one per-route decisions (nine polarity × shape, twelve
+/// fold × bend) dispatched *above* the lane loop into the free-function arms.
+///
+/// The fused `(fold, bend)` match here is deliberately **not** the shipped
+/// loop's split pair — see [`crate::eval::eval_dests_bank`], which measured its
+/// way to two dispatches. Same arithmetic, different spelling, and the runner
+/// requires them bit-exact.
 ///
 /// The association `shaped · (gain · vca)` follows [`eval_scalar`], which
 /// multiplies by one already-folded factor — grouping the other way rounds
@@ -537,8 +571,11 @@ fn eval_banked<R: MatrixRoster, const NS: usize, const ND: usize, const L: usize
                 shape,
                 gain: R::cook_depth(r.dest, r.depth) * R::dest_gain(r.dest),
                 scale: r.scale_src,
-                scale_bipolar: r.scale_src != NONE && R::source_is_bipolar(r.scale_src),
-                scale_bend: r.bend(),
+                scale_fold: ScaleFold::resolve(
+                    r.scale_axes().0,
+                    r.scale_src != NONE && R::source_is_bipolar(r.scale_src),
+                ),
+                scale_bend: r.scale_axes().1,
             }
         })
         .collect();
@@ -558,13 +595,19 @@ fn eval_banked<R: MatrixRoster, const NS: usize, const ND: usize, const L: usize
                     }
                 };
             }
-            match (c.scale_bipolar, c.scale_bend) {
-                (false, Lin) => vca_arm!(fold_unipolar, bend_lin),
-                (false, Exp) => vca_arm!(fold_unipolar, bend_exp),
-                (false, Log) => vca_arm!(fold_unipolar, bend_log),
-                (true, Lin) => vca_arm!(fold_bipolar, bend_lin),
-                (true, Exp) => vca_arm!(fold_bipolar, bend_exp),
-                (true, Log) => vca_arm!(fold_bipolar, bend_log),
+            match (c.scale_fold, c.scale_bend) {
+                (ScaleFold::Passthrough, Lin) => vca_arm!(fold_unipolar, bend_lin),
+                (ScaleFold::Passthrough, Exp) => vca_arm!(fold_unipolar, bend_exp),
+                (ScaleFold::Passthrough, Log) => vca_arm!(fold_unipolar, bend_log),
+                (ScaleFold::Fold, Lin) => vca_arm!(fold_bipolar, bend_lin),
+                (ScaleFold::Fold, Exp) => vca_arm!(fold_bipolar, bend_exp),
+                (ScaleFold::Fold, Log) => vca_arm!(fold_bipolar, bend_log),
+                (ScaleFold::Rectify, Lin) => vca_arm!(pol_abs, bend_lin),
+                (ScaleFold::Rectify, Exp) => vca_arm!(pol_abs, bend_exp),
+                (ScaleFold::Rectify, Log) => vca_arm!(pol_abs, bend_log),
+                (ScaleFold::AcCouple, Lin) => vca_arm!(pol_bipolar, bend_lin),
+                (ScaleFold::AcCouple, Exp) => vca_arm!(pol_bipolar, bend_exp),
+                (ScaleFold::AcCouple, Log) => vca_arm!(pol_bipolar, bend_log),
             }
         }
         let pv = &src[c.src as usize];
@@ -898,6 +941,95 @@ pub const CASES: &[Case] = &[
         sources: &[(BI_A, 1.0), (UNI_B, 1.75)],
         expect: &[(DEST_A, 1.0)],
     },
+    // ── the scale VCA's own polarity axis (0341) ────────────────────────────
+    //
+    // Same shape as the block above — a full-scale passthrough route, so the
+    // destination total *is* the VCA's value — but now exercising the two
+    // settings that do **not** consult the scale source's own polarity.
+    //
+    // `Abs` is the setting the axis was added for. Under the old fold, a
+    // bipolar `voice-spread` scaling a route could only ever mean "the voices
+    // on one side of the spread"; these two rows are the same magnitude either
+    // side of centre reaching the same gain, which is "the voices at both
+    // edges".
+    Case {
+        name: "abs scale opens at a bipolar source's negative extreme",
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), BI_B, SCALE_ABS, ON)],
+        sources: &[(BI_A, 1.0), (BI_B, -0.75)],
+        expect: &[(DEST_A, 0.75)],
+    },
+    Case {
+        name: "abs scale opens identically at the positive extreme",
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), BI_B, SCALE_ABS, ON)],
+        sources: &[(BI_A, 1.0), (BI_B, 0.75)],
+        expect: &[(DEST_A, 0.75)],
+    },
+    Case {
+        name: "abs scale shuts the route at a bipolar source's centre",
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), BI_B, SCALE_ABS, ON)],
+        sources: &[(BI_A, 1.0), (BI_B, 0.0)],
+        expect: &[],
+    },
+    Case {
+        // Identity on a unipolar source, exactly as `Abs` is on the primary
+        // axis: there is nothing to rectify, so this reads the same as the
+        // `direct` row two blocks up.
+        name: "abs scale on a unipolar source is the identity",
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), UNI_B, SCALE_ABS, ON)],
+        sources: &[(BI_A, 1.0), (UNI_B, 0.25)],
+        expect: &[(DEST_A, 0.25)],
+    },
+    Case {
+        name: "abs scale, exp bend",
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), BI_B, SCALE_ABS_EXP, ON)],
+        sources: &[(BI_A, 1.0), (BI_B, -0.5)],
+        expect: &[(DEST_A, 0.25)],
+    },
+    Case {
+        name: "abs scale, log bend",
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), BI_B, SCALE_ABS_LOG, ON)],
+        sources: &[(BI_A, 1.0), (BI_B, -0.25)],
+        expect: &[(DEST_A, 0.5)],
+    },
+    // `Bipolar` on the VCA is a threshold-ish gate: shut over the source's
+    // lower half, opening across its upper. On a *unipolar* source this is the
+    // interesting one, and the row below is also what rules out the tempting
+    // "apply the polarity, then fold" order — that would round-trip `2v − 1`
+    // straight back to `v` and make this setting a no-op reading 0.625.
+    Case {
+        name: "bipolar scale gates a unipolar source's upper half",
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), UNI_B, SCALE_BIPOLAR, ON)],
+        sources: &[(BI_A, 1.0), (UNI_B, 0.625)],
+        expect: &[(DEST_A, 0.25)],
+    },
+    Case {
+        name: "bipolar scale shuts below the halfway point",
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), UNI_B, SCALE_BIPOLAR, ON)],
+        sources: &[(BI_A, 1.0), (UNI_B, 0.25)],
+        expect: &[],
+    },
+    Case {
+        // On an already-bipolar source the clamp does most of the work: only
+        // `v ≥ 0.5` opens the gate at all. Blunt, and deliberately kept —
+        // designing the combination away would mean the two axes are not
+        // independent after all.
+        name: "bipolar scale on a bipolar source clamps hard",
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), BI_B, SCALE_BIPOLAR, ON)],
+        sources: &[(BI_A, 1.0), (BI_B, 0.75)],
+        expect: &[(DEST_A, 0.5)],
+    },
+    Case {
+        name: "bipolar scale, exp bend",
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), UNI_B, SCALE_BIPOLAR_EXP, ON)],
+        sources: &[(BI_A, 1.0), (UNI_B, 0.75)],
+        expect: &[(DEST_A, 0.25)],
+    },
+    Case {
+        name: "bipolar scale, log bend",
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), UNI_B, SCALE_BIPOLAR_LOG, ON)],
+        sources: &[(BI_A, 1.0), (UNI_B, 0.625)],
+        expect: &[(DEST_A, 0.5)],
+    },
     Case {
         name: "an unwired scale source is exact unity",
         routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), NONE, BEND_LIN, ON)],
@@ -1031,7 +1163,7 @@ pub const CASES: &[Case] = &[
         expect: &[(DEST_A, -0.25)],
     },
     Case {
-        name: "an out-of-range scale bend degrades to lin",
+        name: "an out-of-range scale curve degrades to direct/lin",
         routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), UNI_B, 200, ON)],
         sources: &[(BI_A, 1.0), (UNI_B, 0.25)],
         expect: &[(DEST_A, 0.25)],
@@ -1273,24 +1405,62 @@ mod tests {
         }
     }
 
-    /// Both scale-source polarities against all three bends — six combinations,
-    /// each of which is a separate arm in the hoisted path.
+    /// All four resolved scale folds against all three bends — twelve
+    /// combinations, each of which is a separate arm in the hoisted path.
+    ///
+    /// Four rather than six: `Abs` and `Bipolar` are absolute range maps that
+    /// do not consult the scale source's own polarity, so a case reaches
+    /// `Rectify` whichever way its scale source swings. The rows still cover
+    /// both source polarities under each — see
+    /// [`abs_scale_ignores_the_sources_own_polarity`] — because "does not
+    /// consult" is itself the claim.
     #[test]
-    fn scale_polarities_and_bends_are_all_covered() {
-        let mut seen = [[false; N_SHAPES]; 2];
+    fn scale_folds_and_bends_are_all_covered() {
+        let mut seen = [[false; N_SHAPES]; 4];
+        for case in CASES {
+            for r in case.routes {
+                if r.is_live() && r.scale_src != NONE {
+                    let (polarity, bend) = r.scale_axes();
+                    let fold =
+                        ScaleFold::resolve(polarity, TestRoster::source_is_bipolar(r.scale_src));
+                    seen[fold as usize][bend as usize] = true;
+                }
+            }
+        }
+        for fold in [
+            ScaleFold::Passthrough,
+            ScaleFold::Fold,
+            ScaleFold::Rectify,
+            ScaleFold::AcCouple,
+        ] {
+            for bend in Shape::ALL {
+                assert!(
+                    seen[fold as usize][bend as usize],
+                    "no case scales a route by a {fold:?} range map with a {bend:?} bend"
+                );
+            }
+        }
+    }
+
+    /// Both scale-source polarities are exercised under **each** scale
+    /// polarity. The fold table above collapses `Abs`/`Bipolar` across the two,
+    /// which is exactly why the case rows must not.
+    #[test]
+    fn abs_scale_ignores_the_sources_own_polarity() {
+        let mut seen = [[false; 2]; N_POLARITIES];
         for case in CASES {
             for r in case.routes {
                 if r.is_live() && r.scale_src != NONE {
                     let bipolar = TestRoster::source_is_bipolar(r.scale_src);
-                    seen[bipolar as usize][r.bend() as usize] = true;
+                    seen[r.scale_axes().0 as usize][bipolar as usize] = true;
                 }
             }
         }
-        for bipolar in [false, true] {
-            for bend in Shape::ALL {
+        for polarity in Polarity::ALL {
+            for bipolar in [false, true] {
                 assert!(
-                    seen[bipolar as usize][bend as usize],
-                    "no case scales a route by a {} source with a {bend:?} bend",
+                    seen[polarity as usize][bipolar as usize],
+                    "no case scales by a {} source with {polarity:?} scale polarity",
                     if bipolar { "bipolar" } else { "unipolar" }
                 );
             }
@@ -1314,8 +1484,8 @@ mod tests {
             "no out-of-range curve code"
         );
         assert!(
-            routes().any(|r| r.scale_bend as usize >= N_SHAPES),
-            "no out-of-range scale bend"
+            routes().any(|r| r.scale_curve as usize >= N_CURVES),
+            "no out-of-range scale curve"
         );
         assert!(CASES.iter().any(|c| c.routes.is_empty()), "no empty table");
         assert!(

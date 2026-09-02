@@ -168,6 +168,7 @@ pub fn unpack_matrix_addr(addr: u16) -> Option<(Layer, u8, MatrixField)> {
         4 => MatrixField::Shape,
         5 => MatrixField::ScaleShape,
         6 => MatrixField::Enabled,
+        7 => MatrixField::ScalePolarity,
         _ => return None,
     };
     Some((layer, slot, field))
@@ -187,6 +188,7 @@ pub const fn matrix_field_code(field: MatrixField) -> u8 {
         MatrixField::Shape => 4,
         MatrixField::ScaleShape => 5,
         MatrixField::Enabled => 6,
+        MatrixField::ScalePolarity => 7,
     }
 }
 
@@ -686,6 +688,7 @@ mod tests {
                     MatrixField::Shape,
                     MatrixField::ScaleShape,
                     MatrixField::Enabled,
+                    MatrixField::ScalePolarity,
                 ] {
                     let addr = pack_matrix_addr(layer_ix, slot, matrix_field_code(field));
                     assert_eq!(unpack_matrix_addr(addr), Some((layer, slot, field)));
@@ -701,9 +704,10 @@ mod tests {
     fn out_of_range_matrix_addresses_decode_to_none() {
         assert_eq!(unpack_matrix_addr(pack_matrix_addr(2, 0, 0)), None, "layer 2");
         assert_eq!(unpack_matrix_addr(0x0001 | (4 << 8) | (0xf << 12)), None, "layer 15");
-        // Fields 0..=6 are real now that curve split into polarity + shape and
-        // the scale bend + on/off switch joined them; 7 is the first past the end.
-        assert_eq!(unpack_matrix_addr(pack_matrix_addr(0, 0, 7)), None, "field 7");
+        // Fields 0..=7 are real now that curve split into polarity + shape and
+        // the scale VCA's own bend and polarity, plus the on/off switch, joined
+        // them; 8 is the first past the end.
+        assert_eq!(unpack_matrix_addr(pack_matrix_addr(0, 0, 8)), None, "field 8");
         assert_eq!(unpack_matrix_addr(pack_matrix_addr(0, 0, 255)), None, "field 255");
     }
 

@@ -40,7 +40,7 @@
 //!
 //! - Plain `#[inline]` on anything in a sample or lane loop.
 //! - **No `dyn`, no enum-match inside a lane loop.** Every per-slot decision —
-//!   curve polarity, curve shape, scale-source polarity, scale bend — is
+//!   curve polarity, curve shape, scale range map, scale bend — is
 //!   dispatched *outside* the lane loop. Letting one ride inside is expensive:
 //!   hoisting `scale_norm`'s two decisions cut a fully-scaled 16-slot eval by
 //!   ~47% in vxn-2.

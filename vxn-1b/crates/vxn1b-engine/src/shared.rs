@@ -654,6 +654,7 @@ mod tests {
                 shape: crate::matrix::Shape::Lin,
                 enabled: true,
                 scale_src: crate::matrix::SourceId::None,
+                scale_polarity: crate::matrix::Polarity::Direct,
                 scale_shape: crate::matrix::Shape::Lin,
             };
         }

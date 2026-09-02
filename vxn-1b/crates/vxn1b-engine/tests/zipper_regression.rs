@@ -66,6 +66,7 @@ fn engine_with_route(dest: DestId, depth: f32) -> Engine {
         polarity: Polarity::Direct,
         shape: Shape::Lin,
         enabled: true,
+        scale_polarity: Polarity::Direct,
         scale_shape: Shape::Lin,
         scale_src: SourceId::None,
     };

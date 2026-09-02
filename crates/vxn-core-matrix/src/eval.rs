@@ -26,9 +26,10 @@
 //! [`crate::golden`]'s reassociation sweep is what notices; the exact-dyadic
 //! case table cannot, because every grouping agrees on exact values.
 //!
-//! **Hoisting discipline.** Polarity, shape, scale-source polarity and scale
-//! bend all dispatch *outside* the lane loop — fifteen straight-line arms (nine
-//! polarity × shape, six fold × bend) rather than four decisions per lane.
+//! **Hoisting discipline.** Polarity, shape, scale range map and scale bend all
+//! dispatch *outside* the lane loop — fifteen straight-line arms (nine
+//! polarity × shape, then four range maps and two bends, dispatched
+//! separately) rather than four decisions per lane.
 //! Collapsing any one of them back inside costs the vectorisation, not a few
 //! percent: hoisting `scale_norm`'s two decisions alone cut a fully-scaled
 //! 16-slot eval by ~47% in vxn-2, and [[vxn2-matrix-hot-loop-lessons]] measured
@@ -65,7 +66,7 @@
 //! [`shape`](crate::curve::shape) rather than spelling it a second time.
 
 use crate::curve::{
-    Polarity, Shape, bend_exp, bend_lin, bend_log, clamp_unit, fold_bipolar, fold_unipolar,
+    Polarity, ScaleFold, Shape, bend_exp, bend_log, clamp_unit, fold_bipolar, fold_unipolar,
     pol_abs, pol_bipolar, pol_direct, scale_norm, shape, shape_exp, shape_lin, shape_log,
 };
 use crate::roster::MatrixRoster;
@@ -104,7 +105,12 @@ pub fn slot_scale<S: SourceEndpoint, D, const NS: usize>(
     sources: &[f32; NS],
 ) -> f32 {
     match slot.scale_src.idx() {
-        Some(sc) => scale_norm(slot.scale_src.is_bipolar(), sources[sc], slot.scale_shape),
+        Some(sc) => scale_norm(
+            slot.scale_src.is_bipolar(),
+            sources[sc],
+            slot.scale_polarity,
+            slot.scale_shape,
+        ),
         None => 1.0,
     }
 }
@@ -176,7 +182,7 @@ pub fn eval_dests<
 /// Identical arithmetic in an identical order, transposed: the outer loop is
 /// routes, the inner loop is lanes, and every branch the scalar form takes per
 /// lane (sentinel, off switch, zero depth, polarity, shape, scale source,
-/// bipolar test, scale bend) has been hoisted above the inner loop or compiled
+/// scale polarity, scale bend) has been hoisted above the inner loop or compiled
 /// away by [`RouteList::compile`](crate::slot::RouteList::compile). What is left
 /// is a contiguous multiply-accumulate over `L` contiguous floats.
 ///
@@ -214,26 +220,53 @@ pub fn eval_dests_bank<
             None => scale = [1.0; L],
             Some(sc) => {
                 let sv = &src[sc as usize];
-                // Fold and bend are both per-route constants, so both dispatch
-                // here — six straight-line arms rather than a `scale_norm` call
-                // carrying two branches into the lane loop. The arms are
-                // `curve`'s free functions, which is what keeps this loop's
-                // arithmetic and `scale_norm`'s the *same* arithmetic rather
-                // than two spellings that agree today.
-                macro_rules! vca_arm {
-                    ($fold:path, $bend:path) => {
+                // Range map and bend are both per-route constants, so both
+                // dispatch here rather than riding a `scale_norm` call into the
+                // lane loop. The arms are `curve`'s free functions, which is
+                // what keeps this loop's arithmetic and `scale_norm`'s the
+                // *same* arithmetic rather than two spellings that agree today.
+                //
+                // **Two dispatches, not one over the pair.** Fusing them is the
+                // obvious spelling and was measured: `(fold, bend)` expands
+                // twelve lane loops and cost ~4% on `matrix_eval_scaled`, while
+                // this pair expands six — the same six the fold-and-bend had
+                // before the VCA gained a polarity — and costs ~1.4%. The
+                // buffer round trip between the two passes is `L` floats in L1;
+                // the code growth was the expensive half. Bit-identical either
+                // way: same operations, same order, per lane.
+                //
+                // Four range-map arms, not six: `RouteList::compile` has
+                // already collapsed the slot's scale polarity and the source's
+                // own polarity into one [`ScaleFold`], because `Abs` and
+                // `Bipolar` are absolute range maps that do not consult the
+                // source (0341).
+                macro_rules! fold_arm {
+                    ($fold:path) => {
                         for l in 0..L {
-                            scale[l] = $bend(clamp_unit($fold(sv[l])));
+                            scale[l] = clamp_unit($fold(sv[l]));
                         }
                     };
                 }
-                match (r.scale_bipolar, r.scale_shape) {
-                    (false, Shape::Lin) => vca_arm!(fold_unipolar, bend_lin),
-                    (false, Shape::Exp) => vca_arm!(fold_unipolar, bend_exp),
-                    (false, Shape::Log) => vca_arm!(fold_unipolar, bend_log),
-                    (true, Shape::Lin) => vca_arm!(fold_bipolar, bend_lin),
-                    (true, Shape::Exp) => vca_arm!(fold_bipolar, bend_exp),
-                    (true, Shape::Log) => vca_arm!(fold_bipolar, bend_log),
+                match r.scale_fold {
+                    ScaleFold::Passthrough => fold_arm!(fold_unipolar),
+                    ScaleFold::Fold => fold_arm!(fold_bipolar),
+                    ScaleFold::Rectify => fold_arm!(pol_abs),
+                    ScaleFold::AcCouple => fold_arm!(pol_bipolar),
+                }
+                macro_rules! bend_arm {
+                    ($bend:path) => {
+                        for l in 0..L {
+                            scale[l] = $bend(scale[l]);
+                        }
+                    };
+                }
+                match r.scale_shape {
+                    // `bend_lin` is the identity; spelling the arm out would
+                    // expand a whole third copy of the lane loop to copy the
+                    // buffer onto itself.
+                    Shape::Lin => {}
+                    Shape::Exp => bend_arm!(bend_exp),
+                    Shape::Log => bend_arm!(bend_log),
                 }
             }
         }

@@ -96,6 +96,7 @@ fn main() {
             polarity: Polarity::Direct,
             shape: Shape::Lin,
             enabled: true,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
@@ -106,6 +107,7 @@ fn main() {
             polarity: Polarity::Direct,
             shape: Shape::Lin,
             enabled: true,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
@@ -116,6 +118,7 @@ fn main() {
             polarity: Polarity::Direct,
             shape: Shape::Lin,
             enabled: true,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };

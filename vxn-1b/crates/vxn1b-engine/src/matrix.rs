@@ -592,6 +592,7 @@ pub fn default_patch() -> MatrixTable {
         polarity: Polarity::Direct,
         shape: Shape::Lin,
         enabled: true,
+        scale_polarity: Polarity::Direct,
         scale_shape: Shape::Lin,
         scale_src: SourceId::None,
     };
@@ -602,6 +603,7 @@ pub fn default_patch() -> MatrixTable {
         polarity: Polarity::Direct,
         shape: Shape::Lin,
         enabled: true,
+        scale_polarity: Polarity::Direct,
         scale_shape: Shape::Lin,
         scale_src: SourceId::None,
     };
@@ -619,6 +621,7 @@ pub const SPREAD_TO_PAN: MatrixSlot = MatrixSlot {
     polarity: Polarity::Direct,
     shape: Shape::Lin,
     enabled: true,
+    scale_polarity: Polarity::Direct,
     scale_shape: Shape::Lin,
     scale_src: SourceId::None,
 };
@@ -832,6 +835,7 @@ mod tests {
             polarity: Polarity::Direct,
             shape: Shape::Lin,
             enabled: true,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
@@ -884,6 +888,7 @@ mod tests {
             shape: Shape::Lin,
             enabled: false,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
         };
         t.slots[0] = parked;
@@ -908,6 +913,7 @@ mod tests {
                 polarity: Polarity::Direct,
                 shape: Shape::Lin,
                 enabled: true,
+                scale_polarity: Polarity::Direct,
                 scale_shape: Shape::Lin,
                 scale_src: SourceId::None,
             };
@@ -940,6 +946,7 @@ mod tests {
                 polarity: Polarity::Direct,
                 shape: Shape::Lin,
                 enabled: true,
+                scale_polarity: Polarity::Direct,
                 scale_shape: Shape::Lin,
                 scale_src: SourceId::None,
             }
@@ -954,6 +961,7 @@ mod tests {
                 polarity: Polarity::Direct,
                 shape: Shape::Lin,
                 enabled: true,
+                scale_polarity: Polarity::Direct,
                 scale_shape: Shape::Lin,
                 scale_src: SourceId::None,
             }

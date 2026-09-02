@@ -30,6 +30,11 @@ const FIELDS = [
   { key: 'polarity', wire: 'polarity' },
   { key: 'shape', wire: 'shape' },
   { key: 'scale', wire: 'scale' },
+  // The scale VCA's own two axes (0341). `scalePolarity` has no combo yet —
+  // the control that exposes it is 0340 — but the pairing lives here so the
+  // wire, the snapshot reseed and the bin's clear already carry it. Both loops
+  // over FIELDS skip a key with no element.
+  { key: 'scalePolarity', wire: 'scale-polarity' },
   { key: 'scaleShape', wire: 'scale-shape' },
 ];
 const WIRE_OF = Object.fromEntries(FIELDS.map((f) => [f.key, f.wire]));
@@ -40,6 +45,7 @@ const BLANK_SLOT = {
   polarity: 0,
   shape: 0,
   scale: 0,
+  scalePolarity: 0,
   scaleShape: 0,
   enabled: false,
 };

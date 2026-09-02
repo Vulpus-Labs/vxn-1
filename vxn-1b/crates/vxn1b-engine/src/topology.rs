@@ -115,6 +115,7 @@ pub fn apply_edit(table: &mut MatrixTable, edit: MatrixEdit) {
         MatrixField::Polarity => slot.polarity = Polarity::from_u8(edit.value),
         MatrixField::Shape => slot.shape = Shape::from_u8(edit.value),
         MatrixField::ScaleSrc => slot.scale_src = SourceId::from_u8(edit.value),
+        MatrixField::ScalePolarity => slot.scale_polarity = Polarity::from_u8(edit.value),
         MatrixField::ScaleShape => slot.scale_shape = Shape::from_u8(edit.value),
         MatrixField::Enabled => slot.enabled = edit.value != 0,
     }
@@ -317,6 +318,38 @@ mod tests {
         assert!(ring.resync_pending());
         ring.clear_resync();
         assert!(!ring.resync_pending());
+    }
+
+    /// The scale VCA's polarity is its own field on the wire (0341), decoded
+    /// into its own column. Both halves of that are worth pinning: an edit
+    /// aimed at it must not land on the route's own polarity, and an edit aimed
+    /// at the route must not land on the VCA's.
+    #[test]
+    fn a_scale_polarity_edit_lands_on_its_own_column() {
+        let mut table = MatrixTable::default();
+        apply_edit(
+            &mut table,
+            MatrixEdit {
+                layer: Layer::L1,
+                slot: 2,
+                field: MatrixField::ScalePolarity,
+                value: Polarity::Abs as u8,
+            },
+        );
+        assert_eq!(table.slots[2].scale_polarity, Polarity::Abs);
+        assert_eq!(table.slots[2].polarity, Polarity::Direct);
+
+        apply_edit(
+            &mut table,
+            MatrixEdit {
+                layer: Layer::L1,
+                slot: 2,
+                field: MatrixField::Polarity,
+                value: Polarity::Bipolar as u8,
+            },
+        );
+        assert_eq!(table.slots[2].polarity, Polarity::Bipolar);
+        assert_eq!(table.slots[2].scale_polarity, Polarity::Abs);
     }
 
     #[test]

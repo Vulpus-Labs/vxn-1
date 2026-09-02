@@ -748,7 +748,7 @@ pub extern "C" fn vxnc_ui_set_matrix_row(
     active: u32,
     depth: f32,
     scale_src: u32,
-    scale_shape: u32,
+    scale_curve: u32,
 ) {
     state().post_custom(Vxn2UiCustom::SetMatrixRow {
         slot: slot as u8,
@@ -759,7 +759,7 @@ pub extern "C" fn vxnc_ui_set_matrix_row(
             active: active != 0,
             depth,
             scale_src: scale_src as u8,
-            scale_shape: scale_shape as u8,
+            scale_curve: scale_curve as u8,
         },
     });
 }
@@ -1193,7 +1193,7 @@ mod tests {
                 active: true,
                 depth: 0.5,
                 scale_src: 0,
-                scale_shape: 0,
+                scale_curve: 0,
             },
         });
         s.tick();

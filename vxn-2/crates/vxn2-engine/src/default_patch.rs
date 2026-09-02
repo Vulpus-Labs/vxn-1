@@ -154,6 +154,7 @@ pub fn default_matrix() -> MatrixTable {
         polarity: Polarity::Direct,
         shape: Shape::Lin,
         scale_src: SourceId::None,
+        scale_polarity: Polarity::Direct,
         scale_shape: Shape::Lin,
         enabled: true,
     };
@@ -164,6 +165,7 @@ pub fn default_matrix() -> MatrixTable {
         polarity: Polarity::Direct,
         shape: Shape::Lin,
         scale_src: SourceId::None,
+        scale_polarity: Polarity::Direct,
         scale_shape: Shape::Lin,
         enabled: true,
     };
@@ -174,6 +176,7 @@ pub fn default_matrix() -> MatrixTable {
         polarity: Polarity::Direct,
         shape: Shape::Exp,
         scale_src: SourceId::None,
+        scale_polarity: Polarity::Direct,
         scale_shape: Shape::Lin,
         enabled: true,
     };
@@ -184,6 +187,7 @@ pub fn default_matrix() -> MatrixTable {
         polarity: Polarity::Direct,
         shape: Shape::Lin,
         scale_src: SourceId::None,
+        scale_polarity: Polarity::Direct,
         scale_shape: Shape::Lin,
         enabled: true,
     };
@@ -196,6 +200,7 @@ pub fn default_matrix() -> MatrixTable {
         polarity: Polarity::Direct,
         shape: Shape::Lin,
         scale_src: SourceId::None,
+        scale_polarity: Polarity::Direct,
         scale_shape: Shape::Lin,
         enabled: true,
     };
@@ -206,6 +211,7 @@ pub fn default_matrix() -> MatrixTable {
         polarity: Polarity::Direct,
         shape: Shape::Lin,
         scale_src: SourceId::None,
+        scale_polarity: Polarity::Direct,
         scale_shape: Shape::Lin,
         enabled: true,
     };

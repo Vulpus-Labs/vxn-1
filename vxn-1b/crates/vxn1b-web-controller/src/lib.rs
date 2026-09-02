@@ -1690,11 +1690,15 @@ mod tests {
     fn unknown_matrix_field_or_layer_is_dropped() {
         assert_eq!(vocab::matrix_field_from_wire(0), Some(MatrixField::Source));
         assert_eq!(vocab::matrix_field_from_wire(3), Some(MatrixField::ScaleSrc));
-        // 0..=3 are frozen (they predate the polarity/shape split); 4..=6 were
-        // appended after, so 7 is the first ordinal past the table.
+        // 0..=3 are frozen (they predate the polarity/shape split); 4..=7 were
+        // appended after, so 8 is the first ordinal past the table.
         assert_eq!(vocab::matrix_field_from_wire(4), Some(MatrixField::Shape));
         assert_eq!(vocab::matrix_field_from_wire(6), Some(MatrixField::Enabled));
-        assert_eq!(vocab::matrix_field_from_wire(7), None);
+        assert_eq!(
+            vocab::matrix_field_from_wire(7),
+            Some(MatrixField::ScalePolarity)
+        );
+        assert_eq!(vocab::matrix_field_from_wire(8), None);
         assert_eq!(vocab::matrix_field_from_wire(u32::MAX), None);
         assert_eq!(layer_from_wire(0), Some(Layer::L1));
         assert_eq!(layer_from_wire(1), Some(Layer::L2));

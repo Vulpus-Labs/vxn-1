@@ -219,6 +219,9 @@
     // page never hardcodes the arithmetic in `matrix::curve_code`.
     var shapesList = window.__vxn.matrix.shapes;
     var polaritiesList = window.__vxn.matrix.polarities;
+    // The scale VCA carries the same flat code (0341), so it reads the same
+    // nine-entry list rather than a shapes-only one.
+    var curvesList = window.__vxn.matrix.curves;
     var CURVE_STRIDE = window.__vxn.matrix.curve_stride | 0;
     function curveCode(polarity, shape) {
       return (polarity | 0) * CURVE_STRIDE + (shape | 0);
@@ -271,7 +274,7 @@
     function dispatchRow(slot, partial) {
       var current = window.__vxn.matrix.rows[slot] || {
         source: 0, dest: 0, curve: 0, active: false, depth: 0.0, scale: 0,
-        scale_shape: 0,
+        scale_curve: 0,
       };
       var next = {
         source: partial.source != null ? partial.source : current.source,
@@ -281,10 +284,10 @@
         depth: partial.depth != null ? partial.depth : current.depth,
         // E033 secondary scale source (VCA on depth). Topology, like curve.
         scale: partial.scale != null ? partial.scale : (current.scale || 0),
-        // Bend on that VCA — also topology.
-        scale_shape: partial.scale_shape != null
-          ? partial.scale_shape
-          : (current.scale_shape || 0),
+        // The VCA's own polarity + bend, as one flat code — also topology.
+        scale_curve: partial.scale_curve != null
+          ? partial.scale_curve
+          : (current.scale_curve || 0),
       };
       // Local optimistic update so the UI doesn't flash before the
       // pump's next-tick MatrixSnapshot lands.
@@ -298,7 +301,7 @@
         || partial.curve != null
         || partial.active != null
         || partial.scale != null
-        || partial.scale_shape != null;
+        || partial.scale_curve != null;
 
       if (topologyChanged) {
         // Any topology field carries the whole row (depth included).
@@ -337,11 +340,13 @@
       var scaleSel = buildSelect(sourcesList, "scale");
       scaleSel.classList.add("vxn-mm-scale");
       scaleSel.title = "Scale depth by (secondary source)";
-      // Bend on the scale VCA, so e.g. velocity gating a route need not be a
-      // straight line. No polarity twin — the VCA is always [0, 1].
-      var scaleShapeSel = buildSelect(shapesList, "scale_shape");
-      scaleShapeSel.classList.add("vxn-mm-scale-shape");
-      scaleShapeSel.title = "Response bend on the scale amount";
+      // The scale VCA's own curve: a range mapping then a bend, the same nine
+      // combinations the route itself has (0341). One flat pick-list rather
+      // than the route's two, because the row grid has one column here — the
+      // glyph picker that splits it is 0340.
+      var scaleCurveSel = buildSelect(curvesList, "scale_curve");
+      scaleCurveSel.classList.add("vxn-mm-scale-shape");
+      scaleCurveSel.title = "Range mapping and bend on the scale amount";
 
       // Bipolar depth fader (E008 0096): center-tick + signed fill, value-pop
       // readout, double-click numeric entry, shift-drag fine — built on the
@@ -411,7 +416,7 @@
           polaritySel,
           shapeSel,
           scaleSel,
-          scaleShapeSel,
+          scaleCurveSel,
           bin,
         ]
       );
@@ -458,9 +463,9 @@
         dispatchRow(slot, { scale: parseInt(scaleSel.value, 10) | 0 });
         scaleSel.blur();
       });
-      scaleShapeSel.addEventListener("change", function () {
-        dispatchRow(slot, { scale_shape: parseInt(scaleShapeSel.value, 10) | 0 });
-        scaleShapeSel.blur();
+      scaleCurveSel.addEventListener("change", function () {
+        dispatchRow(slot, { scale_curve: parseInt(scaleCurveSel.value, 10) | 0 });
+        scaleCurveSel.blur();
       });
       active.addEventListener("change", function () {
         dispatchRow(slot, { active: !!active.checked });
@@ -472,7 +477,7 @@
         // mtxN-depth CLAP ids on slots 1-8.
         dispatchRow(slot, {
           source: 0, dest: 0, curve: 0, active: false, depth: 0.0, scale: 0,
-          scale_shape: 0,
+          scale_curve: 0,
         });
       });
 
@@ -485,7 +490,7 @@
         polarity: polaritySel,
         shape: shapeSel,
         scale: scaleSel,
-        scaleShape: scaleShapeSel,
+        scaleCurve: scaleCurveSel,
         active: active,
       };
     }
@@ -555,8 +560,8 @@
       if (document.activeElement !== r.scale) {
         r.scale.value = String((row.scale | 0));
       }
-      if (document.activeElement !== r.scaleShape) {
-        r.scaleShape.value = String((row.scale_shape | 0));
+      if (document.activeElement !== r.scaleCurve) {
+        r.scaleCurve.value = String((row.scale_curve | 0));
       }
       // The bipolar fader's `set` no-ops while its own drag-gate is active,
       // so a snapshot echo can't stomp an in-progress depth drag.
@@ -575,7 +580,7 @@
       for (var i = 0; i < SLOT_COUNT; i++) {
         var row = (table && table[i]) || {
           source: 0, dest: 0, curve: 0, active: false, depth: 0.0, scale: 0,
-          scale_shape: 0,
+          scale_curve: 0,
         };
         paintRow(i, row);
       }

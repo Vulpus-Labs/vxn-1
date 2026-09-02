@@ -244,10 +244,16 @@ codec event on web.
 
 There is also a forcing function on vxn-2's side, recorded here so it is not
 rediscovered under pressure: its packed topology word is **exactly full** —
-`source 8 | dest 8 | scale_shape 4 | curve 4 | scale_src 7 | active 1 = 32`. The
-scale bend consumed the last nibble. One more per-slot field and "one atomic word
-per row" stops working, at which point the choice is a seqlock or the topology
-ring above.
+`source 8 | dest 8 | scale_curve 4 | curve 4 | scale_src 7 | active 1 = 32`. The
+scale VCA's curve consumed the last nibble. One more per-slot field and "one
+atomic word per row" stops working, at which point the choice is a seqlock or the
+topology ring above.
+
+Giving the scale VCA its own polarity axis (0341) was the first test of that,
+and it passed without spending anything: the nibble held a three-valued `Shape`
+and now holds the nine-valued `(polarity, shape)` code, which still fits in four
+bits. vxn-1b, whose blob rejects older versions outright, widened its record
+instead. The next field will not be so lucky.
 
 ### 5. The test surface splits in two
 
@@ -264,7 +270,7 @@ The form is the one this ADR was asked for: *these routes at these depths, these
 source values, these modulation amounts.* A case is a declarative record —
 
 ```text
-routes:  [(source, dest, depth, polarity, shape, scale_src, scale_shape, enabled)]
+routes:  [(source, dest, depth, curve, scale_src, scale_curve, enabled)]
 sources: {name: value}
 expect:  {dest: value}
 ```

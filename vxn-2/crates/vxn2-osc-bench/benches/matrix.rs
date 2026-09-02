@@ -137,6 +137,7 @@ fn full_table() -> MatrixTable {
             polarity: curves[i % 4].0,
             shape: curves[i % 4].1,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -148,6 +149,16 @@ fn full_table() -> MatrixTable {
 /// Scale sources cycle through both polarities (bipolar `lfo1` / `pitch_eg`
 /// fold, unipolar `velocity` / `mod_wheel` pass through) and all three bends,
 /// so no single scale path stays hot across the table.
+///
+/// The scale VCA's own polarity is left at `Direct` throughout, deliberately.
+/// It gained that axis at 0341, and `Direct` is the range map this table always
+/// used — so the figure stays a like-for-like tripwire across the change rather
+/// than becoming a new number nothing can be compared against. `Abs` and
+/// `Bipolar` are one map each, the same shape of work as the fold this walks;
+/// what they add is *arms*, and whether those cost anything is a code-size
+/// question the fused-vs-split measurement in `eval_dests_bank` answers.
+/// Correctness across all four is `matrix::hoisted_scale_arms_match_scale_norm_exactly`
+/// and the shared golden harness.
 fn scaled_table() -> MatrixTable {
     let scale_srcs = [
         SourceId::Velocity,

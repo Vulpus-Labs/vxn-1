@@ -57,6 +57,7 @@ fn render_patch(mode: f32, amount: f32, route_depth: Option<f32>) -> Vec<f32> {
             polarity: Polarity::Direct,
             shape: Shape::Lin,
             enabled: true,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
@@ -148,6 +149,7 @@ fn route_is_per_voice_not_per_bank() {
             polarity: Polarity::Direct,
             shape: Shape::Lin,
             enabled: true,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };

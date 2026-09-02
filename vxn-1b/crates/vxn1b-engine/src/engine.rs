@@ -132,6 +132,10 @@ pub enum MatrixField {
     ScaleShape,
     /// The player's on/off switch. `value` is `0` / `1`.
     Enabled,
+    /// The scale VCA's own polarity (0341). Appended last for the same reason
+    /// `Shape` and `ScaleShape` were: the wire ordinal is the table position in
+    /// [`crate::vocab::MATRIX_FIELD_NAMES`], so a new field goes on the end.
+    ScalePolarity,
 }
 
 /// A UI edit to one matrix slot's topology on one layer. `value` is the
@@ -1637,6 +1641,7 @@ mod tests {
                 polarity: Polarity::Direct,
                 shape: Shape::Lin,
                 enabled: true,
+                scale_polarity: Polarity::Direct,
                 scale_shape: Shape::Lin,
                 scale_src: SourceId::None,
             };

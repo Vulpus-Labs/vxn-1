@@ -30,7 +30,7 @@ pub const LAYER_NAMES: [(&str, Layer); 2] = [("upper", Layer::L1), ("lower", Lay
 ///
 /// The ordinal is the array position, so this table defines both mappings and
 /// they cannot disagree.
-pub const MATRIX_FIELD_NAMES: [(&str, MatrixField); 7] = [
+pub const MATRIX_FIELD_NAMES: [(&str, MatrixField); 8] = [
     ("source", MatrixField::Source),
     ("dest", MatrixField::Dest),
     // Position 2 was "curve" before the axes split. `polarity` inherits both the
@@ -42,6 +42,7 @@ pub const MATRIX_FIELD_NAMES: [(&str, MatrixField); 7] = [
     ("shape", MatrixField::Shape),
     ("scale-shape", MatrixField::ScaleShape),
     ("enabled", MatrixField::Enabled),
+    ("scale-polarity", MatrixField::ScalePolarity),
 ];
 
 /// Oscilloscope tap. `off` is what the page sends when the scope is not
@@ -168,7 +169,7 @@ mod tests {
             // Ordinals 0..3 are frozen: `matrix_field_from_wire` decodes by
             // table position, so the fields that predate the axis split keep
             // their wire numbers and the new ones append after.
-            "\"matrixField\":{\"source\":0,\"dest\":1,\"polarity\":2,\"scale\":3,\"shape\":4,\"scale-shape\":5,\"enabled\":6}",
+            "\"matrixField\":{\"source\":0,\"dest\":1,\"polarity\":2,\"scale\":3,\"shape\":4,\"scale-shape\":5,\"enabled\":6,\"scale-polarity\":7}",
             "\"scopeTap\":{\"off\":0,\"upper\":1,\"lower\":2}",
             "\"matrixSlots\":16",
             "\"layerCount\":2",

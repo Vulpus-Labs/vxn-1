@@ -125,3 +125,84 @@ match moved back into the loop — see [[vxn1-soa-match-defeats-simd]].
   module note both state that no polarity axis exists here and explain why.
   Both must be rewritten, not deleted — the *reason* (the VCA has to land in
   `[0, 1]`) is still true and is what forces the clamp-after-polarity order.
+
+## Close-out (2026-09-02)
+
+- `scale_norm(bipolar, v, polarity, shape)` in
+  [curve.rs:789](../../crates/vxn-core-matrix/src/curve.rs#L789) — polarity,
+  clamp, bend, in that order. `Direct` is the pre-0341 fold verbatim. New
+  `ScaleFold` collapses the slot's scale polarity and the source's own polarity
+  into **four** arms (`Abs`/`Bipolar` never consult the source), so the lane
+  loop's range-map dispatch went 2 → 4, not 6.
+  `curve::tests::scale_norm_{direct_folds_clamps_then_bends,abs_opens_at_both_extremes,bipolar_gates_on_the_upper_half,lands_in_unit_range_for_every_combination}`,
+  `scale_fold_resolves_to_four_arms_bitwise`.
+- `MatrixSlot.scale_polarity` ([slot.rs:137](../../crates/vxn-core-matrix/src/slot.rs#L137));
+  `Route.scale_bipolar` → `Route.scale_fold`, resolved in `compile_slots`
+  ([slot.rs:393](../../crates/vxn-core-matrix/src/slot.rs#L393)). Both engines
+  apply it — vxn-2 decodes it at
+  [engine.rs:882](../../vxn-2/crates/vxn2-engine/src/engine.rs#L882), vxn-1b
+  carries it through the Amp factoring at
+  [bank.rs:1458](../../vxn-1b/crates/vxn1b-engine/src/bank.rs#L1458) and through
+  the shared compile everywhere else. `[0, 1]` holds for every
+  (source, polarity, shape) including NaN —
+  `scale_norm_lands_in_unit_range_for_every_combination` asserts the NaN gate
+  shut on all 18 combinations.
+- **Bit-identical.** vxn-1b's render hash matches `EXPECTED` (`baseline.rs`, 4/4
+  under `VXN_RENDER_HASH=1`). vxn-2 prints `0x95ac9a59d27aaddd` both here and
+  from a `HEAD` worktree built before the change — byte-for-byte the same render;
+  its `EXPECTED` is CI-captured and already failed on this box before 0341, as
+  its own header documents. Null tests pass on both.
+- vxn-2's state blob is unchanged in size and in every field offset. The scale
+  nibble held a 3-value `Shape` and now holds the 9-value `(polarity, shape)`
+  code — `curve_code(Direct, shape) == shape as u8`, so 0..=2 decode to exactly
+  the VCA they always meant and 3..=8 are values no old blob ever wrote.
+  `shared::tests::pre_0341_scale_nibble_decodes_to_the_same_vca`,
+  `the_packed_matrix_word_keeps_its_field_offsets`. Field renamed
+  `scale_shape` → `scale_curve` through row / codec / preset / JS; the preset key
+  is `scale-curve` with `scale-shape` kept as a read alias.
+- vxn-1b's topology record is 8 bytes at `VERSION = 14`
+  ([state.rs:60-73](../../vxn-1b/crates/vxn1b-engine/src/state.rs#L60-L73)) —
+  pinned together by `state::tests::the_slot_record_is_eight_bytes_at_this_version`,
+  because a widened record read at the old version would slide bytes into the
+  next layer's param block rather than fail. Preset gains a sparse
+  `scale-polarity` key defaulting to `direct`:
+  `preset::tests::{absent_curve_and_scale_default,scale_polarity_round_trips_and_stays_sparse_at_direct,unknown_scale_polarity_degrades_to_direct_with_warning}`,
+  `state::tests::scale_polarity_round_trips_per_layer`.
+- Golden `route(...)` takes a scale **curve** code
+  ([golden.rs:197](../../crates/vxn-core-matrix/src/golden.rs#L197)), decoded with
+  `curve_split` so an out-of-range byte degrades instead of aliasing. Eleven new
+  cases: `Abs` at both extremes of a bipolar source, at its centre, on a unipolar
+  source, and with both bends; `Bipolar` gating a unipolar source's upper half,
+  shutting below the halfway point, clamping hard on a bipolar source, and with
+  both bends. Coverage now asserts all 4 folds × 3 bends
+  (`scale_folds_and_bends_are_all_covered`) *and* both source polarities under
+  each scale polarity (`abs_scale_ignores_the_sources_own_polarity`).
+- **`matrix_eval_scaled`: +1.4%, not within noise — recorded rather than
+  claimed.** 73.1–74.4 ns → 74.4–75.5 ns, measured interleaved against a `HEAD`
+  worktree binary over five rounds. The hoist survives (a de-hoisted `scale_norm`
+  costs ~47–50%). Two supporting figures: the *fused* `match (fold, bend)`
+  spelling — twelve expanded lane loops — cost **+4%**, and splitting into a
+  4-arm range map then a 2-arm bend (`Lin` is the identity, no arm) recovers it
+  to six loops, the same six as before the VCA had a polarity; and
+  `matrix_eval_full`, whose routes are all unscaled and whose code path is
+  untouched, moved ~+3% under **both** variants, so that share is code layout
+  rather than dispatch. The measurement is in the `eval_dests_bank` comment;
+  `matrix_compile_full` is +8%, real work paid once per block.
+- Wire, both synths. vxn-1b: `MatrixField::ScalePolarity`, `scale-polarity` at
+  ordinal 7 in `MATRIX_FIELD_NAMES`, codec address decode, and `scalePolarity` in
+  the snapshot and the panel's `FIELDS` table (no control yet — that is 0340).
+  `topology::tests::a_scale_polarity_edit_lands_on_its_own_column`,
+  `codec::tests::matrix_addresses_round_trip`. vxn-2: the whole nine-value code
+  rides the existing row, wire to slot —
+  `engine::tests::a_wire_row_carries_the_scale_vcas_polarity_to_the_slot` — and
+  the panel's scale pick-list already offers all nine from the exported `curves`
+  list.
+- Doc debt from the ticket's Notes cleared, reason kept and conclusion dropped:
+  `scale_norm`'s note now explains that landing in `[0, 1]` is what *fixes the
+  clamp-between-the-axes order* rather than what forbids a polarity axis, and
+  spells out why "polarity then fold" degenerates to a no-op. Same for
+  `MatrixSlot::scale_shape`'s "no polarity twin" and vxn-2's `scale_shape` doc.
+  ADR 0003's "the packed word is exactly full" note records that 0341 was the
+  first test of that and spent nothing. `vxn-2/DEVELOPERS.{md,html}` updated.
+- `cargo test --workspace`: 1545 passed, 0 failed. JS: 43 suites / 347 tests
+  (vxn-1b), 5 / 35 (vxn-2).

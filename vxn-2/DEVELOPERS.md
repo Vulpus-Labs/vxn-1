@@ -372,8 +372,9 @@ What stays VXN2's: the source and destination sets, the wire/state encodings
 8 of 16 depths are CLAP-automatable, and everything about what a destination
 *means* — applying a total to a phase increment, a VCA or a filter coefficient.
 
-16 slots, each `(source, dest, depth, polarity, shape, scale_src, scale_shape,
-enabled)`. Depths for slots 1–8 are CLAP-automatable; slots 9–16 and all
+16 slots, each `(source, dest, depth, polarity, shape, scale_src,
+scale_polarity, scale_shape, enabled)` — the scale VCA carries the same two
+shaping axes the route does (0341). Depths for slots 1–8 are CLAP-automatable; slots 9–16 and all
 topology are patch state only.
 
 Sources and destinations live in **three granularity tiers**:

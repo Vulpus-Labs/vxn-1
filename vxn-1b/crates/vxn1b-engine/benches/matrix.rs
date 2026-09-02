@@ -139,6 +139,7 @@ fn full_table() -> MatrixTable {
             shape: curves[i % curves.len()].1,
             enabled: true,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
         };
     }

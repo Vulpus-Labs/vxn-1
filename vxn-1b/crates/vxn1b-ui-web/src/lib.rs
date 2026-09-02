@@ -283,8 +283,8 @@ fn assemble_faceplate(
 /// The page reads it as
 /// `window.vxn.matrix = { sources, dests, polarities, shapes, coherence,
 /// slots }`: each vocab entry is `{value, name, label}` (value = the wire `u8`),
-/// and `slots[layer][i]` is `{source, dest, polarity, shape, scale, scaleShape,
-/// enabled}` for slot `i`.
+/// and `slots[layer][i]` is `{source, dest, polarity, shape, scale,
+/// scalePolarity, scaleShape, enabled}` for slot `i`.
 /// Depths are **not** here — they ride `window.vxn.params` as CLAP params.
 ///
 /// `coherence[srcValue][destValue]` is the engine's verdict for that pairing as
@@ -329,7 +329,7 @@ fn build_matrix_json(matrices: &[MatrixTable; 2]) -> String {
 }
 
 /// One layer's slots as
-/// `[{source, dest, polarity, shape, scale, scaleShape, enabled}, …]` — the wire shape the
+/// `[{source, dest, polarity, shape, scale, scalePolarity, scaleShape, enabled}, …]` — the wire shape the
 /// page reads, shared by the open-time seed ([`build_matrix_json`]) and the
 /// running echo (the `kind: "matrix"` view payload). One writer, so the two can
 /// never drift into disagreeing about field names or value encodings.
@@ -345,6 +345,7 @@ fn slots_json(table: &MatrixTable) -> serde_json::Value {
                     "polarity": s.polarity as u8,
                     "shape": s.shape as u8,
                     "scale": s.scale_src as u8,
+                    "scalePolarity": s.scale_polarity as u8,
                     "scaleShape": s.scale_shape as u8,
                     "enabled": s.enabled,
                 })
@@ -796,6 +797,7 @@ mod tests {
             polarity: Polarity::Direct,
             shape: Shape::Exp,
             enabled: true,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             scale_src: SourceId::ModWheel,
         };
@@ -828,6 +830,7 @@ mod tests {
             polarity: Polarity::Direct,
             shape: Shape::Log,
             enabled: true,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             scale_src: SourceId::Env1,
         };

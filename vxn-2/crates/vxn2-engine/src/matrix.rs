@@ -936,6 +936,7 @@ mod tests {
             polarity,
             shape,
             scale_src: SourceId::None,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             enabled: true,
         }
@@ -1175,6 +1176,7 @@ mod tests {
             let mut table = MatrixTable::default();
             for (i, r) in case.routes.iter().enumerate() {
                 let (polarity, shape) = curve_split(r.curve);
+                let (scale_polarity, scale_shape) = curve_split(r.scale_curve);
                 table.slots[i] = MatrixSlot {
                     source: endpoint(r.source),
                     dest: if r.dest == NONE {
@@ -1186,7 +1188,8 @@ mod tests {
                     polarity,
                     shape,
                     scale_src: endpoint(r.scale_src),
-                    scale_shape: Shape::from_u8(r.scale_bend),
+                    scale_polarity,
+                    scale_shape,
                     enabled: r.enabled,
                 };
             }
@@ -1639,31 +1642,37 @@ mod tests {
             SourceId::VoiceRand,
         ] {
             let sc = scale_src.idx().unwrap();
-            for shape in [Shape::Lin, Shape::Exp, Shape::Log] {
-                for v in [-2.0_f32, -1.0, -0.5, 0.0, 0.25, 0.5, 0.75, 1.0, 3.0] {
-                    let mut sources = [[0.0_f32; STACK_LANES]; N_SOURCES];
-                    let si = SourceId::ModEnv.idx().unwrap();
-                    for k in 0..STACK_LANES {
-                        sources[si][k] = 1.0;
-                        sources[sc][k] = v;
+            // Every one of the twelve hoisted arms — four resolved range maps
+            // (the three scale polarities, with `Direct` splitting on the
+            // source's own) times three bends.
+            for polarity in Polarity::ALL {
+                for shape in [Shape::Lin, Shape::Exp, Shape::Log] {
+                    for v in [-2.0_f32, -1.0, -0.5, 0.0, 0.25, 0.5, 0.75, 1.0, 3.0] {
+                        let mut sources = [[0.0_f32; STACK_LANES]; N_SOURCES];
+                        let si = SourceId::ModEnv.idx().unwrap();
+                        for k in 0..STACK_LANES {
+                            sources[si][k] = 1.0;
+                            sources[sc][k] = v;
+                        }
+                        let mut slot =
+                            full_slot(SourceId::ModEnv, DestId::Op1Level, 1.0, Shape::Lin);
+                        slot.scale_src = scale_src;
+                        slot.scale_polarity = polarity;
+                        slot.scale_shape = shape;
+                        let mut table = MatrixTable::default();
+                        table.slots[0] = slot;
+                        let mut out = [[0.0_f32; STACK_LANES]; N_DESTS];
+                        eval_dests(&RouteList::compile(&table), &sources, &mut out);
+                        // Route is source 1.0 × depth 1.0 × gain, so the dest
+                        // value is the scale factor times that constant.
+                        let expect = scale_norm(scale_src.is_bipolar(), v, polarity, shape)
+                            * DestId::Op1Level.gain();
+                        assert_eq!(
+                            out[di][0], expect,
+                            "{scale_src:?}/{polarity:?}/{shape:?}/{v}: loop {} vs scale_norm {expect}",
+                            out[di][0]
+                        );
                     }
-                    let mut slot =
-                        full_slot(SourceId::ModEnv, DestId::Op1Level, 1.0, Shape::Lin);
-                    slot.scale_src = scale_src;
-                    slot.scale_shape = shape;
-                    let mut table = MatrixTable::default();
-                    table.slots[0] = slot;
-                    let mut out = [[0.0_f32; STACK_LANES]; N_DESTS];
-                    eval_dests(&RouteList::compile(&table), &sources, &mut out);
-                    // Route is source 1.0 × depth 1.0 × gain, so the dest value
-                    // is the scale factor times that constant.
-                    let expect = scale_norm(scale_src.is_bipolar(), v, shape)
-                        * DestId::Op1Level.gain();
-                    assert_eq!(
-                        out[di][0], expect,
-                        "{scale_src:?}/{shape:?}/{v}: loop {} vs scale_norm {expect}",
-                        out[di][0]
-                    );
                 }
             }
         }

@@ -180,6 +180,7 @@ fn reference_engine() -> Engine {
             shape,
             enabled: true,
             scale_src,
+            scale_polarity: Polarity::Direct,
             scale_shape,
         };
     }

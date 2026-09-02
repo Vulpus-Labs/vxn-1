@@ -106,10 +106,11 @@ pub enum Event {
         /// Secondary scale source (E033). Rides byte 12 of the slot (a
         /// reserved byte; `seq` is at 10..12). `0` = `None`.
         scale_src: u8,
-        /// Response bend on the scale VCA (`matrix::Shape` as `u8`).
-        /// Rides byte 13, the next reserved byte. `0` = `Lin` = no bend, so a
-        /// page that never writes it behaves exactly as before.
-        scale_shape: u8,
+        /// The scale VCA's own flat `(polarity, shape)` code
+        /// (`matrix::curve_code`, 0341). Rides byte 13, the next reserved byte.
+        /// `0` = `direct`/`lin` = fold by the source's own polarity, no bend, so
+        /// a page that never writes it behaves exactly as before.
+        scale_curve: u8,
     },
     /// Patch-swap pulse. Bumps the worklet's `load_epoch` so the engine fades
     /// the outgoing patch out and resets into the new one. No payload.
@@ -229,7 +230,7 @@ pub fn encode_into(event: &Event, buf: &mut [u8; SLOT_BYTES]) {
             active,
             depth,
             scale_src,
-            scale_shape,
+            scale_curve,
             ..
         } => {
             put_u16(buf, 2, (source as u16) | ((dest as u16) << 8));
@@ -237,7 +238,7 @@ pub fn encode_into(event: &Event, buf: &mut [u8; SLOT_BYTES]) {
             buf[8] = slot;
             buf[9] = (curve & !MATRIX_FLAG_ACTIVE) | if active { MATRIX_FLAG_ACTIVE } else { 0 };
             buf[12] = scale_src; // reserved byte (seq is 10..12)
-            buf[13] = scale_shape; // reserved byte
+            buf[13] = scale_curve; // reserved byte
         }
         Event::PatchSwap { .. } => {
             // Tag-only; no payload bytes.
@@ -305,7 +306,7 @@ pub fn decode(buf: &[u8]) -> Option<Event> {
                 active: buf[9] & MATRIX_FLAG_ACTIVE != 0,
                 depth: get_f32(buf, 4),
                 scale_src: buf[12],
-                scale_shape: buf[13],
+                scale_curve: buf[13],
             }
         }
         EV_PATCH_SWAP => Event::PatchSwap { offset },
@@ -349,7 +350,7 @@ pub fn apply(event: &Event, engine: &mut Engine, shared: &SharedParams) {
             active,
             depth,
             scale_src,
-            scale_shape,
+            scale_curve,
             ..
         } => {
             shared.set_matrix_row_raw(
@@ -361,7 +362,7 @@ pub fn apply(event: &Event, engine: &mut Engine, shared: &SharedParams) {
                     active,
                     depth,
                     scale_src,
-                    scale_shape,
+                    scale_curve,
                 },
             );
         }
@@ -516,7 +517,7 @@ mod tests {
                     active: true,
                     depth: 1.0,
                     scale_src: 0,
-                    scale_shape: 0,
+                    scale_curve: 0,
                 },
                 row(EV_MATRIX_ROW, 0, 7172, f1, 1, MATRIX_FLAG_ACTIVE),
             ),
@@ -533,7 +534,7 @@ mod tests {
                     active: false,
                     depth: 0.5,
                     scale_src: 0,
-                    scale_shape: 0,
+                    scale_curve: 0,
                 },
                 row(EV_MATRIX_ROW, 0, 7426, fhalf, 15, 3),
             ),
@@ -650,7 +651,7 @@ mod tests {
                 active: true,
                 depth: 0.75,
                 scale_src: 5, // mod-wheel (E033)
-                scale_shape: 0,
+                scale_curve: 0,
             },
             &mut Engine::new(48_000.0, crate::CONTROL_BLOCK),
             &shared,
@@ -689,7 +690,7 @@ mod tests {
             active: false,
             depth: -0.5,
             scale_src: 8, // key (E033) — exercises the reserved scale byte
-            scale_shape: 0,
+            scale_curve: 0,
         };
         assert_eq!(decode(&encode(&ev)).unwrap(), ev);
     }

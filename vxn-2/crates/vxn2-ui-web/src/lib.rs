@@ -365,7 +365,7 @@ fn matrix_row_from_json(v: &JsonValue) -> Option<MatrixRow> {
         // E033 scale source; absent (older page / unscaled) → 0 = None.
         scale_src: v.get("scale").and_then(|s| s.as_u64()).unwrap_or(0) as u8,
         // Scale VCA bend; absent (older page / straight-line VCA) → 0 = Lin.
-        scale_shape: v.get("scale_shape").and_then(|s| s.as_u64()).unwrap_or(0) as u8,
+        scale_curve: v.get("scale_curve").and_then(|s| s.as_u64()).unwrap_or(0) as u8,
     })
 }
 
@@ -377,7 +377,7 @@ fn matrix_row_to_json(row: MatrixRow) -> JsonValue {
         "active": row.active,
         "depth": row.depth,
         "scale": row.scale_src,
-        "scale_shape": row.scale_shape,
+        "scale_curve": row.scale_curve,
     })
 }
 
@@ -994,7 +994,7 @@ mod tests {
             source: 3,
             dest: 5,
             curve: 2,
-            scale_shape: 0,
+            scale_curve: 0,
             active: true,
             depth: 0.25,
             scale_src: 0,

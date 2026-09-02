@@ -54,7 +54,7 @@ use vxn_core_app::{ParamDesc, ParamKind};
 use crate::engine::{DEFAULT_SPLIT_POINT, KeyOp, KeyState};
 use crate::matrix::{
     CURVE_NAMES, DEST_NAMES, DestId, MatrixSlot, MatrixTable, MatrixTableExt, N_SLOTS,
-    SHAPE_NAMES, SOURCE_NAMES, Shape, SourceId, curve_code, curve_split,
+    POLARITY_NAMES, Polarity, SHAPE_NAMES, SOURCE_NAMES, Shape, SourceId, curve_code, curve_split,
 };
 use crate::params::{PARAMS, ParamId, Params};
 use crate::state::{LayerState, PluginState};
@@ -135,6 +135,16 @@ struct MatrixRowFile {
         skip_serializing_if = "is_none_src"
     )]
     scale_src: String,
+    /// Range mapping on the scale VCA — the VCA's own polarity axis (0341),
+    /// spelled as a [`POLARITY_NAMES`] name. Omitted when `direct`, which *is*
+    /// the fold the VCA applied before the axis existed, so a preset written
+    /// without the key loads with its scaling unchanged.
+    #[serde(
+        rename = "scale-polarity",
+        default = "default_polarity",
+        skip_serializing_if = "is_direct"
+    )]
+    scale_polarity: String,
     /// Response bend on the scale VCA. Omitted when `lin` (the identity), so a
     /// preset with a straight-line VCA round-trips exactly as before.
     #[serde(
@@ -152,6 +162,14 @@ struct MatrixRowFile {
 
 fn default_curve() -> String {
     "lin".to_string()
+}
+
+fn default_polarity() -> String {
+    "direct".to_string()
+}
+
+fn is_direct(s: &str) -> bool {
+    s == "direct"
 }
 
 fn default_enabled() -> bool {
@@ -216,6 +234,7 @@ fn matrix_rows(matrix: &MatrixTable) -> Vec<MatrixRowFile> {
             dest: DEST_NAMES[slot.dest as usize].to_string(),
             curve: CURVE_NAMES[curve_code(slot.polarity, slot.shape) as usize].to_string(),
             scale_src: SOURCE_NAMES[slot.scale_src as usize].to_string(),
+            scale_polarity: POLARITY_NAMES[slot.scale_polarity as usize].to_string(),
             scale_shape: SHAPE_NAMES[slot.scale_shape as usize].to_string(),
             enabled: slot.enabled,
         });
@@ -395,6 +414,13 @@ fn parse_layer(
             ));
             0
         });
+        let scale_polarity = name_to_u8(&POLARITY_NAMES, &row.scale_polarity).unwrap_or_else(|| {
+            warnings.push(format!(
+                "matrix slot {}: unknown scale polarity `{}` (using direct)",
+                row.slot, row.scale_polarity
+            ));
+            0
+        });
         let scale_shape = name_to_u8(&SHAPE_NAMES, &row.scale_shape).unwrap_or_else(|| {
             warnings.push(format!(
                 "matrix slot {}: unknown scale shape `{}` (using lin)",
@@ -413,6 +439,7 @@ fn parse_layer(
             enabled: row.enabled,
             depth: 0.0, // seeded from params below
             scale_src: SourceId::from_u8(scale_src),
+            scale_polarity: Polarity::from_u8(scale_polarity),
             scale_shape: Shape::from_u8(scale_shape),
         };
     }
@@ -528,7 +555,6 @@ mod tests {
     use crate::engine::KeyMode;
     // Only the tests build slots with an explicit polarity; the codec reaches
     // the axis through `curve_code` / `curve_split` and never names a variant.
-    use crate::matrix::Polarity;
     use crate::params::{StackWidth, TOTAL_PARAMS, VoiceMode};
 
     fn meta(name: &str) -> Meta {
@@ -553,6 +579,7 @@ mod tests {
             polarity: Polarity::Direct,
             shape: Shape::Lin,
             enabled: true,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
@@ -563,6 +590,7 @@ mod tests {
             polarity: Polarity::Bipolar,
             shape: Shape::Lin,
             enabled: true,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             scale_src: SourceId::ModWheel,
         };
@@ -590,6 +618,7 @@ mod tests {
             polarity: Polarity::Direct,
             shape: Shape::Lin,
             enabled: true,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
@@ -697,6 +726,7 @@ dest = "pan"
             polarity: Polarity::Direct,
             shape: Shape::Lin,
             enabled: true,
+            scale_polarity: Polarity::Direct,
             scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
@@ -983,6 +1013,55 @@ dest = "pitch"
             (Polarity::Direct, Shape::Lin)
         );
         assert_eq!(matrix.slots[0].scale_src, SourceId::None);
+        // Every preset written before 0341 says nothing about the scale VCA's
+        // polarity, and `direct` is the fold it always applied — so an absent
+        // key must load as the arithmetic the file was voiced against.
+        assert_eq!(matrix.slots[0].scale_polarity, Polarity::Direct);
+    }
+
+    /// The VCA's polarity survives the text format, and is written only when it
+    /// is off `direct` — so a patch with a plain scale VCA still round-trips
+    /// byte-identically.
+    #[test]
+    fn scale_polarity_round_trips_and_stays_sparse_at_direct() {
+        let mut st = sample_state();
+        st.layers[0].matrix.slots[0].scale_src = SourceId::StackPos;
+        st.layers[0].matrix.slots[0].scale_polarity = Polarity::Abs;
+        let text = write_preset(&meta("SP"), &st).unwrap();
+        assert!(text.contains("scale-polarity = \"abs\""), "{text}");
+
+        let (_m, back, warnings) = read_preset(&text).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(back.layers[0].matrix.slots[0].scale_polarity, Polarity::Abs);
+
+        // …and a `direct` VCA writes no key at all.
+        st.layers[0].matrix.slots[0].scale_polarity = Polarity::Direct;
+        let plain = write_preset(&meta("SP"), &st).unwrap();
+        assert!(!plain.contains("scale-polarity"), "{plain}");
+    }
+
+    #[test]
+    fn unknown_scale_polarity_degrades_to_direct_with_warning() {
+        let s = r#"
+schema = 1
+[meta]
+name = "U"
+[[matrix]]
+slot = 0
+source = "lfo1"
+dest = "pitch"
+scale-src = "mod-wheel"
+scale-polarity = "bogus"
+"#;
+        let (_m, st, warnings) = read_preset(s).unwrap();
+        assert_eq!(
+            st.layers[0].matrix.slots[0].scale_polarity,
+            Polarity::Direct
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("unknown scale polarity")),
+            "{warnings:?}"
+        );
     }
 
     #[test]

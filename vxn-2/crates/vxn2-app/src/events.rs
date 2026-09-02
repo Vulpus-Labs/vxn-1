@@ -12,8 +12,8 @@
 /// Single mod-matrix row. Source / dest are opaque u8 indices into the
 /// engine's `matrix::SourceId` / `matrix::DestId` enums; the engine's
 /// `Vxn2Params` impl decodes them at storage time. `curve` is the flat
-/// `(polarity, shape)` code from `matrix::curve_code`; `scale_shape` is an
-/// index into `matrix::Shape`.
+/// `(polarity, shape)` code from `matrix::curve_code`; `scale_curve` is the
+/// same flat code for the scale VCA's own two axes.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MatrixRow {
     pub source: u8,
@@ -24,9 +24,11 @@ pub struct MatrixRow {
     /// Secondary scale source. Opaque u8 index into `matrix::SourceId`,
     /// same encoding as `source`. `0` = `None` = depth unscaled.
     pub scale_src: u8,
-    /// Response bend on the normalised scale value. Index into
-    /// `matrix::Shape`; `0` = `Lin` = the VCA is a straight line.
-    pub scale_shape: u8,
+    /// The scale VCA's own flat `(polarity, shape)` code (0341) — the same
+    /// nine `matrix::curve_code` values the primary axis has. `0` =
+    /// `direct`/`lin` = fold by the scale source's own polarity, no bend, which
+    /// is what the VCA did before it had a polarity axis.
+    pub scale_curve: u8,
 }
 
 impl Default for MatrixRow {
@@ -38,7 +40,7 @@ impl Default for MatrixRow {
             active: false,
             depth: 0.0,
             scale_src: 0,
-            scale_shape: 0,
+            scale_curve: 0,
         }
     }
 }
