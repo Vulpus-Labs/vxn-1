@@ -731,7 +731,7 @@ pub struct MatrixRowRaw {
     ///
     /// The nibble held only a [`vxn2_engine::matrix::Shape`] until 0341, when
     /// the VCA gained the polarity axis. It did not have to grow:
-    /// `curve_code(Direct, shape) == shape as u8`, so every value an existing
+    /// `curve_code(None, shape) == shape as u8`, so every value an existing
     /// blob can hold still decodes to exactly the VCA it always meant, and
     /// 3..=8 are simply values no old blob ever wrote.
     pub scale_curve: u8,
@@ -1705,7 +1705,7 @@ mod tests {
 
     /// The scale nibble held a bare [`Shape`] until 0341 and now holds the flat
     /// nine-value curve code. Values 0..=2 must decode to exactly the VCAs they
-    /// always meant — `curve_code(Direct, shape) == shape as u8`, so an existing
+    /// always meant — `curve_code(None, shape) == shape as u8`, so an existing
     /// blob's scaling is unchanged rather than merely close.
     ///
     /// The word is packed here by hand from the *pre*-0341 spelling (`shape as
@@ -1736,7 +1736,7 @@ mod tests {
             assert_eq!(row.scale_curve, legacy_nibble);
             assert_eq!(
                 crate::matrix::curve_split(row.scale_curve),
-                (Polarity::Direct, shape),
+                (Polarity::None, shape),
                 "legacy scale nibble {legacy_nibble} changed meaning"
             );
         }

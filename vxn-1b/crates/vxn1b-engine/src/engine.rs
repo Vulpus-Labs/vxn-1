@@ -1638,10 +1638,10 @@ mod tests {
                 source: SourceId::Lfo2,
                 dest: DestId::Cutoff,
                 depth: 1.0,
-                polarity: Polarity::Direct,
+                polarity: Polarity::None,
                 shape: Shape::Lin,
                 enabled: true,
-                scale_polarity: Polarity::Direct,
+                scale_polarity: Polarity::None,
                 scale_shape: Shape::Lin,
                 scale_src: SourceId::None,
             };

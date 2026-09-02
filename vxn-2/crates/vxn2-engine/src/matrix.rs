@@ -125,8 +125,15 @@ use crate::modulation::ModBlock;
 /// types), and the `Kind` suffix was carrying no information.
 pub use vxn_core_matrix::curve::{
     CURVE_LABELS, CURVE_NAMES, N_CURVES, N_POLARITIES, N_SHAPES, POLARITY_LABELS, POLARITY_NAMES,
-    Polarity, SHAPE_LABELS, SHAPE_NAMES, Shape, curve_code, curve_split, scale_norm,
+    Polarity, SHAPE_LABELS, SHAPE_NAMES, Shape, curve_code, curve_split, polarity_from_name,
+    scale_norm,
 };
+
+/// Curve glyph geometry — each `(polarity, shape)` pair as an SVG polyline,
+/// plotted from the shared arithmetic so the faceplate's picture cannot drift
+/// from the sound. Re-exported for the faceplate crate (0340); nothing on an
+/// audio path touches it.
+pub use vxn_core_matrix::glyph::{CurveGlyph, curve_glyphs, picker_codes};
 
 /// How a destination's summed total is moved from one control block's value to
 /// the next — the `smooth =` column of a roster row, re-exported from
@@ -919,7 +926,7 @@ mod tests {
 
     /// Slot with the default `direct` polarity — the common case.
     fn full_slot(source: SourceId, dest: DestId, depth: f32, shape: Shape) -> MatrixSlot {
-        full_slot_pol(source, dest, depth, Polarity::Direct, shape)
+        full_slot_pol(source, dest, depth, Polarity::None, shape)
     }
 
     fn full_slot_pol(
@@ -936,7 +943,7 @@ mod tests {
             polarity,
             shape,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             enabled: true,
         }
@@ -1643,7 +1650,7 @@ mod tests {
         ] {
             let sc = scale_src.idx().unwrap();
             // Every one of the twelve hoisted arms — four resolved range maps
-            // (the three scale polarities, with `Direct` splitting on the
+            // (the three scale polarities, with `None` splitting on the
             // source's own) times three bends.
             for polarity in Polarity::ALL {
                 for shape in [Shape::Lin, Shape::Exp, Shape::Log] {

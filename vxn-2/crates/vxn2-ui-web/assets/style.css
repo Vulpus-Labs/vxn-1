@@ -979,8 +979,12 @@ html, body {
    * the bin button — rather than beside it. Padding rather than
    * `scrollbar-gutter: stable`, which the WKWebView the plugin renders in does
    * not support at the OS versions we target. The header is a child of this
-   * list too, so it stays aligned with the rows it labels. */
-  padding-right: 10px;
+   * list too, so it stays aligned with the rows it labels.
+   *
+   * Widened from 10px at 0340: macOS overlay bars widen on hover (~15px
+   * against ~9px at rest), so a gutter sized to the resting bar still let the
+   * hovered one reach back over the bin. */
+  padding-right: 14px;
 }
 .mm-overlay-row {
   display: grid;
@@ -1009,10 +1013,12 @@ html, body {
  * .overlay-backdrop / .overlay-panel / .mm-overlay rules above. */
 .vxn-mm-row {
   display: grid;
-  /* slot | active | source | dest | amount | polarity | shape | scale-by
-   * | scale-bend | bin. Curve is two columns since E0xx split it into the
-   * polarity and shape axes; the scale VCA gained its own bend beside it. */
-  grid-template-columns: 28px 24px 1fr 1fr 140px 72px 64px 1fr 64px 24px;
+  /* slot | active | source | dest | amount | curve | scale-by | scale-curve
+   * | bin. Each curve is ONE column since 0340: a 38px glyph button opening a
+   * 3x3 picker, in place of the 72px + 64px polarity/shape pick-lists it used
+   * to take. Two columns come back to the amount fader and the two source
+   * pick-lists, which are the row's cramped ones. */
+  grid-template-columns: 28px 24px 1fr 1fr 160px 38px 1fr 38px 24px;
   gap: 6px;
   align-items: center;
   padding: 4px 0;
@@ -1024,7 +1030,7 @@ html, body {
  * the full width. */
 .vxn-mm-header {
   display: grid;
-  grid-template-columns: 28px 24px 1fr 1fr 140px 72px 64px 1fr 64px 24px;
+  grid-template-columns: 28px 24px 1fr 1fr 160px 38px 1fr 38px 24px;
   gap: 6px;
   align-items: center;
   padding: 2px 0;
@@ -1062,8 +1068,11 @@ html, body {
 /* E033 scale-source selector: min-width 0 so the extra column can shrink; the
  * "—" (None) default renders dimmer so an unscaled slot reads as off. */
 .vxn-mm-scale { min-width: 0; }
-/* Scale bend sits with the scale source; same shrink allowance. */
-.vxn-mm-scale-shape { min-width: 0; }
+/* The two curve buttons (0340). The shared `.cg-btn` ruleset in
+ * `curve-picker.css` owns everything about how they look; these two exist only
+ * so the row grid can name the cells and the glyph fills its 38px column. */
+.vxn-mm-curve,
+.vxn-mm-scale-curve { min-width: 0; }
 
 /* Custom dropdown (mod-matrix.js buildSelect) — replaces the native <select>
  * so no NSMenu steals webview first-responder (the first-click-swallow bug on

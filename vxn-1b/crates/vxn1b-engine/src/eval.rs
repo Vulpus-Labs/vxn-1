@@ -325,9 +325,9 @@ mod tests {
     use super::*;
     use crate::matrix::{MatrixSlot, Polarity, Shape, default_patch};
 
-    /// Slot with the default `Direct` polarity — the common case in tests.
+    /// Slot with the default `None` polarity — the common case in tests.
     fn slot(source: SourceId, dest: DestId, depth: f32, shape: Shape) -> MatrixSlot {
-        slot_pol(source, dest, depth, Polarity::Direct, shape)
+        slot_pol(source, dest, depth, Polarity::None, shape)
     }
 
     fn slot_pol(
@@ -345,7 +345,7 @@ mod tests {
             shape,
             enabled: true,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
         }
     }
@@ -371,9 +371,9 @@ mod tests {
         // Every (polarity, shape) pair, so the parity test walks all nine
         // dispatch arms rather than the four the flat curve enum had.
         let curves = [
-            (Polarity::Direct, Shape::Lin),
-            (Polarity::Direct, Shape::Exp),
-            (Polarity::Direct, Shape::Log),
+            (Polarity::None, Shape::Lin),
+            (Polarity::None, Shape::Exp),
+            (Polarity::None, Shape::Log),
             (Polarity::Bipolar, Shape::Lin),
             (Polarity::Bipolar, Shape::Exp),
             (Polarity::Bipolar, Shape::Log),
@@ -396,7 +396,7 @@ mod tests {
                     // dropped identically by both evaluators.
                     enabled: ((pick >> 48) % 3) != 0,
                     scale_src: SourceId::from_u8(((pick >> 40) % (N_SOURCES as u64 + 1)) as u8),
-                    scale_polarity: Polarity::Direct,
+                    scale_polarity: Polarity::None,
                     scale_shape: [Shape::Lin, Shape::Exp, Shape::Log]
                         [((pick >> 52) % 3) as usize],
                 };

@@ -214,24 +214,20 @@
     var overlay = root.querySelector('[data-vxn-section="mod-matrix"]');
     var sourcesList = window.__vxn.matrix.sources;
     var destsList = window.__vxn.matrix.dests;
-    // The row's `curve` field is one flat code; the engine exports the two
-    // axes it decomposes into plus the stride to compose them with, so the
-    // page never hardcodes the arithmetic in `matrix::curve_code`.
-    var shapesList = window.__vxn.matrix.shapes;
-    var polaritiesList = window.__vxn.matrix.polarities;
-    // The scale VCA carries the same flat code (0341), so it reads the same
-    // nine-entry list rather than a shapes-only one.
+    // A row's `curve` and `scale_curve` are each one flat `(polarity, shape)`
+    // code, and since 0340 the page neither composes nor decomposes one: it
+    // shows the glyph for the code it has and sends back the code the picker
+    // returns. `shapes` / `polarities` / `curve_stride` are still in the
+    // descriptor for anything that wants the axes by name — this panel no
+    // longer does, which is the point of the picker.
     var curvesList = window.__vxn.matrix.curves;
-    var CURVE_STRIDE = window.__vxn.matrix.curve_stride | 0;
-    function curveCode(polarity, shape) {
-      return (polarity | 0) * CURVE_STRIDE + (shape | 0);
-    }
-    function curvePolarity(code) {
-      return Math.floor((code | 0) / CURVE_STRIDE);
-    }
-    function curveShape(code) {
-      return (code | 0) % CURVE_STRIDE;
-    }
+    // Glyph geometry + the picker's 3x3 layout order, both from the engine
+    // (0340), so the page draws points rather than re-deriving the formulae.
+    var curveGlyphs = window.__vxn.matrix.curve_glyphs || [];
+    var pickerCodes = window.__vxn.matrix.picker_codes || [];
+    // `createCurveButton` labels a cell by the flat curve label, so hand it the
+    // labels alone rather than the id/name/label objects the pick-lists take.
+    var curveLabels = curvesList.map(function (c) { return c.label; });
     // Flat coherence[srcId][dstId] verdict table exported by the engine
     // (E008 0090). The UI reads the verdict — it never re-derives the rule,
     // so engine and faceplate can't drift. "ok" (and any missing entry) is
@@ -329,24 +325,33 @@
     function buildRow(slot) {
       var sourceSel = buildSelect(sourcesList, "source");
       var destSel = buildSelect(destDisplayOrder(destsList), "dest");
-      // Curve is two pick-lists, not one: polarity maps the source's range,
-      // shape bends the response inside it.
-      var polaritySel = buildSelect(polaritiesList, "polarity");
-      polaritySel.title = "Range mapping applied to the source";
-      var shapeSel = buildSelect(shapesList, "shape");
-      shapeSel.title = "Response bend, applied after the range mapping";
+      // Curve is one glyph button, not two pick-lists (0340): the button draws
+      // the resulting mapping, and the 3x3 picker behind it is where the two
+      // axes are chosen. Two text columns saying "Bipolar" and "Exp" cost twice
+      // the width and still left the composition to be imagined.
+      var curveBtn = createCurveButton({
+        glyphs: curveGlyphs,
+        labels: curveLabels,
+        codes: pickerCodes,
+        title: "Curve",
+        className: "vxn-mm-curve",
+        onPick: function (code) { dispatchRow(slot, { curve: code }); },
+      });
       // E033: secondary scale source. Reuses the full source roster; index 0
       // ("—") is the None default so an unscaled slot reads as off at a glance.
       var scaleSel = buildSelect(sourcesList, "scale");
       scaleSel.classList.add("vxn-mm-scale");
       scaleSel.title = "Scale depth by (secondary source)";
-      // The scale VCA's own curve: a range mapping then a bend, the same nine
-      // combinations the route itself has (0341). One flat pick-list rather
-      // than the route's two, because the row grid has one column here — the
-      // glyph picker that splits it is 0340.
-      var scaleCurveSel = buildSelect(curvesList, "scale_curve");
-      scaleCurveSel.classList.add("vxn-mm-scale-shape");
-      scaleCurveSel.title = "Range mapping and bend on the scale amount";
+      // The scale VCA's own curve — the same nine the route has (0341), and the
+      // same control (0340), with no special case for it being the scale one.
+      var scaleCurveBtn = createCurveButton({
+        glyphs: curveGlyphs,
+        labels: curveLabels,
+        codes: pickerCodes,
+        title: "Scale curve",
+        className: "vxn-mm-scale-curve",
+        onPick: function (code) { dispatchRow(slot, { scale_curve: code }); },
+      });
 
       // Bipolar depth fader (E008 0096): center-tick + signed fill, value-pop
       // readout, double-click numeric entry, shift-drag fine — built on the
@@ -413,10 +418,9 @@
           sourceSel,
           destSel,
           depth,
-          polaritySel,
-          shapeSel,
+          curveBtn,
           scaleSel,
-          scaleCurveSel,
+          scaleCurveBtn,
           bin,
         ]
       );
@@ -442,30 +446,9 @@
         dispatchRow(slot, { dest: parseInt(destSel.value, 10) | 0 });
         destSel.blur();
       });
-      // Either axis rewrites the one flat code the row carries.
-      function commitCurve() {
-        dispatchRow(slot, {
-          curve: curveCode(
-            parseInt(polaritySel.value, 10) | 0,
-            parseInt(shapeSel.value, 10) | 0
-          ),
-        });
-      }
-      polaritySel.addEventListener("change", function () {
-        commitCurve();
-        polaritySel.blur();
-      });
-      shapeSel.addEventListener("change", function () {
-        commitCurve();
-        shapeSel.blur();
-      });
       scaleSel.addEventListener("change", function () {
         dispatchRow(slot, { scale: parseInt(scaleSel.value, 10) | 0 });
         scaleSel.blur();
-      });
-      scaleCurveSel.addEventListener("change", function () {
-        dispatchRow(slot, { scale_curve: parseInt(scaleCurveSel.value, 10) | 0 });
-        scaleCurveSel.blur();
       });
       active.addEventListener("change", function () {
         dispatchRow(slot, { active: !!active.checked });
@@ -487,10 +470,9 @@
         dest: destSel,
         depth: depth,
         depthFader: depthFader,
-        polarity: polaritySel,
-        shape: shapeSel,
+        curve: curveBtn,
         scale: scaleSel,
-        scaleCurve: scaleCurveSel,
+        scaleCurve: scaleCurveBtn,
         active: active,
       };
     }
@@ -510,10 +492,11 @@
         h("Source"),
         h("Destination"),
         h("Amount"),
-        h("Polarity"),
-        h("Shape"),
+        // Abbreviated: the curve columns are 38px, and spelling them out wraps
+        // the header onto two lines for the sake of two glyph buttons.
+        h("Crv"),
         h("Scale By"),
-        h("Scale Bend"),
+        h("Scl Crv"),
         el("span", {}, []),
       ]);
     }
@@ -551,18 +534,14 @@
       if (document.activeElement !== r.dest) {
         r.dest.value = String((row.dest | 0));
       }
-      if (document.activeElement !== r.polarity) {
-        r.polarity.value = String(curvePolarity(row.curve));
-      }
-      if (document.activeElement !== r.shape) {
-        r.shape.value = String(curveShape(row.curve));
-      }
+      // The curve buttons repaint unconditionally: a glyph has no in-progress
+      // edit to stomp the way an open pick-list does — the picker is a separate
+      // body-attached element, and picking closes it before the echo lands.
+      r.curve.setCode(row.curve | 0);
       if (document.activeElement !== r.scale) {
         r.scale.value = String((row.scale | 0));
       }
-      if (document.activeElement !== r.scaleCurve) {
-        r.scaleCurve.value = String((row.scale_curve | 0));
-      }
+      r.scaleCurve.setCode(row.scale_curve | 0);
       // The bipolar fader's `set` no-ops while its own drag-gate is active,
       // so a snapshot echo can't stomp an in-progress depth drag.
       r.depthFader.set(clamp(+row.depth || 0, -1, 1));

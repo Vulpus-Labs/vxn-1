@@ -433,13 +433,13 @@ macro_rules! matrix_enum {
 matrix_enum! {
     /// Range mapping applied to a source value, **before** the [`Shape`] bend.
     ///
-    /// - `Direct` — passthrough; the source's native polarity reaches the dest.
+    /// - `None` — passthrough; the source's native polarity reaches the dest.
     /// - `Bipolar` — AC-couple a unipolar `[0, 1]` source to `[-1, 1]` via
     ///   `2v − 1` (centred swing when routing mod-wheel/aftertouch into a
     ///   bipolar dest).
     /// - `Abs` — rectify a bipolar source to `[0, 1]` via `|v|`, so the route is
     ///   strongest at *both* extremes and silent at centre. A voice-position
-    ///   source into a pan dest is the motivating case: `direct` pans each voice
+    ///   source into a pan dest is the motivating case: `none` pans each voice
     ///   in proportion to its position, `abs` instead moves only the voices at
     ///   the edges of the spread and leaves the centre ones alone. Identity for
     ///   a source already unipolar.
@@ -449,10 +449,24 @@ matrix_enum! {
     ///   *away* from the destination's own parameter value while the centre
     ///   voices keep it. "More at the centre" falls out of the parameter
     ///   already being the offset such a mapping would re-derive.
-    Polarity, fallback = Direct, names = POLARITY_NAMES,
+    ///
+    /// ## The resting variant is `None`, and was `Direct` until 0340
+    ///
+    /// Renamed with the glyph picker, where "Direct" read as a fourth mapping
+    /// rather than as the absence of one. Three separately-scoped edits went
+    /// with it — the label, the wire name (`"direct"`, still accepted on read
+    /// by [`polarity_from_name`]), and this variant — and **none** of them
+    /// touched a discriminant. `curve_code` is `polarity · N_SHAPES + shape`, so
+    /// renumbering would silently remap every saved route in both synths; the
+    /// four pre-split preset spellings (`0 = lin`, `1 = exp`, `2 = log`,
+    /// `3 = bipolar`) still mean what they always did.
+    ///
+    /// The passthrough arm keeps its old name, [`pol_direct`]: it says what the
+    /// function *does*, which the rename did not change.
+    Polarity, fallback = None, names = POLARITY_NAMES,
     labels = POLARITY_LABELS;
     #[default]
-    Direct = 0, "direct", "Direct";
+    None = 0, "none", "None";
     Bipolar = 1, "bipolar", "Bipolar";
     Abs = 2, "abs", "Abs";
 }
@@ -504,12 +518,38 @@ pub const fn curve_code(polarity: Polarity, shape: Shape) -> u8 {
     polarity as u8 * N_SHAPES as u8 + shape as u8
 }
 
+/// Decode a [`Polarity`]'s wire name, accepting the spelling it had before
+/// 0340 alongside the current one.
+///
+/// `Polarity::None` was `Direct` and spelled `"direct"` on the wire until the
+/// glyph picker made "Direct" read as a fourth mapping rather than the absence
+/// of one. Nothing else about the axis moved — not the discriminant, not
+/// [`curve_code`] — so an old spelling names exactly the same range map and is
+/// simply accepted rather than warned about.
+///
+/// Case-insensitive, and `None` (the `Option`) for a name in neither vocabulary,
+/// so a caller can warn and fall back rather than guess.
+///
+/// Lives here rather than in a synth because there is only one polarity
+/// vocabulary and only one legacy spelling of it; a per-synth reader would be
+/// the same table written twice, which is what [`crate::curve`] exists to stop.
+pub fn polarity_from_name(name: &str) -> Option<Polarity> {
+    let lc = name.trim();
+    if lc.eq_ignore_ascii_case("direct") {
+        return Some(Polarity::None);
+    }
+    POLARITY_NAMES
+        .iter()
+        .position(|n| n.eq_ignore_ascii_case(lc))
+        .map(|i| Polarity::from_u8(i as u8))
+}
+
 /// Split a flat code back into its `(polarity, shape)` pair. Out-of-range codes
-/// degrade to `(Direct, Lin)` rather than aliasing onto a real curve.
+/// degrade to `(None, Lin)` rather than aliasing onto a real curve.
 #[inline]
 pub fn curve_split(code: u8) -> (Polarity, Shape) {
     if code as usize >= N_CURVES {
-        return (Polarity::Direct, Shape::Lin);
+        return (Polarity::None, Shape::Lin);
     }
     (
         Polarity::from_u8(code / N_SHAPES as u8),
@@ -616,18 +656,18 @@ pub fn fold_bipolar(v: f32) -> f32 {
 /// [`Polarity`] and the scale source's own polarity already collapsed together.
 ///
 /// Two decisions become one per-slot constant here, which is the whole point.
-/// `Polarity::Direct` is the only setting that consults the source — it means
+/// `Polarity::None` is the only setting that consults the source — it means
 /// "land in `[0, 1]` the way this source naturally does" — while `Abs` and
 /// `Bipolar` are range maps in their own right and ignore it. So the lane loop
 /// dispatches on **four** arms, not six, and the arm count grew from 6 to 12
 /// with the bend rather than to 18.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ScaleFold {
-    /// [`fold_unipolar`] — `Direct` on a unipolar source. The default, and the
+    /// [`fold_unipolar`] — `None` on a unipolar source. The default, and the
     /// identity.
     #[default]
     Passthrough,
-    /// [`fold_bipolar`] — `Direct` on a bipolar source: `(v + 1)·0.5`, so the
+    /// [`fold_bipolar`] — `None` on a bipolar source: `(v + 1)·0.5`, so the
     /// source's centre sits the VCA half open.
     Fold,
     /// [`pol_abs`] — `Abs`, whichever way the source swings: `|v|`. The gate
@@ -646,14 +686,14 @@ impl ScaleFold {
     /// Collapse a slot's scale [`Polarity`] and its scale source's own polarity
     /// into the one arm the lane loop dispatches on.
     ///
-    /// `bipolar` is read **only** under [`Polarity::Direct`]. That is the
+    /// `bipolar` is read **only** under [`Polarity::None`]. That is the
     /// asymmetry worth stating: the other two settings are absolute range maps,
     /// so a patch that picks one sounds the same whichever source is wired into
     /// the VCA.
     #[inline]
     pub const fn resolve(polarity: Polarity, bipolar: bool) -> Self {
         match polarity {
-            Polarity::Direct => {
+            Polarity::None => {
                 if bipolar {
                     ScaleFold::Fold
                 } else {
@@ -705,7 +745,7 @@ pub fn bend_log(v: f32) -> f32 {
 #[inline]
 pub fn map_polarity(polarity: Polarity, v: f32) -> f32 {
     match polarity {
-        Polarity::Direct => pol_direct(v),
+        Polarity::None => pol_direct(v),
         Polarity::Bipolar => pol_bipolar(v),
         Polarity::Abs => pol_abs(v),
     }
@@ -758,7 +798,7 @@ pub fn scale_fold(fold: ScaleFold, v: f32) -> f32 {
 /// `bipolar` is the scale *source's* own polarity — hence a bare `bool` rather
 /// than a source id, which is the one thing this crate deliberately does not
 /// know about. Each synth reads it off its own `SourceId` at the call site. It
-/// is consulted only under [`Polarity::Direct`]; see [`ScaleFold::resolve`].
+/// is consulted only under [`Polarity::None`]; see [`ScaleFold::resolve`].
 ///
 /// ## Why the clamp sits between them
 ///
@@ -775,7 +815,7 @@ pub fn scale_fold(fold: ScaleFold, v: f32) -> f32 {
 /// degenerates: a unipolar source under `Bipolar` would be `2v − 1` folded back
 /// by `(v + 1)·0.5`, an exact round trip to `v`, making the setting a no-op.
 ///
-/// [`Polarity::Direct`] with [`Shape::Lin`] is the pre-0341 arithmetic
+/// [`Polarity::None`] with [`Shape::Lin`] is the pre-0341 arithmetic
 /// unchanged — it *is* the fold-and-bend this used to be, so a patch that
 /// predates the polarity axis renders bit-identically.
 ///
@@ -803,9 +843,9 @@ mod tests {
     #[test]
     fn curve_code_preserves_pre_split_encoding() {
         let legacy = [
-            (0u8, Polarity::Direct, Shape::Lin, "lin"),
-            (1, Polarity::Direct, Shape::Exp, "exp"),
-            (2, Polarity::Direct, Shape::Log, "log"),
+            (0u8, Polarity::None, Shape::Lin, "lin"),
+            (1, Polarity::None, Shape::Exp, "exp"),
+            (2, Polarity::None, Shape::Log, "log"),
             (3, Polarity::Bipolar, Shape::Lin, "bipolar"),
         ];
         for (code, pol, shape, name) in legacy {
@@ -827,8 +867,8 @@ mod tests {
             }
         }
         assert_eq!(seen.len(), N_CURVES);
-        assert_eq!(curve_split(N_CURVES as u8), (Polarity::Direct, Shape::Lin));
-        assert_eq!(curve_split(255), (Polarity::Direct, Shape::Lin));
+        assert_eq!(curve_split(N_CURVES as u8), (Polarity::None, Shape::Lin));
+        assert_eq!(curve_split(255), (Polarity::None, Shape::Lin));
     }
 
     #[test]
@@ -856,7 +896,7 @@ mod tests {
 
     #[test]
     fn from_u8_degrades_out_of_range() {
-        assert_eq!(Polarity::from_u8(200), Polarity::Direct);
+        assert_eq!(Polarity::from_u8(200), Polarity::None);
         assert_eq!(Shape::from_u8(200), Shape::Lin);
     }
 
@@ -866,7 +906,7 @@ mod tests {
     fn dispatchers_agree_with_the_arms_bitwise() {
         let vs = [-1.0f32, -0.7, -0.25, 0.0, 0.25, 0.7, 1.0];
         for v in vs {
-            assert_eq!(map_polarity(Polarity::Direct, v).to_bits(), pol_direct(v).to_bits());
+            assert_eq!(map_polarity(Polarity::None, v).to_bits(), pol_direct(v).to_bits());
             assert_eq!(map_polarity(Polarity::Bipolar, v).to_bits(), pol_bipolar(v).to_bits());
             assert_eq!(map_polarity(Polarity::Abs, v).to_bits(), pol_abs(v).to_bits());
             assert_eq!(bend(Shape::Lin, v).to_bits(), shape_lin(v).to_bits());
@@ -892,28 +932,28 @@ mod tests {
         assert_eq!(shape_log(-1.0), -1.0);
     }
 
-    /// `Direct` is the pre-0341 arithmetic, unchanged. Every assertion here
+    /// `None` is the pre-0341 arithmetic, unchanged. Every assertion here
     /// predates the polarity axis and none of its numbers moved — which is the
     /// bit-identical-patch claim at its smallest scale.
     #[test]
-    fn scale_norm_direct_folds_clamps_then_bends() {
-        use Polarity::Direct;
+    fn scale_norm_none_folds_clamps_then_bends() {
+        use Polarity::None;
         // Unipolar passes through.
-        assert_eq!(scale_norm(false, 0.3, Direct, Shape::Lin), 0.3);
-        assert_eq!(scale_norm(false, 1.0, Direct, Shape::Lin), 1.0);
+        assert_eq!(scale_norm(false, 0.3, None, Shape::Lin), 0.3);
+        assert_eq!(scale_norm(false, 1.0, None, Shape::Lin), 1.0);
         // Bipolar folds: centre → half, extremes → the gate's ends.
-        assert_eq!(scale_norm(true, 0.0, Direct, Shape::Lin), 0.5);
-        assert_eq!(scale_norm(true, 1.0, Direct, Shape::Lin), 1.0);
-        assert_eq!(scale_norm(true, -1.0, Direct, Shape::Lin), 0.0);
+        assert_eq!(scale_norm(true, 0.0, None, Shape::Lin), 0.5);
+        assert_eq!(scale_norm(true, 1.0, None, Shape::Lin), 1.0);
+        assert_eq!(scale_norm(true, -1.0, None, Shape::Lin), 0.0);
         // Out-of-range input is clamped, not wrapped.
-        assert_eq!(scale_norm(false, 1.7, Direct, Shape::Lin), 1.0);
-        assert_eq!(scale_norm(false, -0.4, Direct, Shape::Lin), 0.0);
+        assert_eq!(scale_norm(false, 1.7, None, Shape::Lin), 1.0);
+        assert_eq!(scale_norm(false, -0.4, None, Shape::Lin), 0.0);
         // Every bend fixes 0 and 1 and stays inside them.
         for shape in Shape::ALL {
-            assert_eq!(scale_norm(false, 0.0, Direct, shape), 0.0);
-            assert_eq!(scale_norm(false, 1.0, Direct, shape), 1.0);
+            assert_eq!(scale_norm(false, 0.0, None, shape), 0.0);
+            assert_eq!(scale_norm(false, 1.0, None, shape), 1.0);
             for v in [-2.0f32, -0.1, 0.0, 0.3, 0.9, 1.0, 3.0] {
-                let n = scale_norm(false, v, Direct, shape);
+                let n = scale_norm(false, v, None, shape);
                 assert!((0.0..=1.0).contains(&n), "{shape:?}/{v} → {n}");
             }
         }
@@ -986,10 +1026,10 @@ mod tests {
     #[test]
     fn scale_fold_resolves_to_four_arms_bitwise() {
         assert_eq!(
-            ScaleFold::resolve(Polarity::Direct, false),
+            ScaleFold::resolve(Polarity::None, false),
             ScaleFold::Passthrough
         );
-        assert_eq!(ScaleFold::resolve(Polarity::Direct, true), ScaleFold::Fold);
+        assert_eq!(ScaleFold::resolve(Polarity::None, true), ScaleFold::Fold);
         // `Abs` and `Bipolar` ignore the source's own polarity — this is what
         // keeps the lane loop's range-map dispatch at four arms, not six.
         for bipolar in [false, true] {
@@ -1020,6 +1060,44 @@ mod tests {
                 pol_bipolar(v).to_bits()
             );
         }
+    }
+
+    /// The wire name moved at 0340 and the old one still reads. Both halves
+    /// matter: `"direct"` must land on the *same* range map rather than on the
+    /// fallback, or a preset written before the rename would quietly lose its
+    /// polarity — which for a `bipolar`-scaled route is an audible change, not
+    /// a cosmetic one.
+    #[test]
+    fn polarity_names_read_both_spellings_of_the_resting_map() {
+        assert_eq!(polarity_from_name("none"), Some(Polarity::None));
+        assert_eq!(polarity_from_name("direct"), Some(Polarity::None));
+        assert_eq!(polarity_from_name("  Direct "), Some(Polarity::None));
+        assert_eq!(polarity_from_name("ABS"), Some(Polarity::Abs));
+        assert_eq!(polarity_from_name("bipolar"), Some(Polarity::Bipolar));
+        // A name in neither vocabulary is a miss, not a silent fallback: the
+        // caller warns.
+        assert_eq!(polarity_from_name("bogus"), Option::None);
+        assert_eq!(polarity_from_name(""), Option::None);
+        // Every current name round-trips through it.
+        for p in Polarity::ALL {
+            assert_eq!(polarity_from_name(POLARITY_NAMES[p as usize]), Some(p));
+        }
+    }
+
+    /// "Direct" is gone from the vocabulary the faceplates read. The label is
+    /// what a player sees in the picker; the machine name is what a preset
+    /// spells.
+    #[test]
+    fn the_resting_polarity_is_spelled_none() {
+        assert_eq!(POLARITY_NAMES[Polarity::None as usize], "none");
+        assert_eq!(POLARITY_LABELS[Polarity::None as usize], "None");
+        assert!(!POLARITY_LABELS.contains(&"Direct"));
+        assert!(!POLARITY_NAMES.contains(&"direct"));
+        // …and the discriminant did not move with it, which is what keeps
+        // every saved route meaning what it meant.
+        assert_eq!(Polarity::None as u8, 0);
+        assert_eq!(curve_code(Polarity::None, Shape::Lin), 0);
+        assert_eq!(curve_code(Polarity::Bipolar, Shape::Lin), 3);
     }
 
     /// The documented divergence from [`f32::clamp`]: a NaN closes the gate

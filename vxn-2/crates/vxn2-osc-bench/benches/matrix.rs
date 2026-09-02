@@ -123,8 +123,8 @@ fn full_table() -> MatrixTable {
     // One of each polarity plus the shape roster — keeps the bench walking
     // every dispatch arm rather than a single hot one.
     let curves = [
-        (Polarity::Direct, Shape::Lin),
-        (Polarity::Direct, Shape::Exp),
+        (Polarity::None, Shape::Lin),
+        (Polarity::None, Shape::Exp),
         (Polarity::Abs, Shape::Log),
         (Polarity::Bipolar, Shape::Lin),
     ];
@@ -137,7 +137,7 @@ fn full_table() -> MatrixTable {
             polarity: curves[i % 4].0,
             shape: curves[i % 4].1,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -150,8 +150,8 @@ fn full_table() -> MatrixTable {
 /// fold, unipolar `velocity` / `mod_wheel` pass through) and all three bends,
 /// so no single scale path stays hot across the table.
 ///
-/// The scale VCA's own polarity is left at `Direct` throughout, deliberately.
-/// It gained that axis at 0341, and `Direct` is the range map this table always
+/// The scale VCA's own polarity is left at `None` throughout, deliberately.
+/// It gained that axis at 0341, and `None` is the range map this table always
 /// used — so the figure stays a like-for-like tripwire across the change rather
 /// than becoming a new number nothing can be compared against. `Abs` and
 /// `Bipolar` are one map each, the same shape of work as the fold this walks;

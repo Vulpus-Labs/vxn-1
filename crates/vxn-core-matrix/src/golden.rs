@@ -93,7 +93,12 @@ use crate::storage::{DestLanes, SourceLanes, assert_source_width, clear_dests};
 
 use core::marker::PhantomData;
 
-use Polarity::{Abs, Bipolar, Direct};
+// The polarity variants by name, so a case row reads as the pair it spells.
+// `None` here is `Polarity::None` — the resting range map — and is a different
+// thing from this module's [`NONE`], the unwired-endpoint sentinel. The case
+// distinction is the only thing telling them apart, and it is load-bearing: a
+// row's fourth column is a curve code and its fifth is an endpoint.
+use Polarity::{Abs, Bipolar, None};
 use Shape::{Exp, Lin, Log};
 
 // ── the case vocabulary ─────────────────────────────────────────────────────
@@ -140,15 +145,15 @@ pub const OFF: bool = false;
 /// `(polarity, shape)` code as the primary axis, so a case can also spell a
 /// byte past the table.
 ///
-/// The three `BEND_*` spellings are `Direct` on the scale polarity, which is
-/// the pre-0341 VCA — hence `curve_code(Direct, shape) == shape as u8`, and
+/// The three `BEND_*` spellings are `None` on the scale polarity, which is
+/// the pre-0341 VCA — hence `curve_code(None, shape) == shape as u8`, and
 /// hence every case row written before the axis existed means what it always
 /// meant.
-pub const BEND_LIN: u8 = curve_code(Direct, Lin);
+pub const BEND_LIN: u8 = curve_code(None, Lin);
 /// Scale curve: fold, then square.
-pub const BEND_EXP: u8 = curve_code(Direct, Exp);
+pub const BEND_EXP: u8 = curve_code(None, Exp);
 /// Scale curve: fold, then root.
-pub const BEND_LOG: u8 = curve_code(Direct, Log);
+pub const BEND_LOG: u8 = curve_code(None, Log);
 /// Scale curve: rectify (`|v|`), no bend — the gate open at **both** extremes
 /// of a bipolar source, shut at its centre.
 pub const SCALE_ABS: u8 = curve_code(Abs, Lin);
@@ -170,7 +175,7 @@ pub const SCALE_BIPOLAR_LOG: u8 = curve_code(Bipolar, Log);
 /// axes. That costs a row nothing — [`curve_code`] is a `const fn`, so a row
 /// spells `curve_code(Abs, Lin)` and reads as the pair — and it buys the
 /// coverage item a typed field could not express: a code past the table must
-/// degrade to `(Direct, Lin)` rather than alias onto a real curve, which is
+/// degrade to `(None, Lin)` rather than alias onto a real curve, which is
 /// what a corrupt preset does. `scale_curve` is a raw byte for the same reason.
 #[derive(Clone, Copy, Debug)]
 pub struct Route {
@@ -621,9 +626,9 @@ fn eval_banked<R: MatrixRoster, const NS: usize, const ND: usize, const L: usize
             };
         }
         match (c.polarity, c.shape) {
-            (Direct, Lin) => curve_arm!(pol_direct, shape_lin),
-            (Direct, Exp) => curve_arm!(pol_direct, shape_exp),
-            (Direct, Log) => curve_arm!(pol_direct, shape_log),
+            (None, Lin) => curve_arm!(pol_direct, shape_lin),
+            (None, Exp) => curve_arm!(pol_direct, shape_exp),
+            (None, Log) => curve_arm!(pol_direct, shape_log),
             (Bipolar, Lin) => curve_arm!(pol_bipolar, shape_lin),
             (Bipolar, Exp) => curve_arm!(pol_bipolar, shape_exp),
             (Bipolar, Log) => curve_arm!(pol_bipolar, shape_log),
@@ -810,19 +815,19 @@ pub const CASES: &[Case] = &[
     // exactly.
     Case {
         name: "direct/lin passes the source straight through",
-        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), NONE, BEND_LIN, ON)],
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(None, Lin), NONE, BEND_LIN, ON)],
         sources: &[(BI_A, -0.25)],
         expect: &[(DEST_A, -0.25)],
     },
     Case {
         name: "direct/exp is the signed square",
-        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Exp), NONE, BEND_LIN, ON)],
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(None, Exp), NONE, BEND_LIN, ON)],
         sources: &[(BI_A, -0.25)],
         expect: &[(DEST_A, -0.0625)],
     },
     Case {
         name: "direct/log is the signed root",
-        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Log), NONE, BEND_LIN, ON)],
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(None, Log), NONE, BEND_LIN, ON)],
         sources: &[(BI_A, -0.25)],
         expect: &[(DEST_A, -0.5)],
     },
@@ -892,37 +897,37 @@ pub const CASES: &[Case] = &[
     // folds to the same 0.25.
     Case {
         name: "unipolar scale source passes through, unbent",
-        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), UNI_B, BEND_LIN, ON)],
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(None, Lin), UNI_B, BEND_LIN, ON)],
         sources: &[(BI_A, 1.0), (UNI_B, 0.25)],
         expect: &[(DEST_A, 0.25)],
     },
     Case {
         name: "unipolar scale source, exp bend",
-        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), UNI_B, BEND_EXP, ON)],
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(None, Lin), UNI_B, BEND_EXP, ON)],
         sources: &[(BI_A, 1.0), (UNI_B, 0.25)],
         expect: &[(DEST_A, 0.0625)],
     },
     Case {
         name: "unipolar scale source, log bend",
-        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), UNI_B, BEND_LOG, ON)],
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(None, Lin), UNI_B, BEND_LOG, ON)],
         sources: &[(BI_A, 1.0), (UNI_B, 0.25)],
         expect: &[(DEST_A, 0.5)],
     },
     Case {
         name: "bipolar scale source folds before it bends, unbent",
-        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), BI_B, BEND_LIN, ON)],
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(None, Lin), BI_B, BEND_LIN, ON)],
         sources: &[(BI_A, 1.0), (BI_B, -0.5)],
         expect: &[(DEST_A, 0.25)],
     },
     Case {
         name: "bipolar scale source, exp bend",
-        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), BI_B, BEND_EXP, ON)],
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(None, Lin), BI_B, BEND_EXP, ON)],
         sources: &[(BI_A, 1.0), (BI_B, -0.5)],
         expect: &[(DEST_A, 0.0625)],
     },
     Case {
         name: "bipolar scale source, log bend",
-        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), BI_B, BEND_LOG, ON)],
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(None, Lin), BI_B, BEND_LOG, ON)],
         sources: &[(BI_A, 1.0), (BI_B, -0.5)],
         expect: &[(DEST_A, 0.5)],
     },
@@ -931,13 +936,13 @@ pub const CASES: &[Case] = &[
     // one cannot push it past its configured depth.
     Case {
         name: "a scale source below the gate shuts the route",
-        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), BI_B, BEND_LIN, ON)],
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(None, Lin), BI_B, BEND_LIN, ON)],
         sources: &[(BI_A, 1.0), (BI_B, -3.0)],
         expect: &[],
     },
     Case {
         name: "a scale source above the gate cannot exceed full depth",
-        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), UNI_B, BEND_LIN, ON)],
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(None, Lin), UNI_B, BEND_LIN, ON)],
         sources: &[(BI_A, 1.0), (UNI_B, 1.75)],
         expect: &[(DEST_A, 1.0)],
     },
@@ -954,19 +959,19 @@ pub const CASES: &[Case] = &[
     // edges".
     Case {
         name: "abs scale opens at a bipolar source's negative extreme",
-        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), BI_B, SCALE_ABS, ON)],
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(None, Lin), BI_B, SCALE_ABS, ON)],
         sources: &[(BI_A, 1.0), (BI_B, -0.75)],
         expect: &[(DEST_A, 0.75)],
     },
     Case {
         name: "abs scale opens identically at the positive extreme",
-        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), BI_B, SCALE_ABS, ON)],
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(None, Lin), BI_B, SCALE_ABS, ON)],
         sources: &[(BI_A, 1.0), (BI_B, 0.75)],
         expect: &[(DEST_A, 0.75)],
     },
     Case {
         name: "abs scale shuts the route at a bipolar source's centre",
-        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), BI_B, SCALE_ABS, ON)],
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(None, Lin), BI_B, SCALE_ABS, ON)],
         sources: &[(BI_A, 1.0), (BI_B, 0.0)],
         expect: &[],
     },
@@ -975,19 +980,19 @@ pub const CASES: &[Case] = &[
         // axis: there is nothing to rectify, so this reads the same as the
         // `direct` row two blocks up.
         name: "abs scale on a unipolar source is the identity",
-        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), UNI_B, SCALE_ABS, ON)],
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(None, Lin), UNI_B, SCALE_ABS, ON)],
         sources: &[(BI_A, 1.0), (UNI_B, 0.25)],
         expect: &[(DEST_A, 0.25)],
     },
     Case {
         name: "abs scale, exp bend",
-        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), BI_B, SCALE_ABS_EXP, ON)],
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(None, Lin), BI_B, SCALE_ABS_EXP, ON)],
         sources: &[(BI_A, 1.0), (BI_B, -0.5)],
         expect: &[(DEST_A, 0.25)],
     },
     Case {
         name: "abs scale, log bend",
-        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), BI_B, SCALE_ABS_LOG, ON)],
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(None, Lin), BI_B, SCALE_ABS_LOG, ON)],
         sources: &[(BI_A, 1.0), (BI_B, -0.25)],
         expect: &[(DEST_A, 0.5)],
     },
@@ -998,13 +1003,13 @@ pub const CASES: &[Case] = &[
     // straight back to `v` and make this setting a no-op reading 0.625.
     Case {
         name: "bipolar scale gates a unipolar source's upper half",
-        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), UNI_B, SCALE_BIPOLAR, ON)],
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(None, Lin), UNI_B, SCALE_BIPOLAR, ON)],
         sources: &[(BI_A, 1.0), (UNI_B, 0.625)],
         expect: &[(DEST_A, 0.25)],
     },
     Case {
         name: "bipolar scale shuts below the halfway point",
-        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), UNI_B, SCALE_BIPOLAR, ON)],
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(None, Lin), UNI_B, SCALE_BIPOLAR, ON)],
         sources: &[(BI_A, 1.0), (UNI_B, 0.25)],
         expect: &[],
     },
@@ -1014,25 +1019,25 @@ pub const CASES: &[Case] = &[
         // designing the combination away would mean the two axes are not
         // independent after all.
         name: "bipolar scale on a bipolar source clamps hard",
-        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), BI_B, SCALE_BIPOLAR, ON)],
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(None, Lin), BI_B, SCALE_BIPOLAR, ON)],
         sources: &[(BI_A, 1.0), (BI_B, 0.75)],
         expect: &[(DEST_A, 0.5)],
     },
     Case {
         name: "bipolar scale, exp bend",
-        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), UNI_B, SCALE_BIPOLAR_EXP, ON)],
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(None, Lin), UNI_B, SCALE_BIPOLAR_EXP, ON)],
         sources: &[(BI_A, 1.0), (UNI_B, 0.75)],
         expect: &[(DEST_A, 0.25)],
     },
     Case {
         name: "bipolar scale, log bend",
-        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), UNI_B, SCALE_BIPOLAR_LOG, ON)],
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(None, Lin), UNI_B, SCALE_BIPOLAR_LOG, ON)],
         sources: &[(BI_A, 1.0), (UNI_B, 0.625)],
         expect: &[(DEST_A, 0.5)],
     },
     Case {
         name: "an unwired scale source is exact unity",
-        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), NONE, BEND_LIN, ON)],
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(None, Lin), NONE, BEND_LIN, ON)],
         sources: &[(BI_A, 1.0), (UNI_B, 0.25)],
         expect: &[(DEST_A, 1.0)],
     },
@@ -1043,8 +1048,8 @@ pub const CASES: &[Case] = &[
         // the first's gate — which no single-route case can see.
         name: "an unscaled route after a scaled one is not gated by it",
         routes: &[
-            route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), UNI_B, BEND_LIN, ON),
-            route(BI_A, DEST_B, 1.0, curve_code(Direct, Lin), NONE, BEND_LIN, ON),
+            route(BI_A, DEST_A, 1.0, curve_code(None, Lin), UNI_B, BEND_LIN, ON),
+            route(BI_A, DEST_B, 1.0, curve_code(None, Lin), NONE, BEND_LIN, ON),
         ],
         sources: &[(BI_A, 1.0), (UNI_B, 0.25)],
         expect: &[(DEST_A, 0.25), (DEST_B, 1.0)],
@@ -1054,7 +1059,7 @@ pub const CASES: &[Case] = &[
         // of three distinct factors rather than one of them wearing the others'
         // identity.
         name: "depth and the VCA both scale the same route",
-        routes: &[route(BI_A, DEST_A, 0.5, curve_code(Direct, Lin), UNI_B, BEND_LIN, ON)],
+        routes: &[route(BI_A, DEST_A, 0.5, curve_code(None, Lin), UNI_B, BEND_LIN, ON)],
         sources: &[(BI_A, -1.0), (UNI_B, 0.25)],
         expect: &[(DEST_A, -0.125)],
     },
@@ -1062,8 +1067,8 @@ pub const CASES: &[Case] = &[
     Case {
         name: "a switched-off route contributes nothing but keeps its wiring",
         routes: &[
-            route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), NONE, BEND_LIN, ON),
-            route(BI_A, DEST_B, 1.0, curve_code(Direct, Lin), NONE, BEND_LIN, OFF),
+            route(BI_A, DEST_A, 1.0, curve_code(None, Lin), NONE, BEND_LIN, ON),
+            route(BI_A, DEST_B, 1.0, curve_code(None, Lin), NONE, BEND_LIN, OFF),
         ],
         sources: &[(BI_A, 0.5)],
         expect: &[(DEST_A, 0.5)],
@@ -1075,9 +1080,9 @@ pub const CASES: &[Case] = &[
         // value.
         name: "a switched-off route is dropped identically between two live ones",
         routes: &[
-            route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), NONE, BEND_LIN, ON),
-            route(UNI_A, DEST_A, 1.0, curve_code(Direct, Lin), NONE, BEND_LIN, OFF),
-            route(BI_B, DEST_A, 1.0, curve_code(Direct, Lin), NONE, BEND_LIN, ON),
+            route(BI_A, DEST_A, 1.0, curve_code(None, Lin), NONE, BEND_LIN, ON),
+            route(UNI_A, DEST_A, 1.0, curve_code(None, Lin), NONE, BEND_LIN, OFF),
+            route(BI_B, DEST_A, 1.0, curve_code(None, Lin), NONE, BEND_LIN, ON),
         ],
         sources: &[(BI_A, 0.5), (UNI_A, 1.0), (BI_B, 0.25)],
         expect: &[(DEST_A, 0.75)],
@@ -1086,9 +1091,9 @@ pub const CASES: &[Case] = &[
     Case {
         name: "three routes into one dest sum additively, in slot order",
         routes: &[
-            route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), NONE, BEND_LIN, ON),
-            route(UNI_A, DEST_A, 1.0, curve_code(Direct, Lin), NONE, BEND_LIN, ON),
-            route(BI_B, DEST_A, 1.0, curve_code(Direct, Lin), NONE, BEND_LIN, ON),
+            route(BI_A, DEST_A, 1.0, curve_code(None, Lin), NONE, BEND_LIN, ON),
+            route(UNI_A, DEST_A, 1.0, curve_code(None, Lin), NONE, BEND_LIN, ON),
+            route(BI_B, DEST_A, 1.0, curve_code(None, Lin), NONE, BEND_LIN, ON),
         ],
         sources: &[(BI_A, 0.5), (UNI_A, 0.25), (BI_B, -0.125)],
         expect: &[(DEST_A, 0.625)],
@@ -1096,8 +1101,8 @@ pub const CASES: &[Case] = &[
     Case {
         name: "depth scales each contribution before the sum, sign included",
         routes: &[
-            route(BI_A, DEST_C, 0.5, curve_code(Direct, Lin), NONE, BEND_LIN, ON),
-            route(BI_A, DEST_C, -0.25, curve_code(Direct, Lin), NONE, BEND_LIN, ON),
+            route(BI_A, DEST_C, 0.5, curve_code(None, Lin), NONE, BEND_LIN, ON),
+            route(BI_A, DEST_C, -0.25, curve_code(None, Lin), NONE, BEND_LIN, ON),
         ],
         sources: &[(BI_A, 0.5)],
         expect: &[(DEST_C, 0.125)],
@@ -1108,14 +1113,14 @@ pub const CASES: &[Case] = &[
         // three live routes to three different destinations.
         name: "inert slots interleaved with live ones compact away",
         routes: &[
-            route(NONE, DEST_A, 1.0, curve_code(Direct, Lin), NONE, BEND_LIN, ON),
-            route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), NONE, BEND_LIN, ON),
-            route(BI_A, DEST_A, 0.0, curve_code(Direct, Lin), NONE, BEND_LIN, ON),
-            route(UNI_A, DEST_B, 1.0, curve_code(Direct, Lin), NONE, BEND_LIN, ON),
-            route(BI_A, NONE, 1.0, curve_code(Direct, Lin), NONE, BEND_LIN, ON),
-            route(BI_A, DEST_C, 1.0, curve_code(Direct, Lin), NONE, BEND_LIN, OFF),
-            route(BI_B, DEST_D, -1.0, curve_code(Direct, Lin), NONE, BEND_LIN, ON),
-            route(NONE, NONE, 1.0, curve_code(Direct, Lin), NONE, BEND_LIN, ON),
+            route(NONE, DEST_A, 1.0, curve_code(None, Lin), NONE, BEND_LIN, ON),
+            route(BI_A, DEST_A, 1.0, curve_code(None, Lin), NONE, BEND_LIN, ON),
+            route(BI_A, DEST_A, 0.0, curve_code(None, Lin), NONE, BEND_LIN, ON),
+            route(UNI_A, DEST_B, 1.0, curve_code(None, Lin), NONE, BEND_LIN, ON),
+            route(BI_A, NONE, 1.0, curve_code(None, Lin), NONE, BEND_LIN, ON),
+            route(BI_A, DEST_C, 1.0, curve_code(None, Lin), NONE, BEND_LIN, OFF),
+            route(BI_B, DEST_D, -1.0, curve_code(None, Lin), NONE, BEND_LIN, ON),
+            route(NONE, NONE, 1.0, curve_code(None, Lin), NONE, BEND_LIN, ON),
         ],
         sources: &[(BI_A, 0.5), (UNI_A, 0.25), (BI_B, 0.5)],
         expect: &[(DEST_A, 0.5), (DEST_B, 0.25), (DEST_D, -0.5)],
@@ -1129,26 +1134,26 @@ pub const CASES: &[Case] = &[
     },
     Case {
         name: "zero depth short-circuits however loud the source",
-        routes: &[route(BI_A, DEST_A, 0.0, curve_code(Direct, Lin), NONE, BEND_LIN, ON)],
+        routes: &[route(BI_A, DEST_A, 0.0, curve_code(None, Lin), NONE, BEND_LIN, ON)],
         sources: &[(BI_A, 1.0)],
         expect: &[],
     },
     Case {
         name: "an unwired source is inert even with a stale depth",
-        routes: &[route(NONE, DEST_A, 99.0, curve_code(Direct, Lin), NONE, BEND_LIN, ON)],
+        routes: &[route(NONE, DEST_A, 99.0, curve_code(None, Lin), NONE, BEND_LIN, ON)],
         sources: &[(BI_A, 1.0)],
         expect: &[],
     },
     Case {
         name: "an unwired dest is inert even with a stale depth",
-        routes: &[route(BI_A, NONE, 99.0, curve_code(Direct, Lin), NONE, BEND_LIN, ON)],
+        routes: &[route(BI_A, NONE, 99.0, curve_code(None, Lin), NONE, BEND_LIN, ON)],
         sources: &[(BI_A, 1.0)],
         expect: &[],
     },
     // ── out-of-range codes degrade rather than alias ────────────────────────
     //
     // What a corrupt or forward-dated preset blob does. Degrading to
-    // `(Direct, Lin)` makes the route audibly plain; aliasing onto a real curve
+    // `(None, Lin)` makes the route audibly plain; aliasing onto a real curve
     // would make it audibly wrong.
     Case {
         name: "a curve code one past the table degrades to direct/lin",
@@ -1164,7 +1169,7 @@ pub const CASES: &[Case] = &[
     },
     Case {
         name: "an out-of-range scale curve degrades to direct/lin",
-        routes: &[route(BI_A, DEST_A, 1.0, curve_code(Direct, Lin), UNI_B, 200, ON)],
+        routes: &[route(BI_A, DEST_A, 1.0, curve_code(None, Lin), UNI_B, 200, ON)],
         sources: &[(BI_A, 1.0), (UNI_B, 0.25)],
         expect: &[(DEST_A, 0.25)],
     },
@@ -1528,7 +1533,7 @@ mod tests {
     fn an_unmentioned_dest_must_be_zero() {
         const BAD: Case = Case {
             name: "bad",
-            routes: &[route(BI_A, DEST_B, 1.0, curve_code(Direct, Lin), NONE, BEND_LIN, ON)],
+            routes: &[route(BI_A, DEST_B, 1.0, curve_code(None, Lin), NONE, BEND_LIN, ON)],
             sources: &[(BI_A, 0.5)],
             expect: &[],
         };

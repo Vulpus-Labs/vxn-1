@@ -650,11 +650,11 @@ mod tests {
                 source: crate::matrix::SourceId::Lfo2,
                 dest: crate::matrix::DestId::Cutoff,
                 depth: 0.0,
-                polarity: crate::matrix::Polarity::Direct,
+                polarity: crate::matrix::Polarity::None,
                 shape: crate::matrix::Shape::Lin,
                 enabled: true,
                 scale_src: crate::matrix::SourceId::None,
-                scale_polarity: crate::matrix::Polarity::Direct,
+                scale_polarity: crate::matrix::Polarity::None,
                 scale_shape: crate::matrix::Shape::Lin,
             };
         }

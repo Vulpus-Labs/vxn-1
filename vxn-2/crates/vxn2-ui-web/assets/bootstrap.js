@@ -69,6 +69,12 @@
       curve_stride:
         (MATRIX_LISTS && MATRIX_LISTS.curve_stride) ||
         ((MATRIX_LISTS && MATRIX_LISTS.shapes) || []).length,
+      // Curve glyph geometry and the picker's 3x3 layout order (0340), plotted
+      // by the engine from `vxn_core_matrix::curve` itself. An empty fallback
+      // leaves the buttons blank rather than drawing a wrong curve — the panel
+      // reads both by name, so the 0336 test pins them here.
+      curve_glyphs: (MATRIX_LISTS && MATRIX_LISTS.curve_glyphs) || [],
+      picker_codes: (MATRIX_LISTS && MATRIX_LISTS.picker_codes) || [],
       // Dense [srcWireId][dstWireId] verdict names ("ok", "tier-collapse",
       // "self-rate", "degenerate") — the engine's own predicate, so the panel
       // flags rows without re-deriving the rule.

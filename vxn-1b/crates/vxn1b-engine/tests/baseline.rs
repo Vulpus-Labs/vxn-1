@@ -99,22 +99,22 @@ const CHORD: [(u8, f32); 4] = [(36, 0.62), (48, 0.85), (60, 1.0), (67, 0.44)];
 /// so the scale path runs too.
 #[rustfmt::skip]
 const ROUTES: [(SourceId, DestId, f32, Polarity, Shape, SourceId, Shape); 16] = [
-    (SourceId::Env2,       DestId::Amp,            1.0,  Polarity::Direct,  Shape::Lin, SourceId::None,     Shape::Lin),
-    (SourceId::Env1,       DestId::Cutoff,         0.6,  Polarity::Direct,  Shape::Exp, SourceId::None,     Shape::Lin),
-    (SourceId::Spread,     DestId::Pan,            1.0,  Polarity::Direct,  Shape::Lin, SourceId::None,     Shape::Lin),
-    (SourceId::Lfo1,       DestId::Pitch,          0.55, Polarity::Direct,  Shape::Lin, SourceId::ModWheel, Shape::Exp),
-    (SourceId::Lfo2,       DestId::Pwm,            0.5,  Polarity::Direct,  Shape::Lin, SourceId::None,     Shape::Lin),
-    (SourceId::Velocity,   DestId::Amp,            0.4,  Polarity::Direct,  Shape::Exp, SourceId::None,     Shape::Lin),
-    (SourceId::Key,        DestId::Cutoff,         0.5,  Polarity::Direct,  Shape::Lin, SourceId::None,     Shape::Lin),
-    (SourceId::Aftertouch, DestId::CrossModAmount, 0.7,  Polarity::Direct,  Shape::Lin, SourceId::None,     Shape::Lin),
+    (SourceId::Env2,       DestId::Amp,            1.0,  Polarity::None,  Shape::Lin, SourceId::None,     Shape::Lin),
+    (SourceId::Env1,       DestId::Cutoff,         0.6,  Polarity::None,  Shape::Exp, SourceId::None,     Shape::Lin),
+    (SourceId::Spread,     DestId::Pan,            1.0,  Polarity::None,  Shape::Lin, SourceId::None,     Shape::Lin),
+    (SourceId::Lfo1,       DestId::Pitch,          0.55, Polarity::None,  Shape::Lin, SourceId::ModWheel, Shape::Exp),
+    (SourceId::Lfo2,       DestId::Pwm,            0.5,  Polarity::None,  Shape::Lin, SourceId::None,     Shape::Lin),
+    (SourceId::Velocity,   DestId::Amp,            0.4,  Polarity::None,  Shape::Exp, SourceId::None,     Shape::Lin),
+    (SourceId::Key,        DestId::Cutoff,         0.5,  Polarity::None,  Shape::Lin, SourceId::None,     Shape::Lin),
+    (SourceId::Aftertouch, DestId::CrossModAmount, 0.7,  Polarity::None,  Shape::Lin, SourceId::None,     Shape::Lin),
     (SourceId::NoteRandom, DestId::Osc1Pwm,        0.3,  Polarity::Bipolar, Shape::Lin, SourceId::None,     Shape::Lin),
-    (SourceId::StackPos,   DestId::Osc2Pwm,        0.4,  Polarity::Direct,  Shape::Lin, SourceId::None,     Shape::Lin),
-    (SourceId::PitchWheel, DestId::Pitch,          0.35, Polarity::Direct,  Shape::Lin, SourceId::None,     Shape::Lin),
-    (SourceId::Lfo2,       DestId::Lfo1Rate,       0.5,  Polarity::Direct,  Shape::Lin, SourceId::None,     Shape::Lin),
+    (SourceId::StackPos,   DestId::Osc2Pwm,        0.4,  Polarity::None,  Shape::Lin, SourceId::None,     Shape::Lin),
+    (SourceId::PitchWheel, DestId::Pitch,          0.35, Polarity::None,  Shape::Lin, SourceId::None,     Shape::Lin),
+    (SourceId::Lfo2,       DestId::Lfo1Rate,       0.5,  Polarity::None,  Shape::Lin, SourceId::None,     Shape::Lin),
     (SourceId::Env2,       DestId::Resonance,      0.3,  Polarity::Abs,     Shape::Lin, SourceId::None,     Shape::Lin),
-    (SourceId::ModWheel,   DestId::HpfCutoff,      0.4,  Polarity::Direct,  Shape::Log, SourceId::None,     Shape::Lin),
+    (SourceId::ModWheel,   DestId::HpfCutoff,      0.4,  Polarity::None,  Shape::Log, SourceId::None,     Shape::Lin),
     (SourceId::Velocity,   DestId::Env1Scale,      0.5,  Polarity::Bipolar, Shape::Lin, SourceId::None,     Shape::Lin),
-    (SourceId::Env1,       DestId::XModSweep,      0.6,  Polarity::Direct,  Shape::Lin, SourceId::None,     Shape::Lin),
+    (SourceId::Env1,       DestId::XModSweep,      0.6,  Polarity::None,  Shape::Lin, SourceId::None,     Shape::Lin),
 ];
 
 /// Build the reference engine: the patch above, with a panel that keeps every
@@ -180,7 +180,7 @@ fn reference_engine() -> Engine {
             shape,
             enabled: true,
             scale_src,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape,
         };
     }

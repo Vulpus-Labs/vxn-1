@@ -253,10 +253,14 @@ fn assemble_faceplate(
         vxn_core_ui_web::strip_esm_exports(BROWSER_JS),
     );
     let css = format!(
-        "{}\n{}\n{}",
-        FACEPLATE_CSS, vxn_core_ui_web::PRESET_BROWSER_CSS, vxn_core_ui_web::VALUE_POP_CSS,
+        "{}\n{}\n{}\n{}",
+        FACEPLATE_CSS,
+        vxn_core_ui_web::PRESET_BROWSER_CSS,
+        vxn_core_ui_web::VALUE_POP_CSS,
+        vxn_core_ui_web::CURVE_PICKER_CSS,
     );
-    // Shared widget primitives (valuePop / wireDrag / cutoff-tuned math).
+    // Shared widget primitives (valuePop / wireDrag / cutoff-tuned math /
+    // the matrix curve picker).
     // Spliced into the bridge slot (which runs first) so their stripped
     // top-level bindings precede panels.js, which references them.
     let bridge_js = format!(
@@ -281,8 +285,9 @@ fn assemble_faceplate(
 
 /// Serialise the mod-matrix vocab + **live** topology for the overlay (0219).
 /// The page reads it as
-/// `window.vxn.matrix = { sources, dests, polarities, shapes, coherence,
-/// slots }`: each vocab entry is `{value, name, label}` (value = the wire `u8`),
+/// `window.vxn.matrix = { sources, dests, polarities, shapes, curves,
+/// curveGlyphs, pickerCodes, coherence, slots }`: each vocab entry is
+/// `{value, name, label}` (value = the wire `u8`),
 /// and `slots[layer][i]` is `{source, dest, polarity, shape, scale,
 /// scalePolarity, scaleShape, enabled}` for slot `i`.
 /// Depths are **not** here — they ride `window.vxn.params` as CLAP params.
@@ -303,8 +308,8 @@ fn assemble_faceplate(
 fn build_matrix_json(matrices: &[MatrixTable; 2]) -> String {
     use serde_json::{Value, json};
     use vxn1b_engine::matrix::{
-        DEST_LABELS, DEST_NAMES, POLARITY_LABELS, POLARITY_NAMES, SHAPE_LABELS, SHAPE_NAMES,
-        SOURCE_LABELS, SOURCE_NAMES,
+        CURVE_LABELS, CURVE_NAMES, DEST_LABELS, DEST_NAMES, POLARITY_LABELS, POLARITY_NAMES,
+        SHAPE_LABELS, SHAPE_NAMES, SOURCE_LABELS, SOURCE_NAMES, curve_glyphs, picker_codes,
     };
     let vocab = |names: &[&str], labels: &[&str]| -> Vec<Value> {
         names
@@ -322,6 +327,26 @@ fn build_matrix_json(matrices: &[MatrixTable; 2]) -> String {
         // the page never reads.
         "polarities": vocab(&POLARITY_NAMES, &POLARITY_LABELS),
         "shapes": vocab(&SHAPE_NAMES, &SHAPE_LABELS),
+        // The flat curve list came back at 0340 — not as a pick-list, but
+        // because the glyph picker labels a cell by the pair it stands for and
+        // `CURVE_LABELS` already elides the resting polarity exactly the way a
+        // picker wants (`Lin`, not `None Lin`). The page still edits the two
+        // axes separately; only the *label* is flat.
+        "curves": vocab(&CURVE_NAMES, &CURVE_LABELS),
+        // Glyph geometry, plotted by the engine from `curve`'s own arithmetic
+        // so the picture cannot drift from the sound, and the 3×3 layout order
+        // (display order only — renumbering `Polarity` would remap every saved
+        // route).
+        "curveGlyphs": curve_glyphs()
+            .into_iter()
+            .map(|g| json!({
+                "code": g.code,
+                "points": g.points,
+                "band_x": g.band_x,
+                "band_w": g.band_w,
+            }))
+            .collect::<Vec<Value>>(),
+        "pickerCodes": picker_codes(),
         "coherence": vxn1b_engine::matrix::coherence_name_grid(),
         "slots": [slots_json(&matrices[0]), slots_json(&matrices[1])],
     })
@@ -794,10 +819,10 @@ mod tests {
             source: SourceId::Aftertouch,
             dest: DestId::HpfCutoff,
             depth: 0.5,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
             shape: Shape::Exp,
             enabled: true,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             scale_src: SourceId::ModWheel,
         };
@@ -806,7 +831,7 @@ mod tests {
         let slot = &v["slots"][1][7];
         assert_eq!(slot["source"], SourceId::Aftertouch as u8);
         assert_eq!(slot["dest"], DestId::HpfCutoff as u8);
-        assert_eq!(slot["polarity"], Polarity::Direct as u8);
+        assert_eq!(slot["polarity"], Polarity::None as u8);
         assert_eq!(slot["shape"], Shape::Exp as u8);
         assert_eq!(slot["scale"], SourceId::ModWheel as u8);
         // Layer 1 still reads the (unmodified) live table it was handed.
@@ -827,10 +852,10 @@ mod tests {
             source: SourceId::Velocity,
             dest: DestId::Resonance,
             depth: -0.25,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
             shape: Shape::Log,
             enabled: true,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             scale_src: SourceId::Env1,
         };

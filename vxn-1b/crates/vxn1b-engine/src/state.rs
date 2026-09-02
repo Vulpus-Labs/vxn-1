@@ -292,10 +292,10 @@ mod tests {
             source: SourceId::Env2,
             dest: DestId::Amp,
             depth: 1.0,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
             shape: Shape::Lin,
             enabled: true,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
@@ -306,7 +306,7 @@ mod tests {
             polarity: Polarity::Bipolar,
             shape: Shape::Lin,
             enabled: true,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             scale_src: SourceId::ModWheel,
         };
@@ -333,10 +333,10 @@ mod tests {
             source: SourceId::Lfo1,
             dest: DestId::Cutoff,
             depth: 0.75,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
             shape: Shape::Lin,
             enabled: true,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
@@ -444,7 +444,7 @@ mod tests {
         st.write(&mut buf).unwrap();
         let back = PluginState::read(&mut &buf[..]).unwrap();
         assert_eq!(back.layers[0].matrix.slots[0].scale_polarity, Polarity::Abs);
-        assert_eq!(back.layers[0].matrix.slots[0].polarity, Polarity::Direct);
+        assert_eq!(back.layers[0].matrix.slots[0].polarity, Polarity::None);
         assert_eq!(
             back.layers[1].matrix.slots[5].scale_polarity,
             Polarity::Bipolar

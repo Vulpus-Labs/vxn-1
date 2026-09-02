@@ -2,9 +2,14 @@
 //
 // Ported from vxn-2's `panels/mod-matrix.js` (styling + interaction) and adapted
 // to vxn-1b's two-layer model: a **modal** (backdrop + panel + close) holding a
-// 16-slot editor — one row per slot: on / source / dest / depth / polarity /
-// shape / scale / scale-bend. It
-// is **per layer** — the same DOM rebinds to the active edit layer.
+// 16-slot editor — one row per slot: on / source / dest / depth / curve /
+// scale / scale-curve. It is **per layer** — the same DOM rebinds to the active
+// edit layer.
+//
+// Each curve is one glyph button opening a shared 3×3 picker (0340,
+// `vxn-core-ui-web/assets/curve-picker.js`), not the two pick-lists it used to
+// take. VXN1b stores the two axes as separate bytes, so a pick posts two edits;
+// the picker hands the pair back already split.
 //
 // Custom div-combos, NOT native <select>: on macOS (WKWebView, the in-DAW wry
 // backend) a native <select> opens an NSMenu that steals first-responder from
@@ -18,24 +23,53 @@
 import '../bridge.js';
 import { paramIdByNameAtLayer } from '../dispatch.js';
 
+import { createCurveButton } from '../../../../../crates/vxn-core-ui-web/assets/curve-picker.js';
+
 const layerIdx = (layer) => (layer === 'lower' ? 1 : 0);
 
-// Snapshot key ↔ wire field name. They differ for the scale bend only, because
-// the wire vocabulary is kebab-case (`vocab::MATRIX_FIELD_NAMES`) while the
-// snapshot JSON is camelCase like the rest of `window.vxn`. Keeping the pairing
-// in one table means neither spelling is written out twice.
+// Snapshot key ↔ wire field name. They differ for the scale VCA's two axes
+// only, because the wire vocabulary is kebab-case (`vocab::MATRIX_FIELD_NAMES`)
+// while the snapshot JSON is camelCase like the rest of `window.vxn`. Keeping
+// the pairing in one table means neither spelling is written out twice.
 const FIELDS = [
   { key: 'source', wire: 'source' },
   { key: 'dest', wire: 'dest' },
   { key: 'polarity', wire: 'polarity' },
   { key: 'shape', wire: 'shape' },
   { key: 'scale', wire: 'scale' },
-  // The scale VCA's own two axes (0341). `scalePolarity` has no combo yet —
-  // the control that exposes it is 0340 — but the pairing lives here so the
-  // wire, the snapshot reseed and the bin's clear already carry it. Both loops
-  // over FIELDS skip a key with no element.
+  // The scale VCA's own two axes (0341), driven by the same glyph picker the
+  // route's pair uses (0340). Neither has a combo of its own any more, so the
+  // reseed loop below skips them by element lookup and the curve buttons are
+  // repainted from the snapshot separately.
   { key: 'scalePolarity', wire: 'scale-polarity' },
   { key: 'scaleShape', wire: 'scale-shape' },
+];
+
+// The two curves a row carries, as (button key, snapshot axis keys, label).
+// One table so the build, the repaint and the bin's clear cannot disagree about
+// which axes a button owns.
+// The `curve_code` stride — how many shapes a polarity strides over. Read off
+// the engine's own shapes vocabulary rather than written as 3, so composing a
+// flat code here cannot disagree with `curve_code` if a bend is ever added.
+// Falls back to 3 only for the pre-descriptor blank state, where there are no
+// rows to paint anyway.
+const curveStride = () => (matrixData().shapes || []).length || 3;
+
+const CURVES = [
+  {
+    key: 'curve',
+    polarity: 'polarity',
+    shape: 'shape',
+    title: 'Curve',
+    cls: 'vxn-mm-curve',
+  },
+  {
+    key: 'scaleCurve',
+    polarity: 'scalePolarity',
+    shape: 'scaleShape',
+    title: 'Scale curve',
+    cls: 'vxn-mm-scale-curve',
+  },
 ];
 const WIRE_OF = Object.fromEntries(FIELDS.map((f) => [f.key, f.wire]));
 // The shape of a slot with nothing set — also what the bin resets a row to.
@@ -57,6 +91,9 @@ function matrixData() {
       dests: [],
       polarities: [],
       shapes: [],
+      curves: [],
+      curveGlyphs: [],
+      pickerCodes: [],
       slots: [[], []],
     }
   );
@@ -204,10 +241,11 @@ export const matrixOverlay = {
       'Source',
       'Destination',
       'Amount',
-      'Polarity',
-      'Shape',
+      // Abbreviated: the curve columns are 38px, and spelling them out wraps
+      // the header onto two lines for the sake of two glyph buttons.
+      'Crv',
       'Scale By',
-      'Scale Bend',
+      'Scl Crv',
       '',
     ]) {
       const h = document.createElement('span');
@@ -271,15 +309,32 @@ export const matrixOverlay = {
 
     const src = buildCombo(mx.sources, 'source');
     const dst = buildCombo(mx.dests, 'dest');
-    const polarity = buildCombo(mx.polarities, 'polarity');
-    polarity.title = 'Range mapping applied to the source';
-    const shape = buildCombo(mx.shapes, 'shape');
-    shape.title = 'Response bend, applied after the range mapping';
     const scale = buildCombo(mx.sources, 'scale');
     scale.classList.add('vxn-mm-scale');
-    const scaleShape = buildCombo(mx.shapes, 'scaleShape');
-    scaleShape.classList.add('vxn-mm-scale');
-    scaleShape.title = 'Response bend on the scale amount';
+
+    // One glyph button per curve (0340), replacing the polarity + shape combos
+    // on each. The button draws the resulting mapping; the 3x3 picker behind it
+    // is where the two axes get chosen. VXN1b stores the axes as separate
+    // bytes, so a pick sends two edits — the picker hands both back already
+    // split, so nothing here re-derives the stride.
+    const labels = (mx.curves || []).map((c) => c.label);
+    const curveBtns = {};
+    for (const c of CURVES) {
+      const btn = createCurveButton({
+        glyphs: mx.curveGlyphs || [],
+        labels,
+        codes: mx.pickerCodes || [],
+        title: c.title,
+        className: c.cls,
+        onPick: (_code, pol, shp) => {
+          this._edit(slot, c.polarity, pol);
+          this._edit(slot, c.shape, shp);
+          this._markActive(row);
+        },
+      });
+      btn.dataset.curve = c.key;
+      curveBtns[c.key] = btn;
+    }
 
     // Depth: the automatable per-layer bipolar CLAP fader (center-origin, signed
     // fill). dispatch binds/rebinds/echoes it like any other cell.
@@ -298,7 +353,7 @@ export const matrixOverlay = {
     bin.title = 'Clear slot';
     bin.textContent = '✕';
 
-    for (const sel of [src, dst, polarity, shape, scale, scaleShape]) {
+    for (const sel of [src, dst, scale]) {
       sel.addEventListener('change', () => {
         const field = sel.dataset.field;
         const value = Number(sel.value);
@@ -324,10 +379,13 @@ export const matrixOverlay = {
       this._markActive(row);
     });
     bin.addEventListener('click', () =>
-      this._clear(slot, row, { src, dst, polarity, shape, scale, scaleShape, onBox })
+      this._clear(slot, row, { src, dst, scale, onBox, ...curveBtns })
     );
 
-    for (const child of [onBox, num, src, dst, depth, polarity, shape, scale, scaleShape, bin]) {
+    for (const child of [
+      onBox, num, src, dst, depth,
+      curveBtns.curve, scale, curveBtns.scaleCurve, bin,
+    ]) {
       row.appendChild(child);
     }
     return row;
@@ -356,6 +414,12 @@ export const matrixOverlay = {
       const el = combos[key === 'source' ? 'src' : key === 'dest' ? 'dst' : key];
       if (el) el.value = '0';
     }
+    // The four curve axes have no combo of their own since 0340 — the two
+    // buttons repaint from the zeroed axes instead.
+    for (const c of CURVES) {
+      const btn = combos[c.key];
+      if (btn) btn.setCode(0);
+    }
     this._edit(slot, 'enabled', false);
     if (combos.onBox) combos.onBox.checked = false;
     const id = paramIdByNameAtLayer(`matrix_slot${slot}_depth`, this._layer);
@@ -376,6 +440,15 @@ export const matrixOverlay = {
       for (const { key } of FIELDS) {
         const el = row.querySelector(`.vxn-mm-combo[data-field="${key}"]`);
         if (el) el.value = String(s[key] ?? 0);
+      }
+      // The curve buttons are not combos: recompose each pair into the flat
+      // code the glyph is indexed by, with the same stride `curve_code` uses
+      // and `createCurveButton` splits back on the way out.
+      for (const c of CURVES) {
+        const btn = row.querySelector(`.cg-btn[data-curve="${c.key}"]`);
+        if (btn) {
+          btn.setCode((s[c.polarity] ?? 0) * curveStride() + (s[c.shape] ?? 0));
+        }
       }
       const onBox = row.querySelector('.vxn-mm-on');
       if (onBox) onBox.checked = !!s.enabled;

@@ -178,11 +178,11 @@ fn build(routes: usize, dual: bool, os: f32, fx: f32) -> Engine {
                     source: r.0,
                     dest: r.1,
                     depth: r.2,
-                    polarity: Polarity::Direct,
+                    polarity: Polarity::None,
                     shape: r.3,
                     enabled: true,
                     scale_src: r.4,
-                    scale_polarity: Polarity::Direct,
+                    scale_polarity: Polarity::None,
                     scale_shape: Shape::Lin,
                 };
             }

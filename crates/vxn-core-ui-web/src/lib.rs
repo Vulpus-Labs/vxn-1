@@ -59,18 +59,26 @@ pub const PRESET_BROWSER_CSS: &str = include_str!("../assets/preset-browser.css"
 pub const VALUE_POP_JS: &str = include_str!("../assets/value-pop.js");
 pub const CUTOFF_TUNED_JS: &str = include_str!("../assets/cutoff-tuned.js");
 pub const WIRE_DRAG_JS: &str = include_str!("../assets/wire-drag.js");
+pub const CURVE_PICKER_JS: &str = include_str!("../assets/curve-picker.js");
 
 /// Stylesheet for the shared floating value popup. Appended to each synth's
 /// faceplate `<style>` (like [`PRESET_BROWSER_CSS`]); the single
 /// `.value-pop` ruleset replaces the per-synth copies.
 pub const VALUE_POP_CSS: &str = include_str!("../assets/value-pop.css");
 
+/// Stylesheet for the shared mod-matrix curve button + 3×3 picker (0340).
+/// Appended alongside [`VALUE_POP_CSS`]; reads the same custom properties both
+/// synths define, so the two faceplates share one ruleset rather than a palette
+/// each.
+pub const CURVE_PICKER_CSS: &str = include_str!("../assets/curve-picker.css");
+
 /// The shared widget primitives ([`VALUE_POP_JS`], [`CUTOFF_TUNED_JS`],
-/// [`WIRE_DRAG_JS`]), ESM markers stripped and joined in dependency order,
+/// [`WIRE_DRAG_JS`], [`CURVE_PICKER_JS`]), ESM markers stripped and joined in
+/// dependency order,
 /// ready to splice ahead of a synth's own panel modules. One owner of the
 /// order so both faceplates can't drift on it.
 pub fn shared_widgets_js() -> String {
-    [VALUE_POP_JS, CUTOFF_TUNED_JS, WIRE_DRAG_JS]
+    [VALUE_POP_JS, CUTOFF_TUNED_JS, WIRE_DRAG_JS, CURVE_PICKER_JS]
         .map(strip_esm_exports)
         .join("\n;\n")
 }

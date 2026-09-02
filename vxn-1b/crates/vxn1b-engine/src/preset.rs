@@ -55,6 +55,7 @@ use crate::engine::{DEFAULT_SPLIT_POINT, KeyOp, KeyState};
 use crate::matrix::{
     CURVE_NAMES, DEST_NAMES, DestId, MatrixSlot, MatrixTable, MatrixTableExt, N_SLOTS,
     POLARITY_NAMES, Polarity, SHAPE_NAMES, SOURCE_NAMES, Shape, SourceId, curve_code, curve_split,
+    polarity_from_name,
 };
 use crate::params::{PARAMS, ParamId, Params};
 use crate::state::{LayerState, PluginState};
@@ -136,13 +137,15 @@ struct MatrixRowFile {
     )]
     scale_src: String,
     /// Range mapping on the scale VCA — the VCA's own polarity axis (0341),
-    /// spelled as a [`POLARITY_NAMES`] name. Omitted when `direct`, which *is*
+    /// spelled as a [`POLARITY_NAMES`] name. Omitted when `none`, which *is*
     /// the fold the VCA applied before the axis existed, so a preset written
-    /// without the key loads with its scaling unchanged.
+    /// without the key loads with its scaling unchanged. Read through
+    /// [`polarity_from_name`], which also accepts `direct` — the spelling this
+    /// column had between 0341 and 0340.
     #[serde(
         rename = "scale-polarity",
         default = "default_polarity",
-        skip_serializing_if = "is_direct"
+        skip_serializing_if = "is_none_polarity"
     )]
     scale_polarity: String,
     /// Response bend on the scale VCA. Omitted when `lin` (the identity), so a
@@ -165,11 +168,11 @@ fn default_curve() -> String {
 }
 
 fn default_polarity() -> String {
-    "direct".to_string()
+    "none".to_string()
 }
 
-fn is_direct(s: &str) -> bool {
-    s == "direct"
+fn is_none_polarity(s: &str) -> bool {
+    s == "none"
 }
 
 fn default_enabled() -> bool {
@@ -414,12 +417,14 @@ fn parse_layer(
             ));
             0
         });
-        let scale_polarity = name_to_u8(&POLARITY_NAMES, &row.scale_polarity).unwrap_or_else(|| {
+        // `polarity_from_name`, not `name_to_u8`: the resting map was spelled
+        // `direct` before 0340 and both spellings must land on it.
+        let scale_polarity = polarity_from_name(&row.scale_polarity).unwrap_or_else(|| {
             warnings.push(format!(
-                "matrix slot {}: unknown scale polarity `{}` (using direct)",
+                "matrix slot {}: unknown scale polarity `{}` (using none)",
                 row.slot, row.scale_polarity
             ));
-            0
+            Polarity::None
         });
         let scale_shape = name_to_u8(&SHAPE_NAMES, &row.scale_shape).unwrap_or_else(|| {
             warnings.push(format!(
@@ -439,7 +444,7 @@ fn parse_layer(
             enabled: row.enabled,
             depth: 0.0, // seeded from params below
             scale_src: SourceId::from_u8(scale_src),
-            scale_polarity: Polarity::from_u8(scale_polarity),
+            scale_polarity,
             scale_shape: Shape::from_u8(scale_shape),
         };
     }
@@ -576,10 +581,10 @@ mod tests {
             source: SourceId::Env2,
             dest: DestId::Amp,
             depth: 1.0,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
             shape: Shape::Lin,
             enabled: true,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
@@ -590,7 +595,7 @@ mod tests {
             polarity: Polarity::Bipolar,
             shape: Shape::Lin,
             enabled: true,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             scale_src: SourceId::ModWheel,
         };
@@ -615,10 +620,10 @@ mod tests {
             source: SourceId::Lfo2,
             dest: DestId::Cutoff,
             depth: 0.75,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
             shape: Shape::Lin,
             enabled: true,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
@@ -723,10 +728,10 @@ dest = "pan"
             source: SourceId::Spread,
             dest: DestId::Pan,
             depth: 0.6,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
             shape: Shape::Lin,
             enabled: true,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
@@ -787,7 +792,7 @@ dest = "pan"
         let s0 = l1.matrix.slots[0];
         assert_eq!(s0.source, SourceId::Env2);
         assert_eq!(s0.dest, DestId::Amp);
-        assert_eq!((s0.polarity, s0.shape), (Polarity::Direct, Shape::Lin));
+        assert_eq!((s0.polarity, s0.shape), (Polarity::None, Shape::Lin));
         assert_eq!(s0.scale_src, SourceId::None);
         assert_eq!(s0.depth, 1.0); // from the param
 
@@ -1010,13 +1015,13 @@ dest = "pitch"
         assert_eq!(matrix.slots[0].dest, DestId::Pitch);
         assert_eq!(
             (matrix.slots[0].polarity, matrix.slots[0].shape),
-            (Polarity::Direct, Shape::Lin)
+            (Polarity::None, Shape::Lin)
         );
         assert_eq!(matrix.slots[0].scale_src, SourceId::None);
         // Every preset written before 0341 says nothing about the scale VCA's
         // polarity, and `direct` is the fold it always applied — so an absent
         // key must load as the arithmetic the file was voiced against.
-        assert_eq!(matrix.slots[0].scale_polarity, Polarity::Direct);
+        assert_eq!(matrix.slots[0].scale_polarity, Polarity::None);
     }
 
     /// The VCA's polarity survives the text format, and is written only when it
@@ -1035,7 +1040,7 @@ dest = "pitch"
         assert_eq!(back.layers[0].matrix.slots[0].scale_polarity, Polarity::Abs);
 
         // …and a `direct` VCA writes no key at all.
-        st.layers[0].matrix.slots[0].scale_polarity = Polarity::Direct;
+        st.layers[0].matrix.slots[0].scale_polarity = Polarity::None;
         let plain = write_preset(&meta("SP"), &st).unwrap();
         assert!(!plain.contains("scale-polarity"), "{plain}");
     }
@@ -1056,7 +1061,7 @@ scale-polarity = "bogus"
         let (_m, st, warnings) = read_preset(s).unwrap();
         assert_eq!(
             st.layers[0].matrix.slots[0].scale_polarity,
-            Polarity::Direct
+            Polarity::None
         );
         assert!(
             warnings.iter().any(|w| w.contains("unknown scale polarity")),

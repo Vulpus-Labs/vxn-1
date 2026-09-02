@@ -394,10 +394,10 @@ impl AmpRoutes {
         let empty = AmpRoute {
             source: SourceId::None,
             src_idx: 0,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
             shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             gain: 0.0,
         };
@@ -1471,8 +1471,8 @@ fn amp_coeffs(routes: &AmpRoutes, sources: &crate::eval::SourceVals) -> AmpCoeff
         // is no longer a straight multiple of the envelope, so it folds into
         // `stat` exactly like a curved one always did.
         match (r.source, r.polarity, r.shape) {
-            (SourceId::Env1, Polarity::Direct, Shape::Lin) => c.e1 += coeff,
-            (SourceId::Env2, Polarity::Direct, Shape::Lin) => c.e2 += coeff,
+            (SourceId::Env1, Polarity::None, Shape::Lin) => c.e1 += coeff,
+            (SourceId::Env2, Polarity::None, Shape::Lin) => c.e2 += coeff,
             _ => {
                 c.stat +=
                     crate::eval::shape(r.polarity, r.shape, sources[r.src_idx]) * coeff;
@@ -1839,10 +1839,10 @@ mod tests {
             source: SourceId::Lfo2,
             dest: DestId::Pan,
             depth: 1.0,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
             shape: Shape::Lin,
             enabled: true,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
@@ -1877,10 +1877,10 @@ mod tests {
             source: SourceId::Lfo2,
             dest: DestId::Pan,
             depth: 1.0,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
             shape: Shape::Lin,
             enabled: true,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
@@ -1917,8 +1917,8 @@ mod tests {
         // A curved Env 1 route: folds into `stat`, but still owns the lifetime.
         m.slots[0] = MatrixSlot {
             source: SourceId::Env1, dest: DestId::Amp, depth: 1.0,
-            polarity: Polarity::Direct, shape: Shape::Exp, enabled: true, scale_src: SourceId::None,
-         scale_polarity: Polarity::Direct,
+            polarity: Polarity::None, shape: Shape::Exp, enabled: true, scale_src: SourceId::None,
+         scale_polarity: Polarity::None,
          scale_shape: Shape::Lin };
         // A linear Env 2 route gated by a wheel sitting at zero: contributes
         // nothing this block, but a route that exists is still a route.
@@ -1926,11 +1926,11 @@ mod tests {
             source: SourceId::Env2,
             dest: DestId::Amp,
             depth: 1.0,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
             shape: Shape::Lin,
             enabled: true,
             scale_src: SourceId::ModWheel,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
         };
         // A zero-depth route is not a route at all.
@@ -1938,11 +1938,11 @@ mod tests {
             source: SourceId::Lfo1,
             dest: DestId::Amp,
             depth: 0.0,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
             shape: Shape::Lin,
             enabled: true,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
         };
         // And a non-Amp route is invisible here.
@@ -1950,11 +1950,11 @@ mod tests {
             source: SourceId::Lfo2,
             dest: DestId::Cutoff,
             depth: 1.0,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
             shape: Shape::Lin,
             enabled: true,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
         };
 
@@ -1969,7 +1969,7 @@ mod tests {
         let c = amp_coeffs(&r, &sources);
         assert_eq!(c.e1, 0.0, "the curved Env 1 route folds into stat, not e1");
         assert_eq!(c.e2, 0.0, "Env 2's wheel is shut, so it contributes nothing");
-        assert!((c.stat - crate::eval::shape(Polarity::Direct, Shape::Exp, 0.5)).abs() < 1e-6);
+        assert!((c.stat - crate::eval::shape(Polarity::None, Shape::Exp, 0.5)).abs() < 1e-6);
     }
 
     /// A **switched-off** Env→Amp route is invisible to the Amp scan, exactly as
@@ -1987,11 +1987,11 @@ mod tests {
             source: SourceId::Env2,
             dest: DestId::Amp,
             depth: 1.0,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
             shape: Shape::Lin,
             enabled: true,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
         };
         let mut m = MatrixTable::default();
@@ -2105,11 +2105,11 @@ mod tests {
                 source: SourceId::ModWheel,
                 dest: DestId::Amp,
                 depth: 1.0,
-                polarity: Polarity::Direct,
+                polarity: Polarity::None,
                 shape: curve,
                 enabled: true,
                 scale_src: SourceId::None,
-                scale_polarity: Polarity::Direct,
+                scale_polarity: Polarity::None,
                 scale_shape: Shape::Lin,
             };
             let sources = crate::eval::eval_sources(&crate::eval::SourceInputs {
@@ -2119,7 +2119,7 @@ mod tests {
             let c = amp_coeffs(&AmpRoutes::resolve(&m), &sources);
             // Non-envelope routes fold entirely into `stat`, at the evaluator's
             // shaped value × the Amp gain (1.0).
-            let want = shape(Polarity::Direct, curve, 0.25);
+            let want = shape(Polarity::None, curve, 0.25);
             assert!((c.stat - want).abs() < 1e-6, "{curve:?}: {} vs {want}", c.stat);
             assert_eq!((c.e1, c.e2), (0.0, 0.0));
         }
@@ -2142,10 +2142,10 @@ mod tests {
             source: SourceId::ModWheel,
             dest: DestId::HpfCutoff,
             depth,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
             shape: Shape::Lin,
             enabled: true,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
@@ -2226,10 +2226,10 @@ mod tests {
             source: SourceId::Key,
             dest: DestId::HpfCutoff,
             depth: 0.5, // 24 st of HPF per octave of key
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
             shape: Shape::Lin,
             enabled: true,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
@@ -2299,10 +2299,10 @@ mod tests {
             source: SourceId::ModWheel,
             dest,
             depth,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
             shape: Shape::Lin,
             enabled: true,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
@@ -2353,10 +2353,10 @@ mod tests {
             source: SourceId::ModWheel,
             dest: DestId::Osc1Pwm,
             depth: 0.3,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
             shape: Shape::Lin,
             enabled: true,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
@@ -2489,11 +2489,11 @@ mod tests {
             source,
             dest,
             depth,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
             shape: Shape::Lin,
             enabled: true,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
         }
     }
@@ -2802,10 +2802,10 @@ mod tests {
             source: SourceId::ModWheel,
             dest,
             depth,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
             shape: Shape::Lin,
             enabled: true,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
@@ -2968,11 +2968,11 @@ mod tests {
             source,
             dest,
             depth,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
             shape: Shape::Lin,
             enabled: true,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
         };
         m

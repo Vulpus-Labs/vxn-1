@@ -291,9 +291,9 @@ pub fn eval_dests_bank<
         // straight-line multiply-accumulate over `L` contiguous floats, built
         // from the same maps and bends `shape` dispatches on.
         match (r.polarity, r.shape) {
-            (Polarity::Direct, Shape::Lin) => curve_arm!(pol_direct, shape_lin),
-            (Polarity::Direct, Shape::Exp) => curve_arm!(pol_direct, shape_exp),
-            (Polarity::Direct, Shape::Log) => curve_arm!(pol_direct, shape_log),
+            (Polarity::None, Shape::Lin) => curve_arm!(pol_direct, shape_lin),
+            (Polarity::None, Shape::Exp) => curve_arm!(pol_direct, shape_exp),
+            (Polarity::None, Shape::Log) => curve_arm!(pol_direct, shape_log),
             (Polarity::Bipolar, Shape::Lin) => curve_arm!(pol_bipolar, shape_lin),
             (Polarity::Bipolar, Shape::Exp) => curve_arm!(pol_bipolar, shape_exp),
             (Polarity::Bipolar, Shape::Log) => curve_arm!(pol_bipolar, shape_log),

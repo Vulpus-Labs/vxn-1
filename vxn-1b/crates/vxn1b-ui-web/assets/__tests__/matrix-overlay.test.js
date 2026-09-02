@@ -14,7 +14,7 @@ const DESTS = [
   { value: 4, name: 'cutoff', label: 'Cutoff' },
 ];
 const POLARITIES = [
-  { value: 0, name: 'direct', label: 'Direct' },
+  { value: 0, name: 'none', label: 'None' },
   { value: 1, name: 'bipolar', label: 'Bipolar' },
   { value: 2, name: 'abs', label: 'Abs' },
 ];
@@ -23,6 +23,28 @@ const SHAPES = [
   { value: 1, name: 'exp', label: 'Exp' },
   { value: 2, name: 'log', label: 'Log' },
 ];
+// The flat `(polarity, shape)` vocabulary the curve picker labels cells with,
+// and the geometry it draws — both from `vxn_core_matrix` in the real page.
+// Stub points here: the panel never reads them, it only passes them through.
+const CURVES = [
+  { value: 0, name: 'lin', label: 'Lin' },
+  { value: 1, name: 'exp', label: 'Exp' },
+  { value: 2, name: 'log', label: 'Log' },
+  { value: 3, name: 'bipolar', label: 'Bipolar' },
+  { value: 4, name: 'bipolar-exp', label: 'Bipolar Exp' },
+  { value: 5, name: 'bipolar-log', label: 'Bipolar Log' },
+  { value: 6, name: 'abs', label: 'Abs' },
+  { value: 7, name: 'abs-exp', label: 'Abs Exp' },
+  { value: 8, name: 'abs-log', label: 'Abs Log' },
+];
+const GLYPHS = CURVES.map((c) => ({
+  code: c.value,
+  points: '0,100 100,0',
+  band_x: 0,
+  band_w: 100,
+}));
+// None / Abs / Bipolar down, Lin / Exp / Log across — display order only.
+const PICKER_CODES = [0, 1, 2, 6, 7, 8, 3, 4, 5];
 
 const blank = () => ({
   source: 0,
@@ -30,6 +52,7 @@ const blank = () => ({
   polarity: 0,
   shape: 0,
   scale: 0,
+  scalePolarity: 0,
   scaleShape: 0,
   enabled: false,
 });
@@ -47,6 +70,9 @@ beforeEach(() => {
       dests: DESTS,
       polarities: POLARITIES,
       shapes: SHAPES,
+      curves: CURVES,
+      curveGlyphs: GLYPHS,
+      pickerCodes: PICKER_CODES,
       slots: [l0, emptySlots()],
     },
     send: {
@@ -78,6 +104,15 @@ const setCheck = (el, v) => {
 const setCombo = (el, v) => {
   el.value = String(v);
   el.dispatchEvent(new Event('change'));
+};
+// The curve buttons are not combos: click one to open the shared picker, then
+// click the cell for `code`.
+const curveBtn = (i, which) => rows()[i].querySelector(`.cg-btn[data-curve="${which}"]`);
+const pickCurve = (i, which, code) => {
+  curveBtn(i, which).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  document
+    .querySelector(`.cg-picker .cg-opt[data-code="${code}"]`)
+    .dispatchEvent(new MouseEvent('click', { bubbles: true }));
 };
 
 describe('matrixOverlay.build', () => {
@@ -161,16 +196,39 @@ describe('matrixOverlay.build', () => {
     expect(onBox(0).checked).toBe(false);
   });
 
-  it('the two curve axes post independently', () => {
+  it('one curve pick posts both axes independently', () => {
     matrixOverlay.build();
-    setCombo(combo(0, 'polarity'), 2);
-    setCombo(combo(0, 'shape'), 1);
-    setCombo(combo(0, 'scaleShape'), 2);
+    // `Abs Exp` — flat code 7, i.e. polarity 2 × shape 1. VXN1b stores the two
+    // axes as separate bytes, so the picker's single choice must arrive as two
+    // edits, not as the flat code the glyph is indexed by.
+    pickCurve(0, 'curve', 7);
     expect(sends).toContainEqual(['matrix', 'upper', 0, 'polarity', 2]);
     expect(sends).toContainEqual(['matrix', 'upper', 0, 'shape', 1]);
-    // Snapshot key `scaleShape`, wire name `scale-shape`.
+    expect(window.vxn.matrix.slots[0][0].polarity).toBe(2);
+    expect(window.vxn.matrix.slots[0][0].shape).toBe(1);
+  });
+
+  it('the scale curve drives the scale axes, and only those', () => {
+    matrixOverlay.build();
+    sends.length = 0;
+    // `Bipolar Log` — flat code 5, polarity 1 × shape 2.
+    pickCurve(0, 'scaleCurve', 5);
+    // Snapshot keys are camelCase, wire names kebab (`vocab::MATRIX_FIELD_NAMES`).
+    expect(sends).toContainEqual(['matrix', 'upper', 0, 'scale-polarity', 1]);
     expect(sends).toContainEqual(['matrix', 'upper', 0, 'scale-shape', 2]);
+    expect(window.vxn.matrix.slots[0][0].scalePolarity).toBe(1);
     expect(window.vxn.matrix.slots[0][0].scaleShape).toBe(2);
+    // The route's own curve is a different control and is untouched.
+    expect(sends).not.toContainEqual(['matrix', 'upper', 0, 'polarity', 1]);
+    expect(window.vxn.matrix.slots[0][0].polarity).toBe(0);
+  });
+
+  it('a row shows one glyph button per curve and no axis pick-lists', () => {
+    matrixOverlay.build();
+    expect(rows()[0].querySelectorAll('.cg-btn')).toHaveLength(2);
+    for (const field of ['polarity', 'shape', 'scaleShape', 'scalePolarity']) {
+      expect(combo(0, field)).toBeNull();
+    }
   });
 });
 

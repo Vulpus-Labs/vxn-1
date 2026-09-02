@@ -2702,10 +2702,10 @@ mod tests {
             source,
             dest,
             depth,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
         shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -2912,10 +2912,10 @@ mod tests {
             source: SourceId::Lfo1,
             dest: DestId::Op1Level,
             depth: 1.0,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
         shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -2978,10 +2978,10 @@ mod tests {
             source: SourceId::Lfo1,
             dest: DestId::Op1Phase,
             depth: 1.0,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
         shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -3040,10 +3040,10 @@ mod tests {
             source: SourceId::VoiceSpread,
             dest: DestId::GlobalEgRate,
             depth: 1.0,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
         shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -3102,10 +3102,10 @@ mod tests {
                     source: SourceId::VoiceSpread,
                     dest: DestId::PitchEgRate,
                     depth: 1.0,
-                    polarity: Polarity::Direct,
+                    polarity: Polarity::None,
         shape: Shape::Lin,
                     scale_src: SourceId::None,
-                    scale_polarity: Polarity::Direct,
+                    scale_polarity: Polarity::None,
                     scale_shape: Shape::Lin,
                     enabled: true,
                 };
@@ -3142,10 +3142,10 @@ mod tests {
             source: SourceId::Lfo1,
             dest: DestId::Op1Level,
             depth: 1.0,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
         shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -3153,10 +3153,10 @@ mod tests {
             source: SourceId::ModWheel,
             dest: DestId::Op1Pan,
             depth: 1.0,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
         shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -3260,10 +3260,10 @@ mod tests {
                     source: SourceId::Lfo1,
                     dest: DestId::Op3Level,
                     depth: 1.0,
-                    polarity: Polarity::Direct,
+                    polarity: Polarity::None,
         shape: Shape::Lin,
                     scale_src: SourceId::None,
-                    scale_polarity: Polarity::Direct,
+                    scale_polarity: Polarity::None,
                     scale_shape: Shape::Lin,
                     enabled: true,
                 };
@@ -3375,10 +3375,10 @@ mod tests {
             source: SourceId::Lfo1,
             dest: DestId::GlobalPitch,
             depth: 0.5,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
         shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -3430,10 +3430,10 @@ mod tests {
             source: SourceId::ModWheel,
             dest: DestId::GlobalPitch,
             depth: 1.0,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
         shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -3474,10 +3474,10 @@ mod tests {
             dest: DestId::GlobalPitch,
             // Depth 12 → ModEnv at 1.0 lifts pitch by an octave.
             depth: 12.0,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
         shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -3801,10 +3801,10 @@ mod tests {
             source: SourceId::Key,
             dest: DestId::StackDetune,
             depth: 1.0,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
         shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -3851,10 +3851,10 @@ mod tests {
             source: SourceId::Velocity,
             dest: DestId::StackSpread,
             depth: 1.0,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
         shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -3862,10 +3862,10 @@ mod tests {
             source: SourceId::VoiceSpread,
             dest: DestId::Op1Pan,
             depth: 1.0,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
         shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -3876,10 +3876,10 @@ mod tests {
             source: SourceId::VoiceSpread,
             dest: DestId::Op1Pan,
             depth: 1.0,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
         shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -3925,10 +3925,10 @@ mod tests {
             source: SourceId::Key,
             dest: DestId::StackDetune,
             depth: 1.0,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
         shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -3959,10 +3959,10 @@ mod tests {
             source: SourceId::ModWheel,
             dest: DestId::StackDetune,
             depth: 1.0,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
         shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -3998,10 +3998,10 @@ mod tests {
             source: SourceId::ModWheel,
             dest: DestId::Op1Pan,
             depth: 1.0,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
         shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -4042,10 +4042,10 @@ mod tests {
             source: SourceId::ModWheel,
             dest: DestId::DelayMix,
             depth: 0.8,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
         shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -4292,9 +4292,9 @@ mod tests {
     /// row carrying `curve_code(Abs, Log)` must reach the slot as **both** axes.
     ///
     /// The wire's own end of the same claim — that a row can express a
-    /// non-`Direct` scale polarity at all, so 0340 has something to drive.
+    /// non-`None` scale polarity at all, so 0340 has something to drive.
     /// Reading only the low two bits here, as a shape-shaped decode would,
-    /// silently pins every patch to `Direct` while still passing every test
+    /// silently pins every patch to `None` while still passing every test
     /// that never leaves it.
     #[test]
     fn a_wire_row_carries_the_scale_vcas_polarity_to_the_slot() {
@@ -4315,7 +4315,7 @@ mod tests {
         assert_eq!(e.matrix.slots[0].scale_polarity, Polarity::Abs);
         assert_eq!(e.matrix.slots[0].scale_shape, Shape::Log);
         // The route's own axes are a separate nibble and stay untouched.
-        assert_eq!(e.matrix.slots[0].polarity, Polarity::Direct);
+        assert_eq!(e.matrix.slots[0].polarity, Polarity::None);
         assert_eq!(e.matrix.slots[0].shape, Shape::Lin);
     }
 
@@ -4514,10 +4514,10 @@ mod tests {
             source: SourceId::ModWheel,
             dest: DestId::Feedback,
             depth: 4.0 / 7.0,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
         shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -4557,10 +4557,10 @@ mod tests {
             source: SourceId::VoiceSpread,
             dest: DestId::Feedback,
             depth: 2.0 / 7.0, // ±2.0 native feedback units at full spread
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
         shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -4803,10 +4803,10 @@ mod tests {
                 source: SourceId::ModWheel,
                 dest: DestId::Cutoff,
                 depth: 1.0,
-                polarity: Polarity::Direct,
+                polarity: Polarity::None,
         shape: Shape::Lin,
                 scale_src: SourceId::None,
-                scale_polarity: Polarity::Direct,
+                scale_polarity: Polarity::None,
                 scale_shape: Shape::Lin,
                 enabled: true,
             };
@@ -5063,10 +5063,10 @@ mod tests {
             source: SourceId::ModWheel,
             dest,
             depth: 1.0,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
         shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -5111,10 +5111,10 @@ mod tests {
             source: SourceId::ModWheel,
             dest: DestId::Op3StackPitch,
             depth: 1.0,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
         shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -5123,10 +5123,10 @@ mod tests {
             source: SourceId::ModWheel,
             dest: DestId::Op4Pitch,
             depth: 1.0,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
         shape: Shape::Lin,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             enabled: true,
         };
@@ -5228,10 +5228,10 @@ mod tests {
                 source: SourceId::ModWheel,
                 dest,
                 depth: 1.0,
-                polarity: Polarity::Direct,
+                polarity: Polarity::None,
         shape: Shape::Lin,
                 scale_src: SourceId::None,
-                scale_polarity: Polarity::Direct,
+                scale_polarity: Polarity::None,
                 scale_shape: Shape::Lin,
                 enabled: true,
             };

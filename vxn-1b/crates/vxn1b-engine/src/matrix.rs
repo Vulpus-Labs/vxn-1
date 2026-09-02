@@ -36,9 +36,16 @@ use crate::params::MATRIX_SLOTS;
 /// minutes after it, and the two had already started drifting. What stays here
 /// is the roster: which sources and destinations *this* synth can route.
 pub use vxn_core_matrix::curve::{
-    CURVE_NAMES, N_CURVES, N_POLARITIES, N_SHAPES, POLARITY_LABELS, POLARITY_NAMES, Polarity,
-    SHAPE_LABELS, SHAPE_NAMES, Shape, curve_code, curve_split,
+    CURVE_LABELS, CURVE_NAMES, N_CURVES, N_POLARITIES, N_SHAPES, POLARITY_LABELS, POLARITY_NAMES,
+    Polarity,
+    SHAPE_LABELS, SHAPE_NAMES, Shape, curve_code, curve_split, polarity_from_name,
 };
+
+/// Curve glyph geometry — each `(polarity, shape)` pair as an SVG polyline,
+/// plotted from the shared arithmetic so the faceplate's picture cannot drift
+/// from the sound. Re-exported for [`crate`]'s faceplate crate (0340); nothing
+/// on an audio path touches it.
+pub use vxn_core_matrix::glyph::{CurveGlyph, curve_glyphs, picker_codes};
 
 /// Granularity tier of a source or destination, re-exported from
 /// [`vxn_core_matrix::roster`]. Every VXN1b endpoint declares `PerLane` — see
@@ -589,10 +596,10 @@ pub fn default_patch() -> MatrixTable {
         source: SourceId::Env2,
         dest: DestId::Amp,
         depth: 1.0,
-        polarity: Polarity::Direct,
+        polarity: Polarity::None,
         shape: Shape::Lin,
         enabled: true,
-        scale_polarity: Polarity::Direct,
+        scale_polarity: Polarity::None,
         scale_shape: Shape::Lin,
         scale_src: SourceId::None,
     };
@@ -600,10 +607,10 @@ pub fn default_patch() -> MatrixTable {
         source: SourceId::Lfo1,
         dest: DestId::Pitch,
         depth: DEFAULT_VIBRATO_DEPTH,
-        polarity: Polarity::Direct,
+        polarity: Polarity::None,
         shape: Shape::Lin,
         enabled: true,
-        scale_polarity: Polarity::Direct,
+        scale_polarity: Polarity::None,
         scale_shape: Shape::Lin,
         scale_src: SourceId::None,
     };
@@ -618,10 +625,10 @@ pub const SPREAD_TO_PAN: MatrixSlot = MatrixSlot {
     source: SourceId::Spread,
     dest: DestId::Pan,
     depth: 1.0,
-    polarity: Polarity::Direct,
+    polarity: Polarity::None,
     shape: Shape::Lin,
     enabled: true,
-    scale_polarity: Polarity::Direct,
+    scale_polarity: Polarity::None,
     scale_shape: Shape::Lin,
     scale_src: SourceId::None,
 };
@@ -688,7 +695,7 @@ mod tests {
         for v in 0..(N_SHAPES as u8) {
             assert_eq!(Shape::from_u8(v) as u8, v);
         }
-        assert_eq!(Polarity::from_u8(200), Polarity::Direct);
+        assert_eq!(Polarity::from_u8(200), Polarity::None);
         assert_eq!(Shape::from_u8(200), Shape::Lin);
     }
 
@@ -698,9 +705,9 @@ mod tests {
     #[test]
     fn curve_code_preserves_pre_split_preset_encoding() {
         let legacy = [
-            (0u8, Polarity::Direct, Shape::Lin, "lin"),
-            (1, Polarity::Direct, Shape::Exp, "exp"),
-            (2, Polarity::Direct, Shape::Log, "log"),
+            (0u8, Polarity::None, Shape::Lin, "lin"),
+            (1, Polarity::None, Shape::Exp, "exp"),
+            (2, Polarity::None, Shape::Log, "log"),
             (3, Polarity::Bipolar, Shape::Lin, "bipolar"),
         ];
         for (code, pol, shape, name) in legacy {
@@ -724,8 +731,8 @@ mod tests {
             }
         }
         assert_eq!(seen.len(), N_CURVES);
-        assert_eq!(curve_split(N_CURVES as u8), (Polarity::Direct, Shape::Lin));
-        assert_eq!(curve_split(255), (Polarity::Direct, Shape::Lin));
+        assert_eq!(curve_split(N_CURVES as u8), (Polarity::None, Shape::Lin));
+        assert_eq!(curve_split(255), (Polarity::None, Shape::Lin));
     }
 
     #[test]
@@ -813,7 +820,7 @@ mod tests {
         assert_eq!(dst(DestId::Lfo1Rate), ("lfo1-rate", "LFO 1 Rate"));
 
         let pol = |p: Polarity| (POLARITY_NAMES[p as usize], POLARITY_LABELS[p as usize]);
-        assert_eq!(pol(Polarity::Direct), ("direct", "Direct"));
+        assert_eq!(pol(Polarity::None), ("none", "None"));
         assert_eq!(pol(Polarity::Bipolar), ("bipolar", "Bipolar"));
         assert_eq!(pol(Polarity::Abs), ("abs", "Abs"));
 
@@ -832,10 +839,10 @@ mod tests {
             source: SourceId::Env2,
             dest: DestId::Amp,
             depth: 1.0,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
             shape: Shape::Lin,
             enabled: true,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
             scale_src: SourceId::None,
         };
@@ -884,11 +891,11 @@ mod tests {
             source: SourceId::Lfo2,
             dest: DestId::Cutoff,
             depth: 0.5,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
             shape: Shape::Lin,
             enabled: false,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
         };
         t.slots[0] = parked;
@@ -910,10 +917,10 @@ mod tests {
                 source: SourceId::Lfo1,
                 dest: DestId::Cutoff,
                 depth: 0.5,
-                polarity: Polarity::Direct,
+                polarity: Polarity::None,
                 shape: Shape::Lin,
                 enabled: true,
-                scale_polarity: Polarity::Direct,
+                scale_polarity: Polarity::None,
                 scale_shape: Shape::Lin,
                 scale_src: SourceId::None,
             };
@@ -943,10 +950,10 @@ mod tests {
                 source: SourceId::Env2,
                 dest: DestId::Amp,
                 depth: 1.0,
-                polarity: Polarity::Direct,
+                polarity: Polarity::None,
                 shape: Shape::Lin,
                 enabled: true,
-                scale_polarity: Polarity::Direct,
+                scale_polarity: Polarity::None,
                 scale_shape: Shape::Lin,
                 scale_src: SourceId::None,
             }
@@ -958,10 +965,10 @@ mod tests {
                 source: SourceId::Lfo1,
                 dest: DestId::Pitch,
                 depth: DEFAULT_VIBRATO_DEPTH,
-                polarity: Polarity::Direct,
+                polarity: Polarity::None,
                 shape: Shape::Lin,
                 enabled: true,
-                scale_polarity: Polarity::Direct,
+                scale_polarity: Polarity::None,
                 scale_shape: Shape::Lin,
                 scale_src: SourceId::None,
             }

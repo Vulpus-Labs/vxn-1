@@ -337,7 +337,7 @@ mod tests {
             },
         );
         assert_eq!(table.slots[2].scale_polarity, Polarity::Abs);
-        assert_eq!(table.slots[2].polarity, Polarity::Direct);
+        assert_eq!(table.slots[2].polarity, Polarity::None);
 
         apply_edit(
             &mut table,

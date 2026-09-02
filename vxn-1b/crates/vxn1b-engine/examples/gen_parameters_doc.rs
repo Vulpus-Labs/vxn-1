@@ -299,7 +299,7 @@ fn emit_matrix() {
     println!();
     println!("| Polarity | Mapping | Notes |");
     println!("|----------|---------|-------|");
-    println!("| Direct | `v` | Passthrough — the source's native polarity reaches the dest. |");
+    println!("| None | `v` | Passthrough — the source's native polarity reaches the dest. |");
     println!(
         "| Bipolar | `2v - 1` | AC-couples a unipolar `[0, 1]` source to `[-1, 1]`, e.g. mod \
          wheel into a dest that wants centred swing. |"
@@ -317,10 +317,14 @@ fn emit_matrix() {
     println!("| Log | `sign(v)·sqrt(abs(v))` — compresses toward 0. Both preserve sign. |");
     println!();
     println!(
-        "The scale VCA takes a **shape** of its own (same roster), so the gate need not be a \
-         straight line — velocity scaling an `env2 → amp` route wants `exp` so soft playing \
-         backs it off faster than linear. It has no polarity axis: the VCA is folded by its \
-         own source's polarity and always lands in `[0, 1]`."
+        "The scale VCA takes **both axes** of its own, from the same two rosters (0341), so \
+         the gate need not be a straight line and need not open in only one direction — \
+         velocity scaling an `env2 → amp` route wants `exp` so soft playing backs it off \
+         faster than linear, and `spread` scaling one wants `abs` so the gate opens at both \
+         edges of the stereo image. Its `none` polarity is the fold by the scale source's own \
+         polarity, which is what the VCA did before it had the axis. Whichever pair is set, \
+         the VCA is clamped to `[0, 1]` between the two — that is what the polarity choice is \
+         a choice *between*, not an argument against having one."
     );
     println!();
 }

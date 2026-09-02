@@ -126,7 +126,7 @@ pub struct MatrixSlot<S, D> {
     /// — the VCA's own polarity axis (0341), the same three settings the
     /// primary axis has.
     ///
-    /// `Direct` is "land in `[0, 1]` the way this source naturally does", which
+    /// `None` is "land in `[0, 1]` the way this source naturally does", which
     /// is the fold the VCA has always applied, so it is the pre-0341
     /// arithmetic exactly. `Abs` opens the gate at both extremes of a bipolar
     /// source — `voice-position` scaling a route by "the voices at both edges"
@@ -151,11 +151,11 @@ impl<S: Default, D: Default> Default for MatrixSlot<S, D> {
             source: S::default(),
             dest: D::default(),
             depth: 0.0,
-            polarity: Polarity::Direct,
+            polarity: Polarity::None,
             shape: Shape::Lin,
             enabled: false,
             scale_src: S::default(),
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
         }
     }
@@ -244,7 +244,7 @@ impl Route {
     pub const INERT: Route = Route {
         src: 0,
         dest: 0,
-        polarity: Polarity::Direct,
+        polarity: Polarity::None,
         shape: Shape::Lin,
         gain: 0.0,
         scale: None,
@@ -586,7 +586,7 @@ mod tests {
             };
             t.slots[2] = Slot {
                 scale_src,
-                scale_polarity: Polarity::Direct,
+                scale_polarity: Polarity::None,
                 ..wired(Src::Uni, Dst::Plain, 1.0)
             };
             let list = RouteList::compile(&t);

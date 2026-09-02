@@ -97,10 +97,11 @@ fn build_faceplate_html() -> String {
     let js_bundle = faceplate_js_bundle(dev.as_deref());
     let html_tpl = asset(dev.as_deref(), "index.html", HTML_TEMPLATE);
     let css = format!(
-        "{}\n{}\n{}",
+        "{}\n{}\n{}\n{}",
         asset(dev.as_deref(), "style.css", FACEPLATE_CSS),
         vxn_core_ui_web::PRESET_BROWSER_CSS,
         vxn_core_ui_web::VALUE_POP_CSS,
+        vxn_core_ui_web::CURVE_PICKER_CSS,
     );
     html_tpl
         .replace("__CSS__", &css)
@@ -181,10 +182,11 @@ pub fn build_web_faceplate_html() -> String {
 (window.__vxnBootQueue=window.__vxnBootQueue||[]).push(m);}};";
     let classic = format!("{ipc_stub}\n;\n{bundle}");
     let css = format!(
-        "{}\n{}\n{}",
+        "{}\n{}\n{}\n{}",
         FACEPLATE_CSS,
         vxn_core_ui_web::PRESET_BROWSER_CSS,
         vxn_core_ui_web::VALUE_POP_CSS,
+        vxn_core_ui_web::CURVE_PICKER_CSS,
     );
     // The module boot; appended before </body> so the classic faceplate has
     // already parsed + set window.__vxn.applyViewEvents.
@@ -396,9 +398,9 @@ fn matrix_row_to_json(row: MatrixRow) -> JsonValue {
 /// never invents indices; it picks from this table.
 pub fn build_matrix_lists_json() -> String {
     use vxn2_engine::matrix::{
-        coherence_name_grid, DestId, SourceId, CURVE_LABELS, CURVE_NAMES, DEST_LABELS, DEST_NAMES,
-        N_SHAPES, POLARITY_LABELS, POLARITY_NAMES, SHAPE_LABELS, SHAPE_NAMES, SOURCE_LABELS,
-        SOURCE_NAMES,
+        coherence_name_grid, curve_glyphs, picker_codes, DestId, SourceId, CURVE_LABELS,
+        CURVE_NAMES, DEST_LABELS, DEST_NAMES, N_SHAPES, POLARITY_LABELS, POLARITY_NAMES,
+        SHAPE_LABELS, SHAPE_NAMES, SOURCE_LABELS, SOURCE_NAMES,
     };
     // `id` is the wire discriminant; `tier` is the granularity tier:
     // 0 = patch-global, 1 = per-stack, 2 = per-lane. The UI reads `tier` and
@@ -450,6 +452,22 @@ pub fn build_matrix_lists_json() -> String {
     // The engine builds it, indexed by wire id with the sentinel row and column
     // included, so this side never re-derives an index space.
     let coherence_table = coherence_name_grid();
+    // Glyph geometry for the curve picker (0340), plotted by the engine from
+    // `curve`'s own arithmetic. The page draws these points; it does not know
+    // the formulae, which is the only arrangement in which the picture cannot
+    // drift from the sound. `picker_codes` is the 3×3 layout order — display
+    // order only, since renumbering `Polarity` would remap every saved route.
+    let curve_glyphs: Vec<JsonValue> = curve_glyphs()
+        .into_iter()
+        .map(|g| {
+            serde_json::json!({
+                "code": g.code,
+                "points": g.points,
+                "band_x": g.band_x,
+                "band_w": g.band_w,
+            })
+        })
+        .collect();
     serde_json::json!({
         "sources": sources,
         "dests": dests,
@@ -457,6 +475,8 @@ pub fn build_matrix_lists_json() -> String {
         "shapes": shapes,
         "polarities": polarities,
         "curve_stride": N_SHAPES,
+        "curve_glyphs": curve_glyphs,
+        "picker_codes": picker_codes(),
         "coherence": coherence_table,
     })
     .to_string()

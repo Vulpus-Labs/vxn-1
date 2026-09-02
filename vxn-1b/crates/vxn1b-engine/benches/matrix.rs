@@ -124,8 +124,8 @@ fn full_table() -> MatrixTable {
     // One of each polarity plus the shape roster — keeps the bench walking
     // every dispatch arm rather than a single hot one.
     let curves = [
-        (Polarity::Direct, Shape::Lin),
-        (Polarity::Direct, Shape::Exp),
+        (Polarity::None, Shape::Lin),
+        (Polarity::None, Shape::Exp),
         (Polarity::Abs, Shape::Log),
         (Polarity::Bipolar, Shape::Lin),
     ];
@@ -139,7 +139,7 @@ fn full_table() -> MatrixTable {
             shape: curves[i % curves.len()].1,
             enabled: true,
             scale_src: SourceId::None,
-            scale_polarity: Polarity::Direct,
+            scale_polarity: Polarity::None,
             scale_shape: Shape::Lin,
         };
     }

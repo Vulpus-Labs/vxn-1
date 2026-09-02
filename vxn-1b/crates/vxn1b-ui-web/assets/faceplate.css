@@ -413,15 +413,32 @@ html, body {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
+  /* Reserve the scrollbar's width. macOS draws overlay scrollbars, which take
+   * no layout space (`offsetWidth - clientWidth` measures 0), so without this
+   * the bar is painted on top of the last column — the bin button, whose right
+   * edge sits flush with the list's. Padding rather than
+   * `scrollbar-gutter: stable`, which the WKWebView the plugin renders in does
+   * not support at the OS versions we target. The header is a child of this
+   * list too, so it stays aligned with the rows it labels.
+   *
+   * vxn-2's `.mm-overlay-list` has carried the same 10px since its overlay
+   * landed; vxn-1b's port never picked it up, and the bin only stopped being
+   * wide enough to hide it when 0340 put a 38px glyph column beside it. */
+  /* 14px, not the scrollbar's resting width: macOS overlay bars widen on
+   * hover (~15px against ~9px at rest), so a gutter sized to the resting bar
+   * still lets the hovered one reach back over the bin button. */
+  padding-right: 14px;
 }
 
-/* Row grid: on | # | source | dest | amount | polarity | shape | scale |
- * scale-bend | bin. Curve became two columns when it split into the polarity
- * and shape axes, and the scale VCA gained a bend beside its source. */
+/* Row grid: on | # | source | dest | amount | curve | scale | scale-curve |
+ * bin. Each curve is ONE column since 0340 — a 38px glyph button opening a 3x3
+ * picker — where the polarity and shape pick-lists used to take 80px + 72px.
+ * The 152px that frees per curve goes back to the amount fader and the two
+ * source columns, which are the row's cramped ones. */
 .vxn-mm-header,
 .vxn-mm-row {
   display: grid;
-  grid-template-columns: 20px 24px 1fr 1fr 130px 80px 72px 1fr 72px 24px;
+  grid-template-columns: 20px 24px 1fr 1fr 160px 38px 1fr 38px 24px;
   gap: 6px;
   align-items: center;
   padding: 3px 0;

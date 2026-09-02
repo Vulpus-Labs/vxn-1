@@ -63,10 +63,10 @@ fn engine_with_route(dest: DestId, depth: f32) -> Engine {
         source: SourceId::Lfo1,
         dest,
         depth,
-        polarity: Polarity::Direct,
+        polarity: Polarity::None,
         shape: Shape::Lin,
         enabled: true,
-        scale_polarity: Polarity::Direct,
+        scale_polarity: Polarity::None,
         scale_shape: Shape::Lin,
         scale_src: SourceId::None,
     };

@@ -74,6 +74,14 @@
 /// Landed in ticket 0330.
 pub mod curve;
 
+/// Each `(polarity, shape)` pair as an SVG polyline, plotted from
+/// [`curve`]'s own arithmetic — what the faceplates draw on a route's curve
+/// button and in the 3×3 picker behind it, so the picture cannot drift from the
+/// sound.
+///
+/// Landed in ticket 0340.
+pub mod glyph;
+
 /// The coherence predicate: [`Coherence`](coherence::Coherence), the verdict a
 /// faceplate paints a row red on, and [`CoherenceRoster`](coherence::CoherenceRoster),
 /// the per-synth hook for the special cases the tier rule does not cover.

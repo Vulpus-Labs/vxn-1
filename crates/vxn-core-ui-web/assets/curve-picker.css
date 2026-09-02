@@ -1,0 +1,160 @@
+/* Curve glyph button + 3×3 picker (0340), shared by both faceplates.
+ *
+ * Colours come from the custom properties both synths define — `--panel-bg`,
+ * `--text`, `--ctl-label`, `--ctl-value`, `--glyph-active`, `--panel-corner` —
+ * the same contract `preset-browser.css` and `value-pop.css` already rely on,
+ * so one ruleset serves two faceplates without either restating a palette.
+ *
+ * The picker is `position: fixed` and body-mounted (see `curve-picker.js`), so
+ * nothing here may assume a containing block: an overlay's scroll container
+ * would otherwise clip it. */
+
+/* ── the row button ─────────────────────────────────────────────────────── */
+
+.cg-btn {
+  width: 100%;
+  height: 22px;
+  padding: 0;
+  display: block;
+  background: #0e0e0e;
+  border: 1px solid #333;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.cg-btn:hover,
+.cg-btn:focus-visible,
+.cg-btn.cg-open {
+  border-color: var(--glyph-active);
+  outline: none;
+}
+
+.cg-btn svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* ── the glyph itself ───────────────────────────────────────────────────── */
+
+/* `non-scaling-stroke` throughout: the viewBox is stretched to the element by
+ * `preserveAspectRatio="none"`, so a plain stroke width would come out
+ * elliptical — thick horizontally, thin vertically — in the 38×22 button. */
+.cg-curve {
+  fill: none;
+  stroke: var(--ctl-value);
+  stroke-width: 2px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.cg-axis {
+  stroke: #3a3a3a;
+  stroke-width: 1px;
+}
+
+/* The row button keeps only a zero line, and keeps it faint: at button scale a
+ * full axis cross reads as a hash mark on all nine glyphs alike. */
+.cg-faint {
+  stroke: #2a2a2a;
+}
+
+.cg-ident {
+  stroke: #5c5c5c;
+  stroke-width: 1px;
+  opacity: 0.7;
+  stroke-dasharray: 3 3;
+}
+
+/* The source range this polarity is written for — see
+ * `vxn_core_matrix::glyph`. Shading, not a clamp: `Bipolar` is drawn across the
+ * right half because that is the unipolar `[0, 1]` source it AC-couples, and the
+ * band is what says so. It has to be visible to say it — the first pass used
+ * `#ffffff09`, which measured as invisible against the cell at 82×62. */
+.cg-band {
+  fill: #ffffff16;
+}
+
+/* ── the picker ─────────────────────────────────────────────────────────── */
+
+.cg-picker {
+  position: fixed;
+  z-index: 500;
+  background: var(--panel-bg, #141414);
+  border: 1px solid var(--glyph-active);
+  border-radius: var(--panel-corner, 3px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.55);
+  padding: 8px;
+}
+
+.cg-picker[hidden] {
+  display: none;
+}
+
+.cg-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 6px;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ctl-label);
+}
+
+.cg-title em {
+  font-style: normal;
+  color: var(--ctl-value);
+}
+
+.cg-grid {
+  display: grid;
+  grid-template-columns: auto repeat(3, 88px);
+  gap: 4px;
+  align-items: center;
+}
+
+.cg-ch,
+.cg-rh {
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ctl-label);
+}
+
+.cg-ch {
+  text-align: center;
+}
+
+.cg-rh {
+  text-align: right;
+  padding-right: 4px;
+}
+
+.cg-opt {
+  display: block;
+  padding: 3px;
+  background: #0e0e0e;
+  border: 1px solid #2c2c2c;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.cg-opt svg {
+  display: block;
+  width: 82px;
+  height: 62px;
+}
+
+.cg-opt:hover,
+.cg-opt:focus-visible {
+  border-color: var(--glyph-active);
+  background: #181818;
+  outline: none;
+}
+
+.cg-opt.cg-sel {
+  border-color: var(--ctl-value);
+  background: #1a1310;
+}
