@@ -103,7 +103,7 @@ export class EventRing {
   // the caller decides (retry/coalesce). Acquire-load the reader index, then
   // release-store the writer index AFTER the slot bytes land, so the consumer
   // never observes a half-written slot.
-  _push(type, offset, paramIdx, value, note, flag, scale = 0) {
+  _push(type, offset, paramIdx, value, note, flag, scale = 0, scaleCurve = 0) {
     const w = Atomics.load(this.ctrl, I_WRITE);
     const r = Atomics.load(this.ctrl, I_READ);
     if (w - r >= this.capacity) return false; // full -> block-writer
@@ -116,10 +116,13 @@ export class EventRing {
     d.setUint8(base + 8, note & 0xff);
     d.setUint8(base + 9, flag & 0xff);
     d.setUint16(base + 10, this._seq & 0xffff, true);
-    // Bytes 12-15 reserved; byte 12 carries the E033 matrix scale source
-    // (0 for every non-matrix event).
+    // Bytes 12-15 reserved; byte 12 carries the E033 matrix scale source and
+    // byte 13 the scale VCA's own curve code (0 for every non-matrix event).
+    // The f32 zero first, so both bytes overwrite a cleared slot rather than
+    // whatever the last event to use this ring position left behind.
     d.setFloat32(base + 12, 0, true);
     d.setUint8(base + 12, scale & 0xff);
+    d.setUint8(base + 13, scaleCurve & 0xff);
     this._seq = (this._seq + 1) & 0x7fffffff;
     Atomics.store(this.ctrl, I_WRITE, w + 1); // release
     return true;
@@ -151,10 +154,13 @@ export class EventRing {
   /// source/dest/curve/active cross to the worklet — they have no CLAP id, so
   /// unlike depth they can't ride the param store. Packs `source | (dest << 8)`
   /// into paramIdx, depth into value, slot into note, `curve | active<<7` flag.
-  pushMatrixRow(slot, source, dest, curve, active, depth, scaleSrc = 0) {
+  /// The scale VCA's source and its own curve code ride bytes 12 and 13 — they
+  /// are topology too, and a row that omits either arrives with it zeroed,
+  /// which reads as "the picker does nothing" rather than as a dropped event.
+  pushMatrixRow(slot, source, dest, curve, active, depth, scaleSrc = 0, scaleCurve = 0) {
     const paramIdx = (source & 0xff) | ((dest & 0xff) << 8);
     const flag = (curve & ~MATRIX_FLAG_ACTIVE) | (active ? MATRIX_FLAG_ACTIVE : 0);
-    return this._push(EV_MATRIX_ROW, 0, paramIdx, depth, slot, flag, scaleSrc);
+    return this._push(EV_MATRIX_ROW, 0, paramIdx, depth, slot, flag, scaleSrc, scaleCurve);
   }
 
   /// Patch-swap pulse (ticket 0193). Tag-only — bumps the worklet's load_epoch

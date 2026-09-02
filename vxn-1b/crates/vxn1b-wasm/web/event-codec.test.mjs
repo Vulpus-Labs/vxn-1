@@ -37,6 +37,7 @@ import {
   MATRIX_FIELD_SHAPE,
   MATRIX_FIELD_SCALE_SHAPE,
   MATRIX_FIELD_ENABLED,
+  MATRIX_FIELD_SCALE_POLARITY,
   EV_SUSTAIN_RESERVED,
   LAYER_L1,
   LAYER_L2,
@@ -163,6 +164,7 @@ test("matrix addresses round-trip for every layer, slot and field", () => {
         MATRIX_FIELD_SHAPE,
         MATRIX_FIELD_SCALE_SHAPE,
         MATRIX_FIELD_ENABLED,
+        MATRIX_FIELD_SCALE_POLARITY,
       ]) {
         const addr = packMatrixAddr(layer, slot, field);
         assert.deepEqual(unpackMatrixAddr(addr), { layer, slot, field });
@@ -176,8 +178,9 @@ test("matrix addresses round-trip for every layer, slot and field", () => {
 test("out-of-range matrix addresses unpack to null, never a nearby slot", () => {
   assert.equal(unpackMatrixAddr(packMatrixAddr(2, 0, 0)), null, "layer 2");
   assert.equal(unpackMatrixAddr(0x0001 | (4 << 8) | (0xf << 12)), null, "layer 15");
-  // 6 is the last real field (`enabled`); 7 is the first that does not exist.
-  assert.equal(unpackMatrixAddr(packMatrixAddr(0, 0, 7)), null, "field 7");
+  // 7 is the last real field (`scale-polarity`); 8 is the first that does not
+  // exist.
+  assert.equal(unpackMatrixAddr(packMatrixAddr(0, 0, 8)), null, "field 8");
   assert.equal(unpackMatrixAddr(packMatrixAddr(0, 0, 255)), null, "field 255");
 });
 

@@ -94,7 +94,8 @@ fn param_changed_event(params: &SharedParams, id: usize) -> ViewEvent {
 //   VE_PARAM_CHANGED (1):    u32 id, f32 plain, f32 norm, u32 len, [len UTF-8]
 //   VE_OP_TAB_CHANGED (2):   u32 op
 //   VE_MATRIX_SNAPSHOT (3):  u32 rows(=16), then per row: u8 src,u8 dest,
-//                            u8 curve,u8 active,f32 depth,u8 scale_src (E033)
+//                            u8 curve,u8 active,f32 depth,u8 scale_src (E033),
+//                            u8 scale_curve (0341)
 //   VE_KS_CURVE_SNAPSHOT (4): 6×2 = 12 u8 (op-major, [L,R])
 //   VE_EG_CURVE_SNAPSHOT (5): 6 u8 (per op)
 
@@ -164,6 +165,7 @@ fn pack_view_event(buf: &mut Vec<u8>, ev: &ViewEvent) -> bool {
                     buf.push(r.active as u8);
                     push_f32(buf, r.depth);
                     buf.push(r.scale_src); // E033 scale source
+                    buf.push(r.scale_curve); // 0341 scale VCA curve code
                 }
                 true
             }
@@ -1144,7 +1146,7 @@ mod tests {
                 VE_OP_TAB_CHANGED => p += 4,
                 VE_MATRIX_SNAPSHOT => {
                     let rows = u32::from_le_bytes(buf[p..p + 4].try_into().unwrap()) as usize;
-                    p += 4 + rows * (4 + 4 + 1); // 4 u8 + f32 depth + u8 scale per row
+                    p += 4 + rows * (4 + 4 + 2); // 4 u8 + f32 depth + u8 scale + u8 scale_curve
                 }
                 VE_KS_CURVE_SNAPSHOT => p += 12,
                 VE_EG_CURVE_SNAPSHOT => p += 6,
@@ -1215,7 +1217,7 @@ mod tests {
                     saw_matrix = true;
                     let rows = u32::from_le_bytes(s.view_out[p..p + 4].try_into().unwrap()) as usize;
                     assert_eq!(rows, 16);
-                    p += 4 + rows * 9; // +1 for E033 scale byte
+                    p += 4 + rows * 10; // +1 E033 scale byte, +1 the 0341 scale-curve byte
                 }
                 VE_KS_CURVE_SNAPSHOT => p += 12,
                 VE_EG_CURVE_SNAPSHOT => p += 6,
@@ -1285,7 +1287,7 @@ mod tests {
                 VE_OP_TAB_CHANGED => p += 4,
                 VE_MATRIX_SNAPSHOT => {
                     let rows = u32::from_le_bytes(s.view_out[p..p + 4].try_into().unwrap()) as usize;
-                    p += 4 + rows * 9; // +1 for E033 scale byte
+                    p += 4 + rows * 10; // +1 E033 scale byte, +1 the 0341 scale-curve byte
                 }
                 VE_KS_CURVE_SNAPSHOT => p += 12,
                 VE_EG_CURVE_SNAPSHOT => p += 6,
@@ -1354,7 +1356,7 @@ mod tests {
                 VE_OP_TAB_CHANGED => p += 4,
                 VE_MATRIX_SNAPSHOT => {
                     let rows = take_u32(buf, &mut p) as usize;
-                    p += rows * 9;
+                    p += rows * 10; // E033 scale byte + the 0341 scale-curve byte
                 }
                 VE_KS_CURVE_SNAPSHOT => p += 12,
                 VE_EG_CURVE_SNAPSHOT => p += 6,

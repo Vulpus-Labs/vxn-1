@@ -1,7 +1,8 @@
 // Cross-language vocabulary agreement (0316).
 //
 // The page's custom ops carry NAMES — "upper"/"lower", "source"/"dest"/
-// "polarity"/"scale"/"shape"/"scale-shape"/"enabled", "off"/"upper"/"lower" —
+// "polarity"/"scale"/"shape"/"scale-shape"/"enabled"/"scale-polarity",
+// "off"/"upper"/"lower" —
 // and three places used to decide
 // independently what each one meant: `vxn1b-ui-web` (strings → enums, native
 // editor), `vxn1b-web-controller` (ordinals → enums, browser), and
@@ -53,6 +54,7 @@ import {
   MATRIX_FIELD_SHAPE,
   MATRIX_FIELD_SCALE_SHAPE,
   MATRIX_FIELD_ENABLED,
+  MATRIX_FIELD_SCALE_POLARITY,
 } from "./event-codec.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -111,6 +113,7 @@ test("the bridge's matrix-field names and ordinals match the engine's", async ()
       shape: MATRIX_FIELD_SHAPE,
       "scale-shape": MATRIX_FIELD_SCALE_SHAPE,
       enabled: MATRIX_FIELD_ENABLED,
+      "scale-polarity": MATRIX_FIELD_SCALE_POLARITY,
     },
     v.matrixField,
     "event-codec.mjs's field constants must agree too — the ring packs them",
@@ -125,7 +128,7 @@ test("the bridge's matrix-field names and ordinals match the engine's", async ()
 // polarity/shape split and are frozen, which is why `scale` sits at 3 and
 // `shape` was APPENDED at 4 rather than inserted where it reads. Tidying that
 // silently re-aims every in-flight matrix address, so it must fail here first.
-test("the seven matrix fields sit at the exact ordinals the wire address uses", async () => {
+test("the eight matrix fields sit at the exact ordinals the wire address uses", async () => {
   const v = await rustVocab();
   assert.deepEqual(v.matrixField, {
     source: 0,
@@ -135,8 +138,9 @@ test("the seven matrix fields sit at the exact ordinals the wire address uses", 
     shape: 4,
     "scale-shape": 5,
     enabled: 6,
+    "scale-polarity": 7,
   });
-  assert.equal(Object.keys(v.matrixField).length, 7, "field count moved");
+  assert.equal(Object.keys(v.matrixField).length, 8, "field count moved");
   // Ordinals are a dense 0..n-1 with no duplicates: a gap is an address the
   // engine rejects, a duplicate makes one field unreachable and silently
   // redirects edits meant for it onto the other.

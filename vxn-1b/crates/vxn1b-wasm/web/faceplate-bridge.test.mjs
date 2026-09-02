@@ -27,6 +27,7 @@ import {
   MATRIX_FIELD_SHAPE,
   MATRIX_FIELD_SCALE_SHAPE,
   MATRIX_FIELD_ENABLED,
+  MATRIX_FIELD_SCALE_POLARITY,
 } from "./event-codec.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -249,6 +250,7 @@ test("every matrix field name the panel sends routes to its own ordinal", async 
     ["shape", MATRIX_FIELD_SHAPE],
     ["scale-shape", MATRIX_FIELD_SCALE_SHAPE],
     ["enabled", MATRIX_FIELD_ENABLED],
+    ["scale-polarity", MATRIX_FIELD_SCALE_POLARITY],
   ];
   for (const [name] of expected) {
     assert.equal(
@@ -322,13 +324,13 @@ test("routeOpcode works without a coordinator (headless / audio not started)", a
 test("the first pump seeds the ring with the whole topology and key state", async () => {
   const { bridge, coordinator, controller } = await rig();
   bridge.pump();
-  // 2 layers x 16 slots x 7 fields, from a cold memo.
-  assert.equal(coordinator.of("matrix").length, 2 * MATRIX_SLOTS * 7);
+  // 2 layers x 16 slots x 8 fields, from a cold memo.
+  assert.equal(coordinator.of("matrix").length, 2 * MATRIX_SLOTS * 8);
   assert.equal(coordinator.of("keyMode").length, 1);
   assert.equal(coordinator.of("splitPoint").length, 1);
   assert.equal(coordinator.of("lfo2Link").length, 1);
-  // 227 events, against a 1024-slot ring — one block, no bulk tag needed.
-  assert.equal(coordinator.calls.length, 2 * MATRIX_SLOTS * 7 + 3);
+  // 259 events, against a 1024-slot ring — one block, no bulk tag needed.
+  assert.equal(coordinator.calls.length, 2 * MATRIX_SLOTS * 8 + 3);
 
   // Nothing moved → the second pump pushes nothing.
   coordinator.clear();
@@ -614,7 +616,7 @@ test("resyncEngine re-pushes the whole topology and every param slot", async () 
   );
   assert.equal(
     coordinator.of("matrix").length,
-    2 * MATRIX_SLOTS * 7,
+    2 * MATRIX_SLOTS * 8,
     "the resync did not re-push the whole topology",
   );
   controller.destroy();

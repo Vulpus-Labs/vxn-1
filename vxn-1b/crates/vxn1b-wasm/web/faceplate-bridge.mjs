@@ -27,6 +27,7 @@ import {
   MATRIX_FIELD_SHAPE,
   MATRIX_FIELD_SCALE_SHAPE,
   MATRIX_FIELD_ENABLED,
+  MATRIX_FIELD_SCALE_POLARITY,
   MATRIX_SLOTS,
 } from "./event-codec.mjs";
 import { WebController } from "./controller.mjs";
@@ -50,10 +51,12 @@ export const LAYER = { upper: LAYER_L1, lower: LAYER_L2 };
 /// Matrix field names → wire field index. Keys are the wire spellings the
 /// matrix panel sends (`assets/panels/matrix.js`'s `wire:` column) and the
 /// values are `vxn1b_engine::vocab::MATRIX_FIELD_NAMES` positions — including
-/// the hyphenated `scale-shape`, which is why this one entry is quoted.
+/// the hyphenated `scale-shape` and `scale-polarity`, which is why those two
+/// entries are quoted.
 ///
 /// The ordinals are deliberately not in reading order: `scale` sits at 3 and
-/// `shape` at 4 because 0..3 predate the polarity/shape split and are frozen.
+/// `shape` at 4 because 0..3 predate the polarity/shape split and are frozen,
+/// and `scale-polarity` sits at 7, past `enabled`, for the same reason.
 export const MATRIX_FIELD = {
   source: MATRIX_FIELD_SOURCE,
   dest: MATRIX_FIELD_DEST,
@@ -62,9 +65,10 @@ export const MATRIX_FIELD = {
   shape: MATRIX_FIELD_SHAPE,
   "scale-shape": MATRIX_FIELD_SCALE_SHAPE,
   enabled: MATRIX_FIELD_ENABLED,
+  "scale-polarity": MATRIX_FIELD_SCALE_POLARITY,
 };
 
-/// The same seven fields keyed by SNAPSHOT property instead of wire name, for
+/// The same eight fields keyed by SNAPSHOT property instead of wire name, for
 /// `_resendMatrix`'s diff. A second table rather than a reuse of `MATRIX_FIELD`
 /// because the two vocabularies genuinely differ: the wire says `scale-shape`,
 /// the snapshot (`vxn1b_ui_web::slots_json`, and `controller.mjs`'s decode of
@@ -78,6 +82,7 @@ const RESEND_FIELDS = [
   ["shape", MATRIX_FIELD_SHAPE],
   ["scaleShape", MATRIX_FIELD_SCALE_SHAPE],
   ["enabled", MATRIX_FIELD_ENABLED],
+  ["scalePolarity", MATRIX_FIELD_SCALE_POLARITY],
 ];
 
 /// Look a name up in one of the vocabulary tables above, `undefined` unless the

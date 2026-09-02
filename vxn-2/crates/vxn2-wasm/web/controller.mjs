@@ -92,6 +92,7 @@ export function decodeViewEvents(buffer, ptr, len) {
             active: u8() !== 0,
             depth: f32(),
             scale: u8(), // E033 secondary scale source (JS field name matches the native JSON wire)
+            scale_curve: u8(), // 0341 scale VCA curve code — snake_case for the same reason
           });
         }
         out.push({ kind: "matrix_snapshot", rows });
@@ -220,15 +221,19 @@ export class WebController {
   setOpTab(op) {
     this.x.vxnc_ui_set_op_tab(op >>> 0);
   }
-  setMatrixRow(slot, source, dest, curve, active, depth, scaleSrc = 0) {
+  setMatrixRow(slot, source, dest, curve, active, depth, scaleSrc = 0, scaleCurve = 0) {
     // (1) Controller wasm — authoritative model, drives UI snapshots.
     this.x.vxnc_ui_set_matrix_row(
-      slot >>> 0, source >>> 0, dest >>> 0, curve >>> 0, active ? 1 : 0, depth, scaleSrc >>> 0,
+      slot >>> 0, source >>> 0, dest >>> 0, curve >>> 0, active ? 1 : 0, depth,
+      scaleSrc >>> 0, scaleCurve >>> 0,
     );
     // (2) Worklet — topology has no CLAP id so `_mirrorToStore` can't carry it;
     // push the row on the ring so the audible route follows (ticket 0193).
-    // scaleSrc (E033) is topology too, so it rides the same ring push.
-    if (this.ring) this.ring.pushMatrixRow(slot, source, dest, curve, active, depth, scaleSrc);
+    // scaleSrc (E033) and the scale VCA's own curve code are topology too, so
+    // they ride the same ring push.
+    if (this.ring) {
+      this.ring.pushMatrixRow(slot, source, dest, curve, active, depth, scaleSrc, scaleCurve);
+    }
   }
   setKsCurve(op, side, curve) {
     this.x.vxnc_ui_set_ks_curve(op >>> 0, side >>> 0, curve >>> 0);
@@ -509,7 +514,10 @@ export class WebController {
       if (e.kind !== "matrix_snapshot") continue;
       for (let slot = 0; slot < e.rows.length; slot++) {
         const r = e.rows[slot];
-        this.ring.pushMatrixRow(slot, r.source, r.dest, r.curve, r.active, r.depth, r.scale | 0);
+        this.ring.pushMatrixRow(
+          slot, r.source, r.dest, r.curve, r.active, r.depth,
+          r.scale | 0, r.scale_curve | 0,
+        );
       }
     }
   }

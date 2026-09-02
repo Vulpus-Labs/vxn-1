@@ -19,7 +19,9 @@
 //! off 10 u16  seq       producer sequence (low 16 bits) — owned by the ring,
 //!                       not the codec; encode writes 0, decode ignores it.
 //! off 12 u8   scale     EV_MATRIX_ROW secondary scale source (E033); else 0
-//! off 13 ..15 reserved  zero
+//! off 13 u8   scaleCurve EV_MATRIX_ROW scale VCA's flat (polarity, shape)
+//!                       code; else 0
+//! off 14 ..15 reserved  zero
 //! ```
 
 use vxn2_engine::engine::Engine;

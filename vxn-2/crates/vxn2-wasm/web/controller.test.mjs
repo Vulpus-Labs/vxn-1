@@ -76,6 +76,7 @@ test("decodes a 16-row matrix_snapshot", () => {
         u8(i === 9 ? 1 : 0); // active
         f32(i === 9 ? 0.5 : 0.0); // depth
         u8(i === 9 ? 5 : 0); // scale (E033)
+        u8(i === 9 ? 7 : 0); // scale_curve (0341)
       }
     },
   ]);
@@ -83,9 +84,18 @@ test("decodes a 16-row matrix_snapshot", () => {
   assert.equal(evs.length, 1);
   assert.equal(evs[0].kind, "matrix_snapshot");
   assert.equal(evs[0].rows.length, 16);
-  assert.deepEqual(evs[0].rows[9], { source: 9, dest: 10, curve: 1, active: true, depth: 0.5, scale: 5 });
+  assert.deepEqual(evs[0].rows[9], {
+    source: 9,
+    dest: 10,
+    curve: 1,
+    active: true,
+    depth: 0.5,
+    scale: 5,
+    scale_curve: 7,
+  });
   assert.equal(evs[0].rows[0].active, false);
   assert.equal(evs[0].rows[0].scale, 0);
+  assert.equal(evs[0].rows[0].scale_curve, 0);
 });
 
 test("decodes ks_curve_snapshot (6×[L,R]) and eg_curve_snapshot (6)", () => {
@@ -161,15 +171,17 @@ test("mirrors a matrix_snapshot to the ring, one pushMatrixRow per slot (0193)",
     {
       kind: "matrix_snapshot",
       rows: [
-        { source: 4, dest: 28, curve: 0, active: true, depth: 0.9, scale: 5 },
+        { source: 4, dest: 28, curve: 0, active: true, depth: 0.9, scale: 5, scale_curve: 7 },
         { source: 2, dest: 29, curve: 3, active: false, depth: 0.5 },
       ],
     },
   ]);
-  // Trailing arg is the E033 scale source (absent → 0).
+  // Trailing args are the E033 scale source and the 0341 scale curve code
+  // (absent → 0). The second row omits both, which is what an older snapshot
+  // and a resting row both look like.
   assert.deepEqual(pushed, [
-    [0, 4, 28, 0, true, 0.9, 5],
-    [1, 2, 29, 3, false, 0.5, 0],
+    [0, 4, 28, 0, true, 0.9, 5, 7],
+    [1, 2, 29, 3, false, 0.5, 0, 0],
   ]);
 });
 

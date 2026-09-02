@@ -17,7 +17,10 @@
 //   off 8  u8   note      MIDI note (note on/off)
 //   off 9  u8   flag      sustain 0/1, OR param-norm bit (EV_PARAM)
 //   off 10 u16  seq       producer sequence — owned by the RING, not the codec
-//   off 12 f32  reserved  zero
+//   off 12 u8   scale     EV_MATRIX_ROW secondary scale source (E033); else 0
+//   off 13 u8   scaleCurve EV_MATRIX_ROW scale VCA's flat (polarity, shape)
+//                         code; else 0
+//   off 14 ..15 reserved  zero
 //
 // vxn-2 divergences from vxn-1's codec (see ../src/codec.rs header):
 //  - No key-mode / split-point events (tags 7/8): the vxn-2 FM engine has no
@@ -103,8 +106,10 @@ export function encodeInto(view, base, event) {
       view.setFloat32(base + 4, event.depth, true);
       view.setUint8(base + 8, event.slot & 0xff);
       view.setUint8(base + 9, (event.curve & ~MATRIX_FLAG_ACTIVE) | (event.active ? MATRIX_FLAG_ACTIVE : 0));
-      // E033 scale source rides byte 12 (bytes 12-15 reserved; seq is 10-11).
+      // E033 scale source rides byte 12 and the 0341 scale VCA curve code byte
+      // 13 (bytes 12-15 reserved; seq is 10-11).
       view.setUint8(base + 12, (event.scale_src | 0) & 0xff);
+      view.setUint8(base + 13, (event.scale_curve | 0) & 0xff);
       break;
     case EV_PATCH_SWAP:
       break; // tag-only; header (type + offset) already written
@@ -172,6 +177,7 @@ export function decode(view, base = 0) {
         active: (flag & MATRIX_FLAG_ACTIVE) !== 0,
         depth: view.getFloat32(base + 4, true),
         scale_src: view.getUint8(base + 12),
+        scale_curve: view.getUint8(base + 13),
       };
     }
     case EV_PATCH_SWAP:

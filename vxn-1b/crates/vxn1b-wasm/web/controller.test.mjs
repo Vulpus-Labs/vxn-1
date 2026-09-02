@@ -27,6 +27,7 @@ import {
   MATRIX_FIELD_SHAPE,
   MATRIX_FIELD_SCALE_SHAPE,
   MATRIX_FIELD_ENABLED,
+  MATRIX_FIELD_SCALE_POLARITY,
 } from "./event-codec.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -152,8 +153,8 @@ test("the matrix record carries both layers, 16 slots, topology only", async () 
   assert.equal(m.slots[0].length, 16);
   assert.equal(m.slots[1].length, 16);
   assert.equal(m.slots[1][3].dest, 5);
-  // Depth is a param and must NOT be in the topology record. The other six are
-  // all here: an under-read of this record does not fail locally, it shifts the
+  // Depth is a param and must NOT be in the topology record. The other seven
+  // are all here: an under-read of this record does not fail locally, it shifts the
   // cursor and corrupts every LATER record in the drain (the `unknown ViewEvent
   // tag` cascade), so the width is pinned by naming every key.
   assert.deepEqual(Object.keys(m.slots[0][0]).sort(), [
@@ -161,6 +162,7 @@ test("the matrix record carries both layers, 16 slots, topology only", async () 
     "enabled",
     "polarity",
     "scale",
+    "scalePolarity",
     "scaleShape",
     "shape",
     "source",
@@ -172,7 +174,8 @@ test("the matrix record carries both layers, 16 slots, topology only", async () 
 });
 
 // The ordinals and the snapshot byte order are two DIFFERENT orderings of the
-// same seven fields — `scale` is ordinal 3 but the fifth byte packed — so a
+// same eight fields — `scale` is ordinal 3 but the fifth byte packed, and
+// `scalePolarity` is ordinal 7 but the sixth byte — so a
 // decoder that reads them in ordinal order still parses a full-width record and
 // merely reports the wrong values. Distinct values per field, chosen so no two
 // adjacent fields share one, turn any transposition into a failure.
@@ -189,6 +192,7 @@ test("every matrix field round-trips through its own ordinal and its own byte", 
     polarity: 2,
     shape: 1,
     scale: 4,
+    scalePolarity: 1,
     scaleShape: 2,
     enabled: true,
   };
@@ -197,6 +201,7 @@ test("every matrix field round-trips through its own ordinal and its own byte", 
   c.setMatrix(LAYER_L1, 2, MATRIX_FIELD_POLARITY, want.polarity);
   c.setMatrix(LAYER_L1, 2, MATRIX_FIELD_SHAPE, want.shape);
   c.setMatrix(LAYER_L1, 2, MATRIX_FIELD_SCALE_SRC, want.scale);
+  c.setMatrix(LAYER_L1, 2, MATRIX_FIELD_SCALE_POLARITY, want.scalePolarity);
   c.setMatrix(LAYER_L1, 2, MATRIX_FIELD_SCALE_SHAPE, want.scaleShape);
   c.setMatrix(LAYER_L1, 2, MATRIX_FIELD_ENABLED, 1);
   const m = c.tick().find((e) => e.kind === "matrix");

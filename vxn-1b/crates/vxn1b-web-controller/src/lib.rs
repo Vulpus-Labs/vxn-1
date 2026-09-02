@@ -87,9 +87,9 @@ const UNCATEGORISED: &str = vxn_core_app::UNCATEGORISED_LABEL;
 //   VE_PARAM_CHANGED (1):    u32 id, f32 plain, f32 norm, u32 len, [len UTF-8]
 //   VE_MATRIX_SNAPSHOT (2):  per layer (2), per slot (16): u8 source, u8 dest,
 //                            u8 polarity, u8 shape, u8 scale_src,
-//                            u8 scale_shape, u8 enabled. Depths are params and
-//                            ride VE_PARAM_CHANGED — same split as the native
-//                            echo.
+//                            u8 scale_polarity, u8 scale_shape, u8 enabled.
+//                            Depths are params and ride VE_PARAM_CHANGED — same
+//                            split as the native echo.
 //   VE_KEY_STATE (3):        u8 mode (0 Single / 1 Dual / 2 Split), u8 split
 //                            point, u8 lfo2_link
 //   VE_PRESET_LOADED (4):    u32 name_len + name, u32 source_kind
@@ -534,6 +534,10 @@ impl ControllerState {
                 self.view_out.push(slot.polarity as u8);
                 self.view_out.push(slot.shape as u8);
                 self.view_out.push(slot.scale_src as u8);
+                // The scale VCA's own polarity (0341). Packed beside its shape
+                // and in the order `vxn1b_ui_web::slots_json` uses, so the two
+                // snapshot paths the same panel reads agree field for field.
+                self.view_out.push(slot.scale_polarity as u8);
                 self.view_out.push(slot.scale_shape as u8);
                 self.view_out.push(slot.enabled as u8);
             }
@@ -1344,7 +1348,7 @@ mod tests {
             norm: f32,
             display: String,
         },
-        Matrix(Vec<[u8; 7]>),
+        Matrix(Vec<[u8; 8]>),
         Key {
             mode: u8,
             split: u8,
@@ -1404,6 +1408,7 @@ mod tests {
                     let mut slots = Vec::new();
                     for _ in 0..(2 * MATRIX_SLOTS) {
                         slots.push([
+                            c.u8(),
                             c.u8(),
                             c.u8(),
                             c.u8(),
@@ -1477,7 +1482,7 @@ mod tests {
         })
     }
 
-    fn matrix_rec(recs: &[Rec]) -> Option<Vec<[u8; 7]>> {
+    fn matrix_rec(recs: &[Rec]) -> Option<Vec<[u8; 8]>> {
         recs.iter().find_map(|r| match r {
             Rec::Matrix(s) => Some(s.clone()),
             _ => None,

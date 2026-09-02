@@ -133,10 +133,11 @@ export function decodeViewEvents(buffer, ptr, len) {
         });
         break;
       case VE_MATRIX_SNAPSHOT: {
-        // Both layers, 16 slots each, SEVEN bytes per slot, in the order
+        // Both layers, 16 slots each, EIGHT bytes per slot, in the order
         // `pack_matrix` writes them: source, dest, polarity, shape, scale_src,
-        // scale_shape, enabled. That byte order is NOT the field-ordinal order —
-        // `scale` is ordinal 3 but the fifth byte — because the ordinals are
+        // scale_polarity, scale_shape, enabled. That byte order is NOT the
+        // field-ordinal order — `scale` is ordinal 3 but the fifth byte, and
+        // `scale_polarity` is ordinal 7 but the sixth — because the ordinals are
         // frozen for the wire address while the snapshot packs in reading order.
         // Read the packer, not the ordinal table, when changing this.
         //
@@ -160,9 +161,19 @@ export function decodeViewEvents(buffer, ptr, len) {
             const polarity = c.u8();
             const shape = c.u8();
             const scale = c.u8();
+            const scalePolarity = c.u8();
             const scaleShape = c.u8();
             const enabled = c.u8() !== 0;
-            layer.push({ source, dest, polarity, shape, scale, scaleShape, enabled });
+            layer.push({
+              source,
+              dest,
+              polarity,
+              shape,
+              scale,
+              scalePolarity,
+              scaleShape,
+              enabled,
+            });
           }
           slots.push(layer);
         }

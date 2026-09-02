@@ -31,8 +31,10 @@ test("push then drainInto round-trips records in order with seq stamps", () => {
 
 test("pushMatrixRow drains a slot that decodes to the same row (0193)", () => {
   const ring = new EventRing(createRingSAB(8), 8);
-  // slot 0, mod-env(4) -> cutoff(28), curve lin(0), active, depth 0.9.
-  ring.pushMatrixRow(0, 4, 28, 0, true, 0.9);
+  // slot 0, mod-env(4) -> cutoff(28), curve lin(0), active, depth 0.9,
+  // scale source 5, scale curve 7. The last two ride the reserved bytes rather
+  // than the packed header, so they are the ones a push can silently drop.
+  ring.pushMatrixRow(0, 4, 28, 0, true, 0.9, 5, 7);
   const dst = new Uint8Array(SLOT_BYTES);
   assert.equal(ring.drainRawInto(dst), 1);
   const got = decode(new DataView(dst.buffer), 0);
@@ -43,6 +45,8 @@ test("pushMatrixRow drains a slot that decodes to the same row (0193)", () => {
   assert.equal(got.curve, 0);
   assert.equal(got.active, true);
   assert.ok(Math.abs(got.depth - 0.9) < 1e-6);
+  assert.equal(got.scale_src, 5);
+  assert.equal(got.scale_curve, 7);
 });
 
 test("drain reclaims slots — ring is empty afterward", () => {
