@@ -7,9 +7,9 @@ description: Cut a new VXN release — pick the version, write the notes, run `c
 
 VXN1b and vxn-2 ship **together**: one version, one bare-semver tag, one release page, eight assets, plus both browser builds and the two product pages on `vulpuslabs.com`.
 
-The mechanics are already automated — [`cargo release`](../../RELEASING.md), source in [`xtask/`](../../xtask). **Do not reimplement them by hand.** This skill is the judgement around the tool: choosing the version, writing the notes, and deciding what to do when a gate refuses.
+The mechanics are already automated — [`cargo release`](../../../RELEASING.md), source in [`xtask/`](../../../xtask). **Do not reimplement them by hand.** This skill is the judgement around the tool: choosing the version, writing the notes, and deciding what to do when a gate refuses.
 
-Read [RELEASING.md](../../RELEASING.md) first if you have not. It carries the step table, the wasm/rustup trap, and per-step failure recovery.
+Read [RELEASING.md](../../../RELEASING.md) first if you have not. It carries the step table, the wasm/rustup trap, and per-step failure recovery.
 
 ## Steps
 
@@ -44,5 +44,5 @@ Read [RELEASING.md](../../RELEASING.md) first if you have not. It carries the st
 - **Do not run the individual steps by hand** (`gh release create`, `deploy-web.sh`, editing site front matter) when the tool would do it. Every gate in it exists because that failure has actually happened.
 - **The site is a second repository** (`~/src/vulpus-labs-site`, `SITE=` overrides). `preflight` pulls it — it was four commits behind when 0.3.0 was cut. Netlify deploys from `main`, so pushing it *is* the deploy.
 - **`release` in the site front matter is the git tag**, not display text — download URLs resolve against it. Both product pages carry `version` and `release` and both move together; the tool errors if either is missing.
-- **Adding a product to the release?** vxn-3 and vxn-4 are workspace members that do not ship. A new shipping product needs jobs in [`release.yml`](../../.github/workflows/release.yml), entries in `EXPECTED_ASSETS` in [`xtask/src/plan.rs`](../../xtask/src/plan.rs), a `deploy-web.sh`, and a product page. The asset manifest is deliberately hard-coded so a job dropping out of the workflow fails the release instead of quietly shrinking it.
+- **Adding a product to the release?** vxn-3 and vxn-4 are workspace members that do not ship. A new shipping product needs jobs in [`release.yml`](../../../.github/workflows/release.yml), entries in `EXPECTED_ASSETS` in [`xtask/src/plan.rs`](../../../xtask/src/plan.rs), a `deploy-web.sh`, and a product page. The asset manifest is deliberately hard-coded so a job dropping out of the workflow fails the release instead of quietly shrinking it.
 - Commits the tool makes follow the repo convention already; if you commit anything alongside, use the land-on-main skill's format.
