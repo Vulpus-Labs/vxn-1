@@ -76,13 +76,23 @@ pub fn preflight(root: &Path) -> Result<(), String> {
         "git",
         &["rev-list", "--left-right", "--count", "origin/main...HEAD"],
     )?;
-    if counts.split_whitespace().next() != Some("0") {
+    // Only BEHIND is fatal: releasing from a stale checkout tags a commit that
+    // is not the tip. Ahead is the normal state — `bump` commits locally and
+    // `publish` pushes — so it is reported rather than blocked.
+    let mut counts = counts.split_whitespace();
+    let behind = counts.next().unwrap_or("0");
+    let ahead = counts.next().unwrap_or("0");
+    if behind != "0" {
         return Err(format!(
-            "preflight: `main` is behind origin ({counts} behind/ahead). Pull first — releasing \
-             from a stale checkout tags a commit that is not the tip."
+            "preflight: `main` is {behind} commit(s) behind origin. Pull first — releasing from a \
+             stale checkout tags a commit that is not the tip."
         ));
     }
-    println!("    repo: on main, clean, synced with origin");
+    if ahead == "0" {
+        println!("    repo: on main, clean, level with origin");
+    } else {
+        println!("    repo: on main, clean, {ahead} commit(s) ahead of origin (publish will push)");
+    }
 
     // ── the site ──
     if !site.join(".git").is_dir() {
