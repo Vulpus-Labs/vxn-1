@@ -155,8 +155,18 @@ hugo --quiet                                   # optional local render check
 git add content/products/vxn-1b/index.md content/products/vxn-2/index.md
 git commit -m "Point both product pages at the 0.3.0 release" && git push origin main
 
-# 7. check
-cargo release check 0.3.0
+# 7. check — from outside, because all three of these look fine locally
+for a in VXN1b-macOS-universal.clap.zip VXN1b-macOS-universal.vst3.zip \
+         VXN1b-windows-x64.clap VXN1b-windows-x64.vst3.zip \
+         VXN2-macOS-universal.clap.zip VXN2-macOS-universal.vst3.zip \
+         VXN2-windows-x64.clap VXN2-windows-x64.vst3.zip; do
+  printf '%s %s\n' "$(curl -sIL -o /dev/null -w '%{http_code}' \
+    "https://github.com/Vulpus-Labs/vxn-1/releases/download/0.3.0/$a")" "$a"
+done
+curl -sI https://vulpuslabs.com/products/vxn-1b/web/ | grep -i cross-origin
+curl -sI https://vulpuslabs.com/products/vxn-2/web/  | grep -i cross-origin
+curl -s  https://vulpuslabs.com/products/vxn-1b/ | grep -c 'download/0.3.0/'
+curl -s  https://vulpuslabs.com/products/vxn-2/  | grep -c 'download/0.3.0/'
 ```
 
 ## Recovering from a failed step
