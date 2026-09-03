@@ -1,0 +1,11 @@
+# Workspace-root cargo config.
+#
+# `release` rather than `xtask`: the three products already alias `xtask` to
+# their own bundlers in `vxn-2/.cargo/config.toml` and friends, and cargo
+# resolves config from the current directory upward, nearest key winning. An
+# `xtask` here would be shadowed inside each product directory and would work
+# only from the root — which is precisely the confusing half-behaviour to avoid.
+# The two names coexist: inside vxn-2/, `cargo xtask` bundles VXN2 and
+# `cargo release` cuts a release, from any directory in the workspace.
+[alias]
+release = "run --quiet --package vxn-release --"

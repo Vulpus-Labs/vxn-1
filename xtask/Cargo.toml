@@ -1,0 +1,15 @@
+[package]
+name = "vxn-release"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+# No external dependencies, matching `vxn-xtask-common` and the three product
+# xtasks. Everything this tool needs is a subprocess or a string, and a release
+# runner that cannot build because a transitive dep yanked a version is worse
+# than one that parses `gh --jq` output by hand.
+[dependencies]
+vxn-xtask-common = { path = "../crates/vxn-xtask-common" }

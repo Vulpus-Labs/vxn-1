@@ -2301,6 +2301,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "vxn-release"
+version = "0.3.0"
+dependencies = [
+ "vxn-xtask-common",
+]
+
+[[package]]
 name = "vxn-xtask-common"
 version = "0.3.0"
 

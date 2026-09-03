@@ -41,6 +41,10 @@ members = [
     "vxn-1b/crates/vxn1b-wasm",
     "vxn-1b/crates/vxn1b-web-controller",
     "vxn-1b/xtask",
+
+    # The release runner (`cargo release`). Workspace-level rather than
+    # per-product: the two synths ship on one tag, so there is one release.
+    "xtask",
 ]
 
 [workspace.package]

@@ -13,6 +13,15 @@ Monorepo for [Vulpus Labs](https://github.com/Vulpus-Labs) synthesizers.
 One flat Cargo workspace, one `Cargo.lock`, one `cargo test --workspace`. Each
 synth keeps its own `xtask` for bundling.
 
+## Releasing
+
+vxn-1b and vxn-2 ship together: one version, one bare-semver tag, one release
+page, eight assets. `cargo release all <version>` drives the whole process —
+verify, bump, tag, wait for the builds, deploy both browser bundles, repoint the
+[product pages](https://vulpuslabs.com/products/) — confirming before each
+irreversible step. See **[RELEASING.md](RELEASING.md)** for the process, the
+manual equivalent of every step, and what to do when one fails mid-release.
+
 ## vxn-1 retirement (2026-08-27)
 
 vxn-1 shipped first and defined a lot of what the others inherited — the MVC
