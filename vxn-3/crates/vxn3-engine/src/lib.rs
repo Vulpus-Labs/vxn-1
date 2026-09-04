@@ -10,6 +10,7 @@
 pub mod engine;
 pub mod engines;
 pub mod flavour;
+pub mod grid;
 pub mod io;
 pub mod lane;
 pub mod patch;
@@ -25,6 +26,9 @@ pub use engines::{
     default_flavour_for, flavours_for, make, params_for,
 };
 pub use flavour::{Binding, Curve, Flavour, ParamMeta, flavour_macro_display, resolve};
+pub use grid::{
+    Grid, GridPos, MAX_BEATS, MAX_MARKERS, MAX_SUBS, MIN_SLOT, Swing, SwingShape,
+};
 pub use io::{EditQueue, EngineCommand, EngineIo, PlayheadState, TrackKinds};
 pub use lane::{Hit, LaneState};
 pub use sequencer::{
