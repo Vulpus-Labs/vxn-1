@@ -266,13 +266,22 @@ export const matrixOverlay = {
     const backdrop = document.getElementById('matrix-backdrop');
     const toggle = document.getElementById('matrix-toggle');
     const closeBtn = document.getElementById('matrix-close');
+    // Claim the keyboard for as long as the overlay is up (0364) — without it
+    // the shell hands focus back to the host and the Esc binding below is dead.
+    const claimKeys = (on) => {
+      if (window.__vxnKeyboard) {
+        window.__vxnKeyboard[on ? 'claim' : 'release']('matrix-overlay');
+      }
+    };
     const open = () => {
       if (backdrop) backdrop.hidden = false;
       if (toggle) toggle.classList.add('on');
+      claimKeys(true);
     };
     const close = () => {
       if (backdrop) backdrop.hidden = true;
       if (toggle) toggle.classList.remove('on');
+      claimKeys(false);
     };
     if (toggle) toggle.addEventListener('click', () => (backdrop && backdrop.hidden ? open() : close()));
     if (closeBtn) closeBtn.addEventListener('click', close);

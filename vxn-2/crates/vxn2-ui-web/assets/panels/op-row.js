@@ -126,18 +126,27 @@
       }
     }
 
+    // Esc-to-close only works while the page holds the keyboard (0364) —
+    // otherwise the shell hands focus back to the host on its next tick.
+    function claimKeys(on) {
+      if (window.__vxnKeyboard) {
+        window.__vxnKeyboard[on ? "claim" : "release"]("algo-picker");
+      }
+    }
     function openOverlay() {
       paintAlgoGrid();
       if (algoOverlay) {
         algoOverlay.removeAttribute("hidden");
         algoOverlay.classList.add("open");
       }
+      claimKeys(true);
     }
     function closeOverlay() {
       if (algoOverlay) {
         algoOverlay.setAttribute("hidden", "");
         algoOverlay.classList.remove("open");
       }
+      claimKeys(false);
     }
 
     // The algo picker overlay owns its open/close wiring (0141). main.js's

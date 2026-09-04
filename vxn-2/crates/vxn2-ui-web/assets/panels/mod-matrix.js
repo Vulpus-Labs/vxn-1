@@ -571,6 +571,10 @@
 
     function close() {
       if (overlay) overlay.setAttribute("hidden", "");
+      // The backdrop-click and close-button paths land here rather than in
+      // main.js's `close_mod_matrix`; both have to drop the claim (0364), and
+      // releasing an already-released token is a no-op.
+      if (window.__vxnKeyboard) window.__vxnKeyboard.release("mod-matrix-overlay");
     }
 
     function onKeyDown(e) {

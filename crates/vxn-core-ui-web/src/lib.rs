@@ -12,6 +12,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use raw_window_handle::{
     HandleError, HasWindowHandle, RawWindowHandle, WindowHandle as RwhWindowHandle,
@@ -22,6 +23,9 @@ use vxn_core_app::{
 };
 use wry::dpi::{LogicalPosition, LogicalSize};
 use wry::{Rect, WebView, WebViewBuilder};
+
+mod focus;
+pub use focus::{KEYBOARD_ENV, guard_enabled};
 
 mod text_input;
 pub use text_input::prompt_text;
@@ -56,6 +60,7 @@ pub const PRESET_BROWSER_CSS: &str = include_str!("../assets/preset-browser.css"
 /// Splice ORDER matters: these must precede the panel modules (`const`
 /// bindings don't hoist). The `export` markers exist for the Node/vitest
 /// suites, which `import` the pure helpers directly.
+pub const KEYBOARD_CLAIM_JS: &str = include_str!("../assets/keyboard-claim.js");
 pub const VALUE_POP_JS: &str = include_str!("../assets/value-pop.js");
 pub const CUTOFF_TUNED_JS: &str = include_str!("../assets/cutoff-tuned.js");
 pub const WIRE_DRAG_JS: &str = include_str!("../assets/wire-drag.js");
@@ -72,15 +77,25 @@ pub const VALUE_POP_CSS: &str = include_str!("../assets/value-pop.css");
 /// each.
 pub const CURVE_PICKER_CSS: &str = include_str!("../assets/curve-picker.css");
 
-/// The shared widget primitives ([`VALUE_POP_JS`], [`CUTOFF_TUNED_JS`],
-/// [`WIRE_DRAG_JS`], [`CURVE_PICKER_JS`]), ESM markers stripped and joined in
-/// dependency order,
+/// The shared widget primitives ([`KEYBOARD_CLAIM_JS`], [`VALUE_POP_JS`],
+/// [`CUTOFF_TUNED_JS`], [`WIRE_DRAG_JS`], [`CURVE_PICKER_JS`]), ESM markers
+/// stripped and joined in dependency order,
 /// ready to splice ahead of a synth's own panel modules. One owner of the
 /// order so both faceplates can't drift on it.
+///
+/// [`KEYBOARD_CLAIM_JS`] leads: it self-installs `window.__vxnKeyboard` on
+/// splice (0364), and the overlays further down the list claim against it as
+/// they open.
 pub fn shared_widgets_js() -> String {
-    [VALUE_POP_JS, CUTOFF_TUNED_JS, WIRE_DRAG_JS, CURVE_PICKER_JS]
-        .map(strip_esm_exports)
-        .join("\n;\n")
+    [
+        KEYBOARD_CLAIM_JS,
+        VALUE_POP_JS,
+        CUTOFF_TUNED_JS,
+        WIRE_DRAG_JS,
+        CURVE_PICKER_JS,
+    ]
+    .map(strip_esm_exports)
+    .join("\n;\n")
 }
 
 /// Drop ESM module syntax from `src` so an ESM-authored asset can be inlined
@@ -325,6 +340,16 @@ pub struct EditorHandle {
     uncategorised_label: &'static str,
     max_batch_bytes: usize,
     serialise_custom: Option<SerialiseCustomView>,
+    /// Hands the keyboard back to the host once per tick (0364). See
+    /// [`focus`] for why an embedded WebView needs to be told to let go.
+    focus_guard: focus::FocusGuard,
+    /// Set by the page's `want_keyboard` opcode — a text field has focus, or
+    /// an overlay wants Escape / arrows. Shared with the IPC handler closure,
+    /// which is the only writer.
+    keyboard_claim: Arc<AtomicBool>,
+    /// Last claim state we acted on, so the rising edge can hand focus to the
+    /// page immediately instead of waiting for the user to click again.
+    claim_active: Cell<bool>,
 }
 
 impl EditorHandle {
@@ -364,6 +389,7 @@ impl EditorHandle {
     /// `ViewEvent` batch. We push it once at first flush and once per
     /// flush that carries a `ViewEvent::PresetCorpusChanged`.
     pub fn flush_view_events(&self) {
+        self.sync_keyboard_focus();
         let events = std::mem::take(&mut *self.buf.borrow_mut());
         let needs_corpus = !self.corpus_seeded.get()
             || events
@@ -394,6 +420,30 @@ impl EditorHandle {
             );
             let _ = self.webview.evaluate_script(&js);
         }
+    }
+
+    /// Keyboard ownership, once per tick (0364).
+    ///
+    /// Steady state is the guard's two pointer reads. The edge cases are the
+    /// transitions: when the page raises a claim we push focus INTO the
+    /// WebView on the spot, because the click that opened the text field or
+    /// the overlay is the same click the guard would otherwise have undone a
+    /// few milliseconds later.
+    fn sync_keyboard_focus(&self) {
+        if !self.focus_guard.is_active() {
+            return;
+        }
+        let claimed = self.keyboard_claim.load(Ordering::Relaxed);
+        if claimed != self.claim_active.get() {
+            self.claim_active.set(claimed);
+            if claimed {
+                let _ = self.webview.focus();
+            }
+        }
+        // `tick` re-reads the claim and stands down on its own; calling it
+        // unconditionally keeps the "who owns the keyboard" decision in one
+        // place rather than splitting it across this branch.
+        self.focus_guard.tick();
     }
 
     fn serialize_corpus(&self) -> Option<String> {
@@ -463,6 +513,12 @@ pub fn open_editor(
     }
     let ipc_ctrl = ctrl.clone();
     let parse_custom = parse_custom_ui.clone();
+    // The keyboard claim never reaches the model: it is a property of the
+    // native window plumbing, not of the patch. Intercepting it in the IPC
+    // handler keeps `UiEvent` free of a variant every controller would have to
+    // ignore.
+    let keyboard_claim = Arc::new(AtomicBool::new(false));
+    let ipc_claim = keyboard_claim.clone();
     let webview = WebViewBuilder::new_as_child(&parent_wrap)
         .with_html(html)
         // macOS swallows the first click on an unfocused webview to activate
@@ -473,12 +529,18 @@ pub fn open_editor(
             size: LogicalSize::new(width, height).into(),
         })
         .with_ipc_handler(move |req| {
-            if let Some(ev) = parse_ui_event(req.body(), parse_custom.as_ref()) {
+            let body = req.body();
+            if let Some(on) = parse_keyboard_claim(body) {
+                ipc_claim.store(on, Ordering::Relaxed);
+                return;
+            }
+            if let Some(ev) = parse_ui_event(body, parse_custom.as_ref()) {
                 let _ = ipc_ctrl.post(ev);
             }
         })
         .build()
         .map_err(OpenEditorError::WebViewBuild)?;
+    let focus_guard = focus::FocusGuard::new(parent_raw, &webview, keyboard_claim.clone());
     Ok(EditorHandle {
         webview,
         buf: RefCell::new(Vec::new()),
@@ -489,6 +551,9 @@ pub fn open_editor(
         uncategorised_label,
         max_batch_bytes,
         serialise_custom: serialise_custom_view,
+        focus_guard,
+        keyboard_claim,
+        claim_active: Cell::new(false),
     })
 }
 
@@ -550,6 +615,26 @@ pub fn parse_ui_event(body: &str, parse_custom: Option<&ParseCustomUi>) -> Optio
         return Some(ev);
     }
     parse_custom.and_then(|f| f(op, &v))
+}
+
+/// Recognise the page's keyboard claim (0364). `Some(on)` for a
+/// `want_keyboard` message, `None` for anything else — including malformed
+/// JSON, which the caller then hands to [`parse_ui_event`] to log-and-drop as
+/// usual.
+///
+/// Separate from [`parse_ui_event_default`] on purpose: this opcode is about
+/// native focus, not about the patch, so it stops at the editor shell and never
+/// becomes a [`UiEvent`] the controllers would all have to ignore.
+///
+/// A claim with no `on` field reads as a release. Failing open — leaving the
+/// keyboard with the host — is the recoverable direction: the user clicks the
+/// field again. Failing the other way silently eats their spacebar.
+pub fn parse_keyboard_claim(body: &str) -> Option<bool> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    if v.get("op")?.as_str()? != "want_keyboard" {
+        return None;
+    }
+    Some(v.get("on").and_then(|x| x.as_bool()).unwrap_or(false))
 }
 
 /// Parse one of the shared vocabulary opcodes. Returns `None` for
@@ -885,6 +970,64 @@ mod tests {
     fn strip_multi_line_export_list_dropped_whole() {
         let src = "export {\n  a,\n  b,\n} from './x.js';\nconst Z = 3;\n";
         assert_eq!(strip_esm_exports(src), "\n\n\n\nconst Z = 3;\n");
+    }
+
+    // ── keyboard claim (0364) ──────────────────────────────────────────
+
+    #[test]
+    fn keyboard_claim_round_trips_both_ways() {
+        assert_eq!(
+            parse_keyboard_claim(r#"{"op":"want_keyboard","on":true}"#),
+            Some(true)
+        );
+        assert_eq!(
+            parse_keyboard_claim(r#"{"op":"want_keyboard","on":false}"#),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn a_malformed_claim_releases_rather_than_holds() {
+        // Missing / non-boolean `on` must not leave the page holding the
+        // keyboard — the host getting its spacebar back is the safe failure.
+        assert_eq!(parse_keyboard_claim(r#"{"op":"want_keyboard"}"#), Some(false));
+        assert_eq!(
+            parse_keyboard_claim(r#"{"op":"want_keyboard","on":"yes"}"#),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn other_opcodes_are_not_swallowed_as_claims() {
+        // The IPC handler tries the claim first, so a false positive here
+        // would silently drop a real UiEvent.
+        assert_eq!(parse_keyboard_claim(r#"{"op":"ready"}"#), None);
+        assert_eq!(
+            parse_keyboard_claim(r#"{"op":"set_param","id":3,"plain":0.5}"#),
+            None
+        );
+        assert_eq!(parse_keyboard_claim("not json"), None);
+        assert_eq!(parse_keyboard_claim("{}"), None);
+    }
+
+    #[test]
+    fn the_claim_opcode_is_not_also_a_ui_event() {
+        // If it ever became one too, the intercept would shadow it and the
+        // duplication would sit there unnoticed.
+        let v: serde_json::Value =
+            serde_json::from_str(r#"{"op":"want_keyboard","on":true}"#).unwrap();
+        assert!(parse_ui_event_default("want_keyboard", &v).is_none());
+    }
+
+    #[test]
+    fn the_keyboard_claim_module_leads_the_shared_bundle() {
+        // It self-installs `window.__vxnKeyboard` on splice, and the overlays
+        // later in the bundle claim against it as they open.
+        let js = shared_widgets_js();
+        let claim = js.find("__vxnKeyboard").expect("claim module missing");
+        let picker = js.find("createCurveButton").expect("curve picker missing");
+        assert!(claim < picker, "keyboard claim must be spliced first");
+        assert!(!js.contains("export "), "shared widgets still carry `export `");
     }
 
     // ── shared widget bundle (0140) ────────────────────────────────────

@@ -101,6 +101,12 @@ const picker = (() => {
   function listen(on) {
     if (on === listening) return;
     listening = on;
+    // The picker's Esc / arrow keys only reach the page while the page holds
+    // the keyboard (0364). Claimed for exactly as long as the listeners are
+    // attached, so the two can't drift apart.
+    if (window.__vxnKeyboard) {
+      window.__vxnKeyboard[on ? 'claim' : 'release']('curve-picker');
+    }
     const fn = on ? 'addEventListener' : 'removeEventListener';
     // Capture phase for the key, so Esc closes the picker before an overlay
     // above it reads the same key as "close the whole panel".

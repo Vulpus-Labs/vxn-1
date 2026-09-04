@@ -441,6 +441,13 @@ export function createPresetBrowser(cfg) {
     isOpen = !!open;
     panelEl.hidden = !isOpen;
     if (backdropEl) backdropEl.hidden = !isOpen;
+    // Hold the keyboard while the panel is up (0364): otherwise the shell
+    // hands focus back to the host on its next tick and the Esc handler below
+    // never fires. One claim covers all three Esc levels — the panel, its
+    // context menu and its modals only exist while it is open.
+    if (window.__vxnKeyboard) {
+      window.__vxnKeyboard[isOpen ? 'claim' : 'release']('preset-browser');
+    }
     if (isOpen) {
       renderFolders();
       renderPresets();

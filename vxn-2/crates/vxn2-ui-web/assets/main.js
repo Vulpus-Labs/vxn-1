@@ -500,6 +500,9 @@
         if (key === "open_mod_matrix") {
           const overlay = document.querySelector('[data-vxn-section="mod-matrix"]');
           if (overlay) { overlay.removeAttribute("hidden"); overlay.classList.add("open"); }
+          // Esc-to-close needs the page to hold the keyboard (0364); the shell
+          // hands it back to the host on every tick otherwise.
+          if (window.__vxnKeyboard) window.__vxnKeyboard.claim("mod-matrix-overlay");
           // Pull a fresh snapshot — host state restore / CLAP automation
           // can move matrix rows out from under the page's local cache
           // between opens. Keeps the overlay display in lockstep.
@@ -509,6 +512,7 @@
         if (key === "close_mod_matrix") {
           const overlay = document.querySelector('[data-vxn-section="mod-matrix"]');
           if (overlay) { overlay.setAttribute("hidden", ""); overlay.classList.remove("open"); }
+          if (window.__vxnKeyboard) window.__vxnKeyboard.release("mod-matrix-overlay");
           return;
         }
         dispatch(opcode, payload);
