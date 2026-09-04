@@ -426,6 +426,13 @@ impl Grid {
         let fresh = Self::uniform(n, len, self.default_subs);
         self.markers = fresh.markers;
         self.n_beats = n;
+        // Drop overrides on beats that are no longer live, for the same reason the
+        // marker tail is canonicalised: a shrink must not leave a value that springs
+        // back on a later grow, and two grids with the same live geometry must compare
+        // equal however they were built.
+        for o in self.sub_override.iter_mut().skip(n) {
+            *o = 0;
+        }
     }
 
     /// Set the lane-wide subdivision count (clamped to `1..=MAX_SUBS`).
@@ -436,8 +443,11 @@ impl Grid {
     /// Set or clear one beat's subdivision override. `Some(3)` inside an otherwise
     /// 16ths lane is how a triplet is expressed (ADR 0007 §2) — there is no separate
     /// tuplet concept.
+    /// Bounded by the **live** beat count, not [`MAX_BEATS`]: an override stored past
+    /// the end marker belongs to no beat, is invisible to every query, and would
+    /// reappear if the lane later grew.
     pub fn set_beat_subs(&mut self, beat: usize, subs: Option<u32>) {
-        if beat < MAX_BEATS {
+        if beat < self.n_beats {
             self.sub_override[beat] = subs.map_or(0, |n| n.clamp(1, MAX_SUBS) as u8);
         }
     }
@@ -689,6 +699,27 @@ mod tests {
         let mut swung = Grid::uniform(4, 8.0, 4);
         swung.set_swing(Swing::mpc(0.5));
         assert_ne!(swung, Grid::uniform(4, 8.0, 4));
+
+        // The sub-count overrides are the other half of the geometry and carry the same
+        // obligation as the marker tail: an override on a beat that is not live must
+        // neither be stored nor leak into equality.
+        let mut off_the_end = Grid::uniform(4, 4.0, 4);
+        off_the_end.set_beat_subs(9, Some(3));
+        assert_eq!(off_the_end, Grid::uniform(4, 4.0, 4));
+    }
+
+    /// Shrinking the beat count then growing it back must not resurrect an override
+    /// from before the shrink — the beat it belonged to is gone.
+    #[test]
+    fn beat_count_shrink_drops_overrides_it_passes() {
+        let mut g = Grid::uniform(8, 8.0, 4);
+        g.set_beat_subs(6, Some(3));
+        assert_eq!(g.subs(6), 3);
+        g.set_n_beats(4);
+        g.set_n_beats(8);
+        assert_eq!(g.sub_override(6), None);
+        assert_eq!(g.subs(6), 4);
+        assert_eq!(g, Grid::uniform(8, 8.0, 4));
     }
 
     #[test]
