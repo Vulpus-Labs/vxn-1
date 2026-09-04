@@ -63,8 +63,8 @@ pub struct Engine {
     sample_rate: f32,
     transport: Transport,
     tracks: Vec<Track>,
-    /// Per-track sequencer state (polymeter phase, probability RNG, in-flight
-    /// retrig). Parallel to `tracks`.
+    /// Per-track sequencer state (polymeter phase, probability RNG, the
+    /// lookahead window of resolved-but-unfired hits). Parallel to `tracks`.
     lanes: Vec<LaneState>,
     /// Per-track scheduled hits for one block — scheduled in a pre-pass (all tracks) so
     /// cross-track choke can see every track's trigs before any track renders. Pre-allocated,
