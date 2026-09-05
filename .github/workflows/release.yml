@@ -81,6 +81,29 @@ jobs:
       # no reason to withhold a CLAP that built fine. (The first cut of this
       # guard gated both, and a VST3 failure shipped a release with no Windows
       # binaries at all.)
+      # Every macOS bundle must be code-signed and validate. Not cosmetic: on
+      # Apple Silicon the linker ad-hoc signs the arm64 slice only, so a
+      # universal bundle ships with an unsigned x86_64 slice and — because
+      # nothing writes Contents/_CodeSignature — no resource seal at all.
+      # `codesign --verify` then fails, and a host that validates before
+      # loading rejects the plugin outright. Ableton's scanner logs it as
+      # "not a plugin", which is indistinguishable from never having found it.
+      # All eight macOS assets of 0.3.0 shipped this way, both formats, both
+      # products; `vxn-xtask-common`'s bundler now signs, and this asserts it
+      # actually happened rather than trusting that it did.
+      - name: Verify the VXN2 CLAP is signed
+        run: |
+          B=target/bundled/VXN2.clap
+          codesign --verify --verbose=2 "$B" \
+            || { echo "::error::VXN2.clap failed code-signature validation"; exit 1; }
+          test -d "$B/Contents/_CodeSignature" \
+            || { echo "::error::VXN2.clap has no _CodeSignature — the resource seal is missing"; exit 1; }
+          for A in arm64 x86_64; do
+            codesign -dvv --arch $A "$B" 2>&1 | grep -q 'Signature=' \
+              || { echo "::error::VXN2.clap $A slice is unsigned"; exit 1; }
+          done
+          echo "ok: VXN2.clap signed and sealed (arm64 + x86_64)"
+
       - name: Zip and attach the CLAP
         run: ditto -c -k --keepParent target/bundled/VXN2.clap VXN2-macOS-universal.clap.zip
 
@@ -96,6 +119,29 @@ jobs:
           strings -a "$BIN" | grep -q 'labs.vulpus.vxn2' \
             || { echo "::error::VXN2.vst3 does not contain labs.vulpus.vxn2 — the staticlib was not force-loaded"; exit 1; }
           echo "ok: VXN2.vst3 embeds labs.vulpus.vxn2 ($(stat -f%z "$BIN") bytes)"
+
+      # Every macOS bundle must be code-signed and validate. Not cosmetic: on
+      # Apple Silicon the linker ad-hoc signs the arm64 slice only, so a
+      # universal bundle ships with an unsigned x86_64 slice and — because
+      # nothing writes Contents/_CodeSignature — no resource seal at all.
+      # `codesign --verify` then fails, and a host that validates before
+      # loading rejects the plugin outright. Ableton's scanner logs it as
+      # "not a plugin", which is indistinguishable from never having found it.
+      # All eight macOS assets of 0.3.0 shipped this way, both formats, both
+      # products; `vxn-xtask-common`'s bundler now signs, and this asserts it
+      # actually happened rather than trusting that it did.
+      - name: Verify the VXN2 VST3 is signed
+        run: |
+          B=target/bundled/VXN2.vst3
+          codesign --verify --verbose=2 "$B" \
+            || { echo "::error::VXN2.vst3 failed code-signature validation"; exit 1; }
+          test -d "$B/Contents/_CodeSignature" \
+            || { echo "::error::VXN2.vst3 has no _CodeSignature — the resource seal is missing"; exit 1; }
+          for A in arm64 x86_64; do
+            codesign -dvv --arch $A "$B" 2>&1 | grep -q 'Signature=' \
+              || { echo "::error::VXN2.vst3 $A slice is unsigned"; exit 1; }
+          done
+          echo "ok: VXN2.vst3 signed and sealed (arm64 + x86_64)"
 
       - name: Zip and attach the VST3
         run: ditto -c -k --keepParent target/bundled/VXN2.vst3 VXN2-macOS-universal.vst3.zip
@@ -215,6 +261,29 @@ jobs:
       # no reason to withhold a CLAP that built fine. (The first cut of this
       # guard gated both, and a VST3 failure shipped a release with no Windows
       # binaries at all.)
+      # Every macOS bundle must be code-signed and validate. Not cosmetic: on
+      # Apple Silicon the linker ad-hoc signs the arm64 slice only, so a
+      # universal bundle ships with an unsigned x86_64 slice and — because
+      # nothing writes Contents/_CodeSignature — no resource seal at all.
+      # `codesign --verify` then fails, and a host that validates before
+      # loading rejects the plugin outright. Ableton's scanner logs it as
+      # "not a plugin", which is indistinguishable from never having found it.
+      # All eight macOS assets of 0.3.0 shipped this way, both formats, both
+      # products; `vxn-xtask-common`'s bundler now signs, and this asserts it
+      # actually happened rather than trusting that it did.
+      - name: Verify the VXN1b CLAP is signed
+        run: |
+          B=target/bundled/vxn1b.clap
+          codesign --verify --verbose=2 "$B" \
+            || { echo "::error::vxn1b.clap failed code-signature validation"; exit 1; }
+          test -d "$B/Contents/_CodeSignature" \
+            || { echo "::error::vxn1b.clap has no _CodeSignature — the resource seal is missing"; exit 1; }
+          for A in arm64 x86_64; do
+            codesign -dvv --arch $A "$B" 2>&1 | grep -q 'Signature=' \
+              || { echo "::error::vxn1b.clap $A slice is unsigned"; exit 1; }
+          done
+          echo "ok: vxn1b.clap signed and sealed (arm64 + x86_64)"
+
       - name: Zip and attach the CLAP
         run: ditto -c -k --keepParent target/bundled/vxn1b.clap VXN1b-macOS-universal.clap.zip
 
@@ -230,6 +299,29 @@ jobs:
           strings -a "$BIN" | grep -q 'labs.vulpus.vxn1b' \
             || { echo "::error::VXN1b.vst3 does not contain labs.vulpus.vxn1b — the staticlib was not force-loaded"; exit 1; }
           echo "ok: VXN1b.vst3 embeds labs.vulpus.vxn1b ($(stat -f%z "$BIN") bytes)"
+
+      # Every macOS bundle must be code-signed and validate. Not cosmetic: on
+      # Apple Silicon the linker ad-hoc signs the arm64 slice only, so a
+      # universal bundle ships with an unsigned x86_64 slice and — because
+      # nothing writes Contents/_CodeSignature — no resource seal at all.
+      # `codesign --verify` then fails, and a host that validates before
+      # loading rejects the plugin outright. Ableton's scanner logs it as
+      # "not a plugin", which is indistinguishable from never having found it.
+      # All eight macOS assets of 0.3.0 shipped this way, both formats, both
+      # products; `vxn-xtask-common`'s bundler now signs, and this asserts it
+      # actually happened rather than trusting that it did.
+      - name: Verify the VXN1b VST3 is signed
+        run: |
+          B=target/bundled/VXN1b.vst3
+          codesign --verify --verbose=2 "$B" \
+            || { echo "::error::VXN1b.vst3 failed code-signature validation"; exit 1; }
+          test -d "$B/Contents/_CodeSignature" \
+            || { echo "::error::VXN1b.vst3 has no _CodeSignature — the resource seal is missing"; exit 1; }
+          for A in arm64 x86_64; do
+            codesign -dvv --arch $A "$B" 2>&1 | grep -q 'Signature=' \
+              || { echo "::error::VXN1b.vst3 $A slice is unsigned"; exit 1; }
+          done
+          echo "ok: VXN1b.vst3 signed and sealed (arm64 + x86_64)"
 
       - name: Zip and attach the VST3
         run: ditto -c -k --keepParent target/bundled/VXN1b.vst3 VXN1b-macOS-universal.vst3.zip

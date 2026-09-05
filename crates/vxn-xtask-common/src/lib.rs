@@ -426,6 +426,68 @@ impl Product {
         Ok(())
     }
 
+    /// Ad-hoc code-sign an assembled macOS bundle.
+    ///
+    /// **Not optional, and not only about Gatekeeper.** On Apple Silicon the
+    /// linker ad-hoc signs the Mach-O it produces, so a bundle built around one
+    /// inherits a signature that declares a sealed resource directory — while
+    /// nothing has created `Contents/_CodeSignature/CodeResources`. Every such
+    /// bundle fails validation with
+    ///
+    /// ```text
+    /// code has no resources but signature indicates they must be present
+    /// ```
+    ///
+    /// A host that validates before loading then rejects it outright. Ableton
+    /// Live's plugin scanner does exactly that and logs `VST3: not a plugin`,
+    /// which is indistinguishable from the plugin never having been found —
+    /// the failure mode that sent someone hunting through scan paths and
+    /// architectures for an afternoon. Every VXN `.clap` and `.vst3` on the dev
+    /// machine was broken this way, in both formats, for every product.
+    ///
+    /// Must run **after** [`Self::stage_resources`]: signing seals the resource
+    /// directory, so adding files afterwards invalidates the seal it just
+    /// wrote.
+    ///
+    /// Ad-hoc (`-`) rather than a real identity: this is a local dev bundler,
+    /// and ad-hoc is what makes the bundle *self-consistent*, which is all the
+    /// scanner checks. Distribution signing and notarisation are a release
+    /// concern and belong with the release job, not here.
+    pub fn codesign_bundle(bundle_path: &Path) -> Result<(), String> {
+        if !cfg!(target_os = "macos") {
+            return Ok(());
+        }
+        let out = Command::new("codesign")
+            .args(["--force", "--sign", "-"])
+            .arg(bundle_path)
+            .output()
+            .map_err(|e| format!("could not run codesign: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "codesign failed for {}: {}",
+                bundle_path.display(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        // Verify rather than trust: a bundle that signs but does not validate
+        // is the exact state this function exists to prevent, and it is silent.
+        // `--verify` alone: this codesign rejects `--quiet` in verify mode, and
+        // a broken verify invocation would fail every bundle build.
+        let check = Command::new("codesign")
+            .arg("--verify")
+            .arg(bundle_path)
+            .output()
+            .map_err(|e| format!("could not run codesign --verify: {e}"))?;
+        if !check.status.success() {
+            return Err(format!(
+                "{} did not validate after signing: {}",
+                bundle_path.display(),
+                String::from_utf8_lossy(&check.stderr).trim()
+            ));
+        }
+        Ok(())
+    }
+
     /// Stage `resources_dir` into the bundle, if this product has one.
     ///
     /// Errors rather than skipping when the directory is missing: a silently
@@ -515,6 +577,8 @@ impl Product {
         if cfg!(target_os = "macos") {
             self.build_macos_bundle(&clap_path, &lib)?;
             self.stage_resources(root, &clap_path)?;
+            // After staging: signing seals Resources/.
+            Self::codesign_bundle(&clap_path)?;
         } else {
             // Linux/Windows: a CLAP is just the shared library with a .clap name.
             let _ = fs::remove_file(&clap_path);
@@ -773,6 +837,9 @@ impl Product {
         let dest = bundled.join(format!("{}.vst3", vst3.name));
         let _ = fs::remove_dir_all(&dest);
         copy_dir_recursive(&staged, &dest)?;
+        // Sign the copy, not the staged original: a plain directory copy does
+        // not carry a valid seal even when the source had one.
+        Self::codesign_bundle(&dest)?;
         Ok(dest)
     }
 
@@ -934,4 +1001,55 @@ mod tests {
     fn workspace_root_is_two_levels_above_an_xtask() {
         assert_eq!(workspace_root("/repo/vxn-2/xtask"), PathBuf::from("/repo"));
     }
+
+    /// A freshly assembled bundle must **validate**, not merely exist.
+    ///
+    /// The regression this guards: every VXN `.clap` and `.vst3` shipped for
+    /// months with a Mach-O the linker had ad-hoc signed inside a bundle that
+    /// had no `_CodeSignature/CodeResources`, so `codesign --verify` said "code
+    /// has no resources but signature indicates they must be present" and
+    /// Ableton's scanner logged `not a plugin`. Nothing failed at build time.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_signed_bundle_validates_and_seals_its_resources() {
+        let dir = std::env::temp_dir().join(format!("vxn_sign_{}", std::process::id()));
+        let bundle = dir.join("T.clap");
+        let macos = bundle.join("Contents").join("MacOS");
+        fs::create_dir_all(&macos).unwrap();
+        // A real Mach-O, so this exercises the same path a plugin dylib takes.
+        fs::copy("/bin/echo", macos.join("T")).unwrap();
+        fs::write(
+            bundle.join("Contents").join("Info.plist"),
+            P.info_plist(),
+        )
+        .unwrap();
+
+        Product::codesign_bundle(&bundle).expect("signing should succeed");
+        assert!(
+            bundle.join("Contents").join("_CodeSignature").is_dir(),
+            "no _CodeSignature directory — the resource seal was never written"
+        );
+
+        let out = Command::new("codesign")
+            .args(["--verify", "--verbose=2"])
+            .arg(&bundle)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "bundle did not validate: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn signing_a_missing_bundle_is_an_error_not_a_silent_pass() {
+        let missing = std::env::temp_dir().join("vxn_definitely_absent.clap");
+        let _ = fs::remove_dir_all(&missing);
+        assert!(Product::codesign_bundle(&missing).is_err());
+    }
+
 }
