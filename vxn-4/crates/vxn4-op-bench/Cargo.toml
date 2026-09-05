@@ -1,0 +1,17 @@
+[package]
+name = "vxn4-op-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Sizing bench for the vxn-4 operator block — oversampling, table length, lane layout."
+
+[dependencies]
+vxn4-dsp = { workspace = true }
+
+[dev-dependencies]
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "op_bank"
+harness = false

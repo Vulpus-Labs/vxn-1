@@ -2517,6 +2517,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "vxn4-dsp"
+version = "0.3.0"
+
+[[package]]
+name = "vxn4-engine"
+version = "0.3.0"
+dependencies = [
+ "vxn-core-matrix",
+ "vxn-core-utils",
+ "vxn4-dsp",
+]
+
+[[package]]
+name = "vxn4-op-bench"
+version = "0.3.0"
+dependencies = [
+ "criterion",
+ "vxn4-dsp",
+]
+
+[[package]]
+name = "vxn4-render"
+version = "0.3.0"
+dependencies = [
+ "vxn4-engine",
+]
+
+[[package]]
 name = "walkdir"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

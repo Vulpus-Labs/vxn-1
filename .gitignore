@@ -8,3 +8,6 @@ target/
 .claude/settings.local.json
 .agents/
 skills-lock.json
+
+# vxn4-render output (`--all`). Generated audio, never committed.
+vxn4-out/

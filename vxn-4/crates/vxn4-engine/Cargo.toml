@@ -1,0 +1,13 @@
+[package]
+name = "vxn4-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "VXN4 engine — voice allocation, envelopes, patches and the oversampling chain."
+
+[dependencies]
+vxn4-dsp = { workspace = true }
+vxn-core-utils = { workspace = true }
+vxn-core-matrix = { workspace = true }

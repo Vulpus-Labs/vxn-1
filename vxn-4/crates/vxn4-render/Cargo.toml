@@ -1,0 +1,13 @@
+[package]
+name = "vxn4-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+# Two binaries: the renderer and the `alias` analysis tool. Without this,
+# `cargo run -p vxn4-render` is ambiguous and the documented command fails.
+default-run = "vxn4-render"
+description = "Offline renderer for vxn-4 — plays a note sequence into a WAV file."
+
+[dependencies]
+vxn4-engine = { workspace = true }
