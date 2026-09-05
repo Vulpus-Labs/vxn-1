@@ -85,6 +85,31 @@ parallel; **0187** last. (Ids 0180+ reserved here; 0179 already open as groundwo
       factory flavours across all four families (+ a handful of assembled kits) so
       the toy is fun on first load. Mind [[vxn2-include-dir-no-rerun]].
 
+### Second wave (2026-09-04) — the flavours the roster still lacks
+
+Playing the shipped kit against the 808/909 sound sets exposed structural gaps that
+0181–0184 did not close: every decay in every family is a *single* exponential, the
+clap has no tail, the snare has one body oscillator, the click has no tone control,
+the hat has one 6 dB/oct filter, velocity only scales amplitude, and nothing fuses
+the eight tracks. These are enrichment of the same closed four-family roster — no new
+engines. Land in roughly the order listed; each is independently shippable.
+
+- [ ] **0357** — **Frequency-dependent modal damping (Metal + Struck).** Per-mode decay
+      tilt so high partials die first. The largest single character change available.
+- [ ] **0358** — **Clap tail + burst shaping.** Three bursts plus a long tail, level
+      ramp, spacing jitter — the tail is what makes it a clap.
+- [ ] **0359** — **Snare twin body + independent layer levels.** The 808's two
+      resonators; and stop crossfading layers that should sum.
+- [ ] **0360** — **Driven click tone/decay + two-stage amp decay.** The 808 "Tone"
+      knob, the tom's missing noise skin, and punch/body separation.
+- [ ] **0361** — **Hat source + filter rework.** Summed squares alongside XOR parity,
+      bandpass + highpass shaping, open/closed brightness split.
+- [ ] **0362** — **Velocity as a fourth binding source.** Slot 3 = velocity in the
+      flavour binding table; patterns breathe instead of merely getting louder.
+      Prefer landing before 0185, so the binding editor designs for two sources.
+- [ ] **0363** — **Bus saturation ahead of the master limiter.** The output-stage glue
+      both classic machines rely on.
+
 ## Risks
 
 - **Flavour = the 0179 blob.** The base+binding layout must be right before flavours

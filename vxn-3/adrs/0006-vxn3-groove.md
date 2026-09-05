@@ -1,6 +1,18 @@
 # ADR 0006 — VXN3 groove: timing feel as a pooled template
 
-- **Status:** Accepted
+> **Superseded by [ADR 0007](0007-vxn3-continuous-lane-editor.md).** What 0007
+> retains: groove as a **named, pooled, per-lane-assignable object** (§2), and
+> the determinism rule (hash-derived, never `Math.random`). What it changes: the
+> groove's payload is **marker geometry** — beat marker positions, sub-counts, a
+> swing warp, Y-centre control points — not a per-position timing/velocity offset
+> table (§1); hit position is stored *relative to* that geometry rather than as a
+> grid index plus an offset, so per-hit placement and groove swap stop competing
+> for one field; and the pattern editor becomes a timing surface, reversing the
+> two-editor split. §1's "if a 'drag one hit' gesture is ever wanted it is a
+> future ADR" is what 0007 answers. The RT model of §4 stands, and was still
+> unimplemented when 0007 was written.
+
+- **Status:** Superseded by [ADR 0007](0007-vxn3-continuous-lane-editor.md) (2026-09-04)
 - **Date:** 2026-07-06
 - **Scope:** Where rhythmic *feel* (swing, timing deviation, emphasis) lives in
   the VXN3 editor and data model. Supersedes [ADR 0004](0004-vxn3-micro-timing.md);
