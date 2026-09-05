@@ -2,10 +2,14 @@
 //! swing warp that positions the latter (ADR 0007 §2/§3, ticket 0347).
 //!
 //! Two tiers of marker. **Beat markers** `m[0..=n]` are stored and user-draggable;
-//! **subdivision markers** are never stored, they are computed on demand:
+//! **subdivision markers** are never stored, they are computed on demand. The beat is
+//! tiled by swing *periods* of `c` subdivisions ([`SwingPeriod`]) and `w` is applied
+//! inside each one:
 //!
 //! ```text
-//! sub_pos(b, k) = m[b] + w(k / n_b) · (m[b+1] - m[b])
+//! g     = ⌊k / c⌋ · c            (first subdivision of k's period)
+//! width = min(c, n_b - g)        (a trailing period can be short)
+//! sub_pos(b, k) = m[b] + (g + width · w((k - g) / width)) / n_b · (m[b+1] - m[b])
 //! ```
 //!
 //! `n_b` is the beat's subdivision count — a lane default with a per-beat override,
@@ -14,10 +18,14 @@
 //! `[0, 1]` with `w(0) = 0`, `w(1) = 1`. Beat marker `k = 0` *is* a subdivision
 //! marker, so the snap-target set is exactly the subdivision markers.
 //!
-//! Swing is a **warp on the beat's unit interval** rather than a per-position offset
-//! table for one reason (ADR 0007 §3): it generalises over `n_b`. One swing control
-//! stays meaningful whatever a beat's sub-count, `n = 3` needs no special case, and
-//! derived markers cannot drift out of step with the beat markers that generate them.
+//! Swing is a **warp on a unit interval** rather than a per-position offset table for
+//! one reason (ADR 0007 §3): it generalises over `n_b`. One swing control stays
+//! meaningful whatever a beat's sub-count, `n = 3` needs no special case, and derived
+//! markers cannot drift out of step with the beat markers that generate them. Which
+//! interval it warps is the ADR 0007 Amendment / ticket 0365 correction: `w` has one
+//! knee, so applying it across the whole beat swings the beat rather than the
+//! subdivisions — at `n = 4` long-long-short-short rather than shuffle, and at every
+//! other `n > 2` some other rhythm that is not the one asked for.
 //!
 //! **[`MIN_SLOT`] is load-bearing, not cosmetic.** Ticket 0348 stores a hit as
 //! `t = sub_pos(b, k) + f · (sub_pos(b, k+1) - sub_pos(b, k)) + nudge`; a zero-width
@@ -93,39 +101,115 @@ impl SwingShape {
     }
 }
 
-/// Ratio the [`SwingShape::Mpc`] knee reaches at `amount = 1`: the half-beat lands
-/// 75% of the way through, the classic MPC ceiling. A negative amount mirrors it to
-/// 25% (pull early), so `s` never leaves `(0, 1)` and the warp stays strictly
+/// Width of one swing period — the interval `w` is applied *to*, in subdivisions
+/// (ADR 0007 Amendment, ticket 0365).
+///
+/// `w` has fixed endpoints, so whatever it spans gets exactly one knee. Spanning the
+/// whole beat that is one knee per beat, which is classic shuffle only at `n = 2` and
+/// a back-loaded beat everywhere else; spanning a pair it is classic shuffle at every
+/// even `n`. So the span is a control rather than a constant: on a 16ths lane
+/// [`SwingPeriod::Beat`] is 8th-note swing and [`SwingPeriod::Pair`] is 16th shuffle.
+///
+/// **A period that does not divide the beat's sub-count leaves a short trailing
+/// group, warped across its own width** — and that is the whole of the odd-`n`
+/// answer. At `n = 3` with `Pair` the leftover third subdivision is a group of one,
+/// so `w(0) = 0` places it unswung on its own boundary; the first two shuffle
+/// normally. Odd `n` is therefore a setting like any other rather than a second rule
+/// inside [`Grid::sub_pos`], and a triplet lane that wants the beat-wide feel asks
+/// for `Beat`. The same rule bounds every period: a group is warped across the
+/// subdivisions it actually has, so no subdivision can be pushed past its beat marker.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum SwingPeriod {
+    /// The whole beat — one knee per beat, whatever the sub-count. The pre-0365
+    /// behaviour, kept because it *is* the wanted feel one subdivision level up.
+    Beat,
+    /// Two subdivisions: classic shuffle, and the default.
+    #[default]
+    Pair,
+    /// An arbitrary period, in subdivisions, clamped to `1..=MAX_SUBS`. A period of 1
+    /// is no swing at all. `Custom(2)` is [`SwingPeriod::Pair`] and canonicalises to
+    /// it on the way into a [`Grid`], so two grids with the same feel compare equal.
+    Custom(u8),
+}
+
+impl SwingPeriod {
+    #[inline]
+    pub fn as_u8(self) -> u8 {
+        match self {
+            SwingPeriod::Beat => 0,
+            SwingPeriod::Pair => 2,
+            SwingPeriod::Custom(c) => c.clamp(1, MAX_SUBS as u8),
+        }
+    }
+
+    #[inline]
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            0 => SwingPeriod::Beat,
+            2 => SwingPeriod::Pair,
+            c if c as u32 <= MAX_SUBS => SwingPeriod::Custom(c),
+            _ => SwingPeriod::default(),
+        }
+    }
+
+    /// Subdivisions in one period, for a beat of `n`. Never zero and never wider than
+    /// the beat: a period that straddled a beat marker would put a subdivision in a
+    /// slot the marker does not own.
+    #[inline]
+    pub fn subs(self, n: u32) -> u32 {
+        let c = match self {
+            SwingPeriod::Beat => n,
+            SwingPeriod::Pair => 2,
+            SwingPeriod::Custom(c) => c as u32,
+        };
+        c.clamp(1, n.max(1))
+    }
+}
+
+/// Ratio the [`SwingShape::Mpc`] knee reaches at `amount = 1`: the period's midpoint
+/// lands 75% of the way through it, the classic MPC ceiling. A negative amount mirrors
+/// it to 25% (pull early), so `s` never leaves `(0, 1)` and the warp stays strictly
 /// increasing across the whole control range.
 const MPC_MAX_RATIO: f64 = 0.75;
 
-/// The swing warp: a shape plus its amount. `amount` is a bipolar `-1..1` control —
-/// positive pulls the odd subdivisions late (the usual direction), negative early,
-/// zero straight. Out-of-range and non-finite values are treated as their clamp, so
-/// no caller can produce a non-monotonic `w`.
+/// The swing warp: a shape, its amount, and the period it is applied over. `amount` is
+/// a bipolar `-1..1` control — positive pulls the late half of each period later (the
+/// usual direction), negative early, zero straight. Out-of-range and non-finite values
+/// are treated as their clamp, so no caller can produce a non-monotonic `w`.
 #[derive(Copy, Clone, Debug, PartialEq, Default)]
 pub struct Swing {
     pub shape: SwingShape,
     pub amount: f64,
+    pub period: SwingPeriod,
 }
 
 impl Swing {
     /// No swing — `w` is the identity.
     #[inline]
     pub fn straight() -> Self {
-        Self { shape: SwingShape::Straight, amount: 0.0 }
+        Self { shape: SwingShape::Straight, amount: 0.0, period: SwingPeriod::Pair }
     }
 
-    /// Classic MPC swing at `amount` (`-1..1`, positive = late).
+    /// Classic MPC swing at `amount` (`-1..1`, positive = late), over the default
+    /// pair period.
     #[inline]
     pub fn mpc(amount: f64) -> Self {
-        Self { shape: SwingShape::Mpc, amount }
+        Self { shape: SwingShape::Mpc, amount, period: SwingPeriod::Pair }
     }
 
-    /// The warp `w: [0, 1] → [0, 1]`. **Strictly increasing with fixed endpoints**
-    /// `w(0) = 0`, `w(1) = 1` — the two properties [`Grid::sub_pos`] relies on to
-    /// keep subdivision markers strictly increasing and inside their beat, whatever
-    /// the sub-count.
+    /// The same swing over a different period.
+    #[inline]
+    pub fn with_period(self, period: SwingPeriod) -> Self {
+        Self { period, ..self }
+    }
+
+    /// The warp `w: [0, 1] → [0, 1]`, over one swing period's unit interval.
+    /// **Strictly increasing with fixed endpoints** `w(0) = 0`, `w(1) = 1` — the two
+    /// properties [`Grid::sub_pos`] relies on to keep subdivision markers strictly
+    /// increasing and inside their beat, whatever the sub-count or period.
+    ///
+    /// `w` takes no sub-count and no period: it is the shape of one knee, and where
+    /// that knee is applied is [`SwingPeriod`]'s business alone.
     ///
     /// The endpoints are returned by an explicit branch rather than falling out of
     /// the arithmetic, so they are exact for every shape that is ever added here.
@@ -143,12 +227,12 @@ impl Swing {
                 if !self.amount.is_finite() {
                     return u;
                 }
-                // Knee position: where the half-beat lands. s ∈ [0.25, 0.75], so both
-                // limbs have positive slope (2s and 2(1-s)) and w stays strictly
-                // increasing. At amount = 0 both limbs collapse to the identity
-                // *exactly* — every operation below is a dyadic scale or a Sterbenz
-                // subtraction, so a nominally-Mpc lane at zero swing is bit-identical
-                // to a straight one.
+                // Knee position: where the period's midpoint lands. s ∈ [0.25, 0.75],
+                // so both limbs have positive slope (2s and 2(1-s)) and w stays
+                // strictly increasing. At amount = 0 both limbs collapse to the
+                // identity *exactly* — every operation below is a dyadic scale or a
+                // Sterbenz subtraction, so a nominally-Mpc lane at zero swing is
+                // bit-identical to a straight one.
                 let a = self.amount.clamp(-1.0, 1.0);
                 let s = 0.5 + a * (MPC_MAX_RATIO - 0.5);
                 if u <= 0.5 {
@@ -295,6 +379,11 @@ impl Grid {
     /// marker**, exactly, rather than `m[b] + 1·span`: `a + (b - a)` is not `b` in
     /// `f64`, and the slot boundaries must agree bit-for-bit with the markers they
     /// sit on or [`Grid::locate`] can land a position in the wrong beat.
+    ///
+    /// The warp spans one [`SwingPeriod`], not the beat (ADR 0007 Amendment): `w` has
+    /// a single knee, so a beat-wide application pulls everything past its midpoint —
+    /// the on-beat 8th included — and gives long-long-short-short rather than shuffle.
+    /// One knee per period is what makes long-short-long-short at every even `n`.
     #[inline]
     pub fn sub_pos(&self, beat: usize, k: u32) -> f64 {
         let b = beat.min(self.n_beats - 1);
@@ -307,7 +396,21 @@ impl Grid {
         }
         let lo = self.markers[b];
         let hi = self.markers[b + 1];
-        lo + self.swing.w(k as f64 / n as f64) * (hi - lo)
+        let c = self.swing.period.subs(n);
+        let g = k / c * c;
+        // A trailing period can be short, and is warped across the subdivisions it
+        // actually has. That is what makes the geometry hold with no divisibility
+        // assumption: `u < 1` strictly, so `w(u) < 1`, so this group's last marker
+        // lands below `g + width` — the next group's first, and for the final group
+        // the beat's own end. Strictly increasing and inside the beat for any `c`, `n`.
+        let width = c.min(n - g);
+        let u = (k - g) as f64 / width as f64;
+        // One division, of the whole numerator by `n`. At zero swing that numerator is
+        // `g + width · (k - g)/width`, which is exactly `k` for every width a lane can
+        // reach — see `a_width_never_loses_the_subdivision_it_divides_out`, which pins
+        // that to `MAX_SUBS` rather than to dyadic widths. So a straight lane still
+        // reproduces the uniform grid bit-for-bit whatever the period.
+        lo + ((g as f64 + width as f64 * self.swing.w(u)) / n as f64) * (hi - lo)
     }
 
     /// Forward mapping: the beat position of a `(beat, sub, frac)` triple, i.e. the
@@ -452,8 +555,16 @@ impl Grid {
         }
     }
 
+    /// Set the swing warp. The period is canonicalised through its tag encoding on the
+    /// way in — same obligation as the marker tail and the dead sub-count overrides:
+    /// `Custom(2)` *is* `Pair`, and an out-of-range `Custom` is its clamp, so two grids
+    /// spelling one feel two ways must compare equal.
+    ///
+    /// Only the spellings that are equal for **every** sub-count are folded.
+    /// [`SwingPeriod::Beat`] and `Custom(n)` agree on a lane where every beat has `n`
+    /// subs and diverge the moment one beat overrides its count, so they stay distinct.
     pub fn set_swing(&mut self, swing: Swing) {
-        self.swing = swing;
+        self.swing = swing.with_period(SwingPeriod::from_u8(swing.period.as_u8()));
     }
 
     /// Re-establish `m[i] - m[i-1] >= MIN_SLOT` across the interior without moving the
@@ -549,7 +660,7 @@ mod tests {
             for i in 0..64 {
                 // Sweep the declared control range plus deliberate overshoot.
                 let amount = -1.5 + 3.0 * (i as f64 / 63.0);
-                let sw = Swing { shape, amount };
+                let sw = Swing { shape, amount, ..Swing::default() };
                 assert_eq!(sw.w(0.0), 0.0, "w(0) shape={shape:?} a={amount}");
                 assert_eq!(sw.w(1.0), 1.0, "w(1) shape={shape:?} a={amount}");
                 // Out-of-domain clamps rather than extrapolating.
@@ -569,8 +680,10 @@ mod tests {
         }
     }
 
+    /// `w` knows nothing of beats or sub-counts: it is one knee on `[0, 1]`, and what
+    /// that interval *is* — beat, pair, or custom — is [`SwingPeriod`]'s business.
     #[test]
-    fn mpc_pulls_the_half_beat_late_and_non_finite_amount_is_straight() {
+    fn mpc_pulls_the_period_midpoint_late_and_non_finite_amount_is_straight() {
         assert!(Swing::mpc(1.0).w(0.5) > 0.5);
         assert!(Swing::mpc(-1.0).w(0.5) < 0.5);
         assert_eq!(Swing::mpc(1.0).w(0.5), MPC_MAX_RATIO);
@@ -578,6 +691,49 @@ mod tests {
         assert_eq!(Swing::mpc(9.0).w(0.5), MPC_MAX_RATIO);
         assert_eq!(Swing::mpc(f64::NAN).w(0.3), 0.3);
         assert_eq!(Swing::mpc(f64::INFINITY).w(0.3), 0.3);
+        // Changing the period cannot change w — that is the whole point of the split.
+        for p in [SwingPeriod::Beat, SwingPeriod::Pair, SwingPeriod::Custom(5)] {
+            assert_eq!(Swing::mpc(1.0).with_period(p).w(0.5), MPC_MAX_RATIO);
+        }
+    }
+
+    #[test]
+    fn swing_period_tag_round_trips_and_unknown_falls_back() {
+        assert_eq!(SwingPeriod::default(), SwingPeriod::Pair);
+        for p in [SwingPeriod::Beat, SwingPeriod::Pair, SwingPeriod::Custom(1), SwingPeriod::Custom(3), SwingPeriod::Custom(MAX_SUBS as u8)] {
+            assert_eq!(SwingPeriod::from_u8(p.as_u8()), p);
+        }
+        assert_eq!(SwingPeriod::from_u8(0xFF), SwingPeriod::default());
+        // Custom(2) is a pair however it is spelled, and out-of-range customs clamp
+        // into the representable range rather than falling back to the default.
+        assert_eq!(SwingPeriod::from_u8(SwingPeriod::Custom(2).as_u8()), SwingPeriod::Pair);
+        assert_eq!(SwingPeriod::from_u8(SwingPeriod::Custom(0).as_u8()), SwingPeriod::Custom(1));
+        assert_eq!(SwingPeriod::from_u8(SwingPeriod::Custom(99).as_u8()), SwingPeriod::Custom(MAX_SUBS as u8));
+    }
+
+    /// A period is never zero and never wider than the beat, so a group cannot straddle
+    /// a beat marker whatever a caller asks for.
+    #[test]
+    fn period_width_clamps_into_the_beat() {
+        for n in SUB_COUNTS {
+            assert_eq!(SwingPeriod::Beat.subs(n), n);
+            assert_eq!(SwingPeriod::Pair.subs(n), 2.min(n));
+            assert_eq!(SwingPeriod::Custom(0).subs(n), 1);
+            assert_eq!(SwingPeriod::Custom(99).subs(n), n);
+            assert!((1..=n).contains(&SwingPeriod::Custom(5).subs(n)));
+        }
+    }
+
+    /// The grid canonicalises the period, for the same reason it canonicalises the
+    /// marker tail: equal geometry must compare equal however it was built.
+    #[test]
+    fn set_swing_canonicalises_the_period() {
+        let mut spelled = Grid::uniform(4, 4.0, 4);
+        spelled.set_swing(Swing::mpc(0.5).with_period(SwingPeriod::Custom(2)));
+        let mut named = Grid::uniform(4, 4.0, 4);
+        named.set_swing(Swing::mpc(0.5).with_period(SwingPeriod::Pair));
+        assert_eq!(spelled, named);
+        assert_eq!(spelled.swing().period, SwingPeriod::Pair);
     }
 
     // ── marker invariants ─────────────────────────────────────────────────────
@@ -784,6 +940,277 @@ mod tests {
         }
     }
 
+    /// Every period worth exercising: the two named ones, a no-op period, periods that
+    /// divide the common sub-counts and periods that deliberately do not.
+    const PERIODS: [SwingPeriod; 8] = [
+        SwingPeriod::Beat,
+        SwingPeriod::Pair,
+        SwingPeriod::Custom(1),
+        SwingPeriod::Custom(3),
+        SwingPeriod::Custom(4),
+        SwingPeriod::Custom(5),
+        SwingPeriod::Custom(8),
+        SwingPeriod::Custom(MAX_SUBS as u8),
+    ];
+
+    /// Sub-to-sub gaps inside beat `b`. Every caller builds unit-width beats, so these
+    /// are the beat fractions directly and no scaling rounding creeps in.
+    fn beat_gaps(g: &Grid, b: usize) -> [f64; MAX_SUBS as usize] {
+        let mut out = [f64::NAN; MAX_SUBS as usize];
+        for k in 0..g.subs(b) {
+            out[k as usize] = g.sub_pos(b, k + 1) - g.sub_pos(b, k);
+        }
+        out
+    }
+
+    /// AC: at `n = 4` and full swing the beat is **long-short-long-short**, exactly.
+    ///
+    /// The 0347 beat-wide warp gave `0.375, 0.375, 0.125, 0.125` here — subs 1 and 3
+    /// were already where shuffle wants them and it was sub 2, the on-beat 8th, that
+    /// got dragged to 0.75. It holds at 0.5 now.
+    #[test]
+    fn full_swing_at_sixteenths_is_long_short_long_short() {
+        let mut g = Grid::uniform(4, 4.0, 4);
+        g.set_swing(Swing::mpc(1.0));
+        for b in 0..g.n_beats() {
+            let base = b as f64;
+            assert_eq!(g.sub_pos(b, 0), base);
+            assert_eq!(g.sub_pos(b, 1), base + 0.375);
+            assert_eq!(g.sub_pos(b, 2), base + 0.5, "the on-beat 8th must not move");
+            assert_eq!(g.sub_pos(b, 3), base + 0.875);
+            assert_eq!(g.sub_pos(b, 4), base + 1.0);
+            assert_eq!(beat_gaps(&g, b)[..4], [0.375, 0.125, 0.375, 0.125], "b={b}");
+        }
+        // Negative amount mirrors it: short-long-short-long, same magnitudes.
+        g.set_swing(Swing::mpc(-1.0));
+        for b in 0..g.n_beats() {
+            assert_eq!(beat_gaps(&g, b)[..4], [0.125, 0.375, 0.125, 0.375], "b={b}");
+        }
+    }
+
+    /// AC: `n = 2` is untouched, bit-for-bit — the pair *is* the beat there, which is
+    /// exactly why the beat-wide warp looked right. Checked against the pre-0365
+    /// expression verbatim, on skewed markers so `hi - lo` is not 1.
+    #[test]
+    fn eighth_swing_is_bit_for_bit_what_it_shipped() {
+        let mut rng = Rng(0x0365_0002);
+        for i in 0..64 {
+            let amount = -1.25 + 2.5 * (i as f64 / 63.0);
+            let sw = Swing::mpc(amount);
+            let mut g = Grid::uniform(4, 4.0, 2);
+            g.set_swing(sw);
+            g.set_beat_marker(1, 0.3 + rng.unit());
+            g.set_beat_marker(2, 1.6 + rng.unit());
+            g.set_beat_marker(3, 2.9 + rng.unit());
+            for b in 0..g.n_beats() {
+                let (lo, hi) = (g.beat_marker(b), g.beat_marker(b + 1));
+                assert_eq!(g.sub_pos(b, 1), lo + sw.w(0.5) * (hi - lo), "a={amount} b={b}");
+            }
+        }
+    }
+
+    /// AC: at `n = 8` full swing is four long-short pairs, not two halves.
+    #[test]
+    fn full_swing_at_thirty_seconds_is_four_pairs() {
+        let mut g = Grid::uniform(4, 4.0, 8);
+        g.set_swing(Swing::mpc(1.0));
+        let want = [0.1875, 0.0625, 0.1875, 0.0625, 0.1875, 0.0625, 0.1875, 0.0625];
+        for b in 0..g.n_beats() {
+            assert_eq!(beat_gaps(&g, b)[..8], want, "b={b}");
+        }
+    }
+
+    /// The beat-wide warp is still reachable, and is what it always was: swing one
+    /// subdivision level up — 8th-note swing on a 16ths lane.
+    ///
+    /// Bit-exact against the pre-0365 expression at dyadic `n`, where `n · w(k/n) / n`
+    /// round-trips. At non-dyadic `n` it does not, so the standard there is the one
+    /// `non_dyadic_sub_counts_match_the_old_grid_to_one_ulp` already holds the grid to.
+    #[test]
+    fn the_beat_period_reproduces_the_pre_ticket_warp() {
+        let sw = Swing::mpc(1.0).with_period(SwingPeriod::Beat);
+        for n in [2u32, 4, 8, 16] {
+            let mut g = Grid::uniform(4, 4.0, n);
+            g.set_swing(sw);
+            for b in 0..g.n_beats() {
+                for k in 1..n {
+                    let want = b as f64 + sw.w(k as f64 / n as f64);
+                    assert_eq!(g.sub_pos(b, k), want, "n={n} b={b} k={k}");
+                }
+            }
+        }
+        for n in [3u32, 6, 12] {
+            let mut g = Grid::uniform(4, 4.0, n);
+            g.set_swing(sw);
+            for b in 0..g.n_beats() {
+                for k in 1..n {
+                    let want = b as f64 + sw.w(k as f64 / n as f64);
+                    let got = g.sub_pos(b, k);
+                    assert!(
+                        (got - want).abs() <= 4.0 * f64::EPSILON * want.max(1.0),
+                        "n={n} b={b} k={k}: {got} vs {want}"
+                    );
+                }
+            }
+        }
+        // Which at n = 4 is the back-loaded beat 0347 shipped, kept as a setting.
+        let mut g = Grid::uniform(4, 4.0, 4);
+        g.set_swing(sw);
+        assert_eq!(beat_gaps(&g, 0)[..4], [0.375, 0.375, 0.125, 0.125]);
+    }
+
+    /// AC: the odd-`n` rule. A period that does not divide the beat leaves a short
+    /// trailing group warped across its own width — at `n = 3` that group holds one
+    /// subdivision, which `w(0) = 0` leaves unswung on its own boundary while the pair
+    /// before it shuffles normally. At `n = 6` the pairs come out even, so there is no
+    /// leftover and three clean long-short pairs.
+    #[test]
+    fn a_short_trailing_period_is_warped_across_its_own_width() {
+        let mut three = Grid::uniform(4, 4.0, 3);
+        three.set_swing(Swing::mpc(1.0));
+        for b in 0..three.n_beats() {
+            let base = b as f64;
+            assert_eq!(three.sub_pos(b, 0), base);
+            assert_eq!(three.sub_pos(b, 1), base + 1.5 / 3.0, "the pair that exists swings");
+            assert_eq!(three.sub_pos(b, 2), base + 2.0 / 3.0, "the leftover does not");
+            assert_eq!(three.sub_pos(b, 3), base + 1.0);
+        }
+        // The whole-beat feel is still available on a triplet lane — it is a setting.
+        three.set_swing(Swing::mpc(1.0).with_period(SwingPeriod::Beat));
+        for b in 0..three.n_beats() {
+            assert!(three.sub_pos(b, 2) > b as f64 + 0.8, "beat-wide pulls the third late");
+        }
+
+        let mut six = Grid::uniform(4, 4.0, 6);
+        six.set_swing(Swing::mpc(1.0));
+        for b in 0..six.n_beats() {
+            let gaps = beat_gaps(&six, b);
+            for p in 0..3 {
+                assert!((gaps[2 * p] - 0.25).abs() < 1e-12, "b={b} p={p} {gaps:?}");
+                assert!((gaps[2 * p + 1] - 1.0 / 12.0).abs() < 1e-12, "b={b} p={p} {gaps:?}");
+            }
+        }
+    }
+
+    /// AC: sub markers stay strictly increasing at every swing amount for every `n`,
+    /// now swept across every period too — and over the **whole** sub-count range
+    /// rather than [`SUB_COUNTS`], because the shapes at risk are the ones that leave a
+    /// short trailing group (`n = 16` with `Custom(5)`, `n = 11` with `Custom(3)`) and
+    /// those are exactly the counts the shorter list skips.
+    #[test]
+    fn subs_strictly_increase_at_every_swing_period() {
+        let mut rng = Rng(0x0365_0347);
+        for period in PERIODS {
+            for n in 1..=MAX_SUBS {
+                for i in 0..24 {
+                    let amount = -1.25 + 2.5 * (i as f64 / 23.0);
+                    let mut g = Grid::uniform(4, 4.0, n);
+                    g.set_swing(Swing::mpc(amount).with_period(period));
+                    g.set_beat_marker(1, 0.3 + rng.unit());
+                    g.set_beat_marker(2, 1.6 + rng.unit());
+                    g.set_beat_marker(3, 2.9 + rng.unit());
+                    for b in 0..g.n_beats() {
+                        let mut prev = g.sub_pos(b, 0);
+                        assert_eq!(prev, g.beat_marker(b));
+                        for k in 1..=n {
+                            let p = g.sub_pos(b, k);
+                            assert!(p > prev, "period={period:?} n={n} a={amount} b={b} k={k}: {prev} -> {p}");
+                            prev = p;
+                        }
+                        assert_eq!(prev, g.beat_marker(b + 1));
+                    }
+                }
+            }
+        }
+    }
+
+    /// AC: `sub_pos(b, 0)` is `m[b]` and `sub_pos(b, k >= n)` is `m[b+1]`, **exactly**,
+    /// at every swing amount and every period. `locate` scans these values to pick a
+    /// beat, so one ULP of drift lands a hit in the wrong one.
+    #[test]
+    fn the_beat_markers_are_exact_at_every_amount_and_period() {
+        let mut rng = Rng(0x0365_0E0E);
+        for period in PERIODS {
+            for shape in [SwingShape::Straight, SwingShape::Mpc] {
+                for n in 1..=MAX_SUBS {
+                    for _ in 0..16 {
+                        let mut g = Grid::uniform(4, 4.0, n);
+                        g.set_swing(Swing { shape, amount: rng.bipolar() * 1.5, period });
+                        g.set_beat_marker(1, 0.3 + rng.unit());
+                        g.set_beat_marker(2, 1.6 + rng.unit());
+                        g.set_beat_marker(3, 2.9 + rng.unit());
+                        for b in 0..g.n_beats() {
+                            assert_eq!(g.sub_pos(b, 0), g.beat_marker(b), "period={period:?} n={n} b={b}");
+                            for k in n..n + 4 {
+                                assert_eq!(g.sub_pos(b, k), g.beat_marker(b + 1), "period={period:?} n={n} b={b} k={k}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// [`Grid::sub_pos`] divides the warped offset out by `width` and multiplies it
+    /// straight back in, so zero-swing bit-exactness rests on that being lossless.
+    ///
+    /// It is, for every width a lane can reach — but by exhaustion, not by an argument
+    /// that scales: the first width where it fails is 22 (`22 · (15/22) = 14.999…`).
+    /// [`MAX_SUBS`] is what keeps it true, so this is the test that fails if `MAX_SUBS`
+    /// is ever raised past 21, rather than a silent ULP of drift in a straight lane.
+    #[test]
+    fn a_width_never_loses_the_subdivision_it_divides_out() {
+        for width in 1..=MAX_SUBS {
+            for m in 0..width {
+                let round_tripped = width as f64 * (m as f64 / width as f64);
+                assert_eq!(round_tripped, m as f64, "width={width} m={m}");
+            }
+        }
+    }
+
+    /// AC: zero swing reproduces the uniform grid at **every** period, to `f64`
+    /// equality for dyadic `n`. The period does not enter — the width divides out
+    /// exactly (above), so the identity warp does not care how the beat is tiled.
+    #[test]
+    fn zero_swing_reproduces_the_uniform_grid_at_every_period() {
+        for period in PERIODS {
+            for n in [1u32, 2, 4, 8, 16] {
+                let step_beats = 1.0 / n as f64;
+                let mut g = Grid::uniform(MAX_BEATS, MAX_BEATS as f64, n);
+                g.set_swing(Swing::mpc(0.0).with_period(period));
+                for b in 0..g.n_beats() {
+                    for k in 0..n {
+                        let i = (b as u32 * n + k) as f64;
+                        assert_eq!(g.sub_pos(b, k), i * step_beats, "period={period:?} n={n} b={b} k={k}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// And to a ULP or so for the non-dyadic combinations, which is the same standard
+    /// `non_dyadic_sub_counts_match_the_old_grid_to_one_ulp` holds the shipped grid to.
+    #[test]
+    fn zero_swing_matches_the_uniform_grid_at_every_period() {
+        for period in PERIODS {
+            for n in [1u32, 2, 3, 4, 6, 8, 12, 16] {
+                let step_beats = 1.0 / n as f64;
+                let mut g = Grid::uniform(MAX_BEATS, MAX_BEATS as f64, n);
+                g.set_swing(Swing::mpc(0.0).with_period(period));
+                for b in 0..g.n_beats() {
+                    for k in 0..n {
+                        let want = (b as u32 * n + k) as f64 * step_beats;
+                        let got = g.sub_pos(b, k);
+                        assert!(
+                            (got - want).abs() <= 4.0 * f64::EPSILON * want.max(1.0),
+                            "period={period:?} n={n} b={b} k={k}: {got} vs {want}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// AC: zero swing on a straight marker set reproduces the old uniform grid to
     /// **`f64` equality**.
     ///
@@ -920,7 +1347,7 @@ mod tests {
             for shape in [SwingShape::Straight, SwingShape::Mpc] {
                 for trial in 0..24 {
                     let mut g = Grid::uniform(4, 4.0, n);
-                    g.set_swing(Swing { shape, amount: rng.bipolar() });
+                    g.set_swing(Swing { shape, amount: rng.bipolar(), ..Swing::default() });
                     g.set_beat_marker(1, 0.4 + rng.unit() * 0.8);
                     g.set_beat_marker(2, 1.6 + rng.unit() * 0.8);
                     g.set_beat_marker(3, 2.7 + rng.unit() * 0.8);
@@ -937,6 +1364,34 @@ mod tests {
                             "n={n} shape={shape:?} t={t} -> {at:?} -> {back}"
                         );
                         // And the slot really does own t.
+                        assert!(g.sub_pos(at.beat, at.sub) <= t);
+                        assert!(t <= g.sub_pos(at.beat, at.sub + 1));
+                    }
+                }
+            }
+        }
+    }
+
+    /// `pos_of` and `locate` scan `sub_pos` itself rather than inverting the warp, so
+    /// they needed no change for 0365 — this is the check that they did not.
+    #[test]
+    fn mapping_round_trips_at_every_swing_period() {
+        let mut rng = Rng(0x0365_BEEF);
+        for period in PERIODS {
+            for n in SUB_COUNTS {
+                for trial in 0..8 {
+                    let mut g = Grid::uniform(4, 4.0, n);
+                    g.set_swing(Swing::mpc(rng.bipolar()).with_period(period));
+                    g.set_beat_marker(1, 0.4 + rng.unit() * 0.8);
+                    g.set_beat_marker(2, 1.6 + rng.unit() * 0.8);
+                    g.set_beat_marker(3, 2.7 + rng.unit() * 0.8);
+                    g.set_beat_subs(trial % 4, Some(3)); // a tuplet in the mix
+                    for _ in 0..200 {
+                        let t = rng.unit() * g.len_beats();
+                        let at = g.locate(t);
+                        assert!(at.sub < g.subs(at.beat));
+                        let back = g.pos_of(at);
+                        assert!((back - t).abs() < 1e-12, "period={period:?} n={n} t={t} -> {at:?} -> {back}");
                         assert!(g.sub_pos(at.beat, at.sub) <= t);
                         assert!(t <= g.sub_pos(at.beat, at.sub + 1));
                     }
