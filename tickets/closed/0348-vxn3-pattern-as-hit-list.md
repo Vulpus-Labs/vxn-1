@@ -95,3 +95,75 @@ a choice arises between preserving something and a cleaner model, take the
 cleaner model. The regression bar for this epic lives in 0346, which lands the
 risky rewrite against an unchanged data model; by this ticket the reference
 render has already done its job.
+
+## Close-out (2026-09-06)
+
+Landed. `Pattern` is now `{ grid: Grid, hits: [Hit; MAX_HITS], n_hits }` — the
+`[Step; 16]`, `len` and `step_beats` are gone, and `Step` with them.
+
+**Position.** `Hit { beat, sub, f, nudge, y, rgb, note, velocity, probability,
+retrig, locks }`, resolved by `Pattern::fire_beat`:
+
+```text
+t = sub_pos(b, k) + f · (sub_pos(b, k+1) - sub_pos(b, k)) + nudge
+```
+
+`f <= 0` takes a separate branch returning `p0 + nudge`, so welding is
+bit-exact rather than exact-by-arithmetic-luck —
+`welded_hits_sit_exactly_on_their_marker_at_every_swing` asserts `f64` equality
+against `Grid::sub_pos`, not an epsilon.
+
+**The nudge clamp is in two places, and both are load-bearing.**
+`TICKS_PER_BEAT = 30_720` is sized so ±½ `MIN_SLOT` is the exact integer
+`MAX_NUDGE_TICKS = 240` (const-asserted). Every write path clamps to that. But
+that bound is expressed in *beats*, and a subdivision slot can be shorter than
+`MIN_SLOT` is wide, so `fire_beat` clamps the resolved nudge a second time to
+±½ of the hit's own slot. Without the second clamp the storage clamp alone does
+not imply monotonic fire order, which is the invariant bounding 0346's window.
+`resolved_fire_times_are_non_decreasing_in_hit_order` is the property test over
+randomised placements, nudges and swing amounts (hand-rolled xorshift32, per
+this repo's convention — no proptest dependency).
+
+**P-locks moved onto the hit** rather than being re-keyed in a side table. A
+`(hit, param)` side table would still come adrift when the list re-sorts — and
+it re-sorts on every insert, every `f`/`nudge` edit and every grid edit —
+so the lock array lives in `Hit`. `locks_travel_with_their_hit_through_a_resort`
+pins it.
+
+**`Termination::Revert { n }` counts subdivision slots**, documented on the
+type, with `revert_counts_subdivision_slots_on_a_varying_sub_count` exercising a
+lane whose sub-count changes per beat.
+
+**Scheduler cursor re-anchoring — an extra fix, not in the original ACs.** Both
+`next_trig_index` and `next_lock_index` are indices into a numbering the pattern
+defines, and the pattern is edited from the audio thread. An edit that changes
+the hit count or the grid's slot count rewrites what an already-committed index
+means, by a margin proportional to how long the lane has been playing. Each
+cursor now records the beat it was committed at and re-anchors when its index
+stops naming that beat. Without it, a live grid edit strands the lane silent
+with its p-locks frozen for minutes; `a_live_edit_does_not_strand_the_cursors`
+and `live_grid_edits_stay_allocation_free_and_keep_the_lane_running` cover it.
+
+**Blob.** `VERSION` 2 → 3 and the check tightened from `> VERSION` to
+`!= VERSION`, so a stale v1/v2 blob is rejected rather than half-read into the
+audio engine. The old indexed serialisation and
+`v1_blob_loads_with_default_flavour_then_upgrades` are deleted, not branched
+around. `every_other_version_is_rejected` covers `[0, 1, 2, VERSION+1, 0xFFFF]`.
+
+**Naming.** `lane::Hit` (the emitted event) became `TrigEvent` so the stored
+type could take the `Hit` name the ADR uses.
+
+**Faceplate.** Kept working, not rebuilt — that is 0353. The 16-cell grid is now
+driven from `Grid::total_subs()`, `toggle_step`/`set_step` map to hit
+insert/delete at `(beat, sub, f = 0)`, `SetStepBeats` became a grid-geometry
+command, and the playhead publishes a subdivision-slot index from
+`Grid::locate`. `EngineCommand` stays `Copy` for the SPSC ring.
+
+`y` and `rgb` are stored and unconsumed, as planned — 0350 and 0351 wire them
+up without a second blob bump.
+
+Verification: `cargo test --workspace` green (vxn3-engine 112 lib tests), including
+the allocation traps in `tests/{groove,pattern,plocks}.rs`; clippy clean for the
+vxn-3 crates; `cargo run -p vxn3-ui-web --example preview` renders a 48 KB page.
+
+Unblocks 0349, 0350, 0351 and 0353.

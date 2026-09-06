@@ -27,7 +27,7 @@ pub use engines::{
 };
 pub use flavour::{Binding, Curve, Flavour, ParamMeta, flavour_macro_display, resolve};
 pub use grid::{
-    Grid, GridPos, MAX_BEATS, MAX_MARKERS, MAX_SUBS, MIN_SLOT, Swing, SwingShape,
+    Grid, GridPos, MAX_BEATS, MAX_MARKERS, MAX_SUBS, MIN_SLOT, Swing, SwingPeriod, SwingShape,
 };
 pub use io::{EditQueue, EngineCommand, EngineIo, PlayheadState, TrackKinds};
 pub use lane::{LaneState, TrigEvent};
