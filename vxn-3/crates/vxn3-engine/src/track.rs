@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use crate::engines::KickTone;
-use crate::lane::{Hit, LaneState};
+use crate::lane::{LaneState, TrigEvent};
 use crate::sequencer::{LockParam, N_LOCK_PARAMS, Pattern};
 use crate::swap::EngineSwap;
 use crate::track_engine::TrackEngine;
@@ -15,7 +15,7 @@ pub struct Track {
     /// Main↔audio swap mailbox; clone the `Arc` to drive swaps from the main
     /// thread.
     pub swap: Arc<EngineSwap>,
-    /// Step grid + p-lock table.
+    /// Lane geometry + hit list (each hit carrying its own p-locks).
     pub pattern: Pattern,
     /// Base values of the lockable params (UI-set), indexed by
     /// [`LockParam::index`]: `[gain, pan, macro0, macro1, macro2, send]` (the
@@ -140,7 +140,7 @@ impl Track {
     /// `chokes` are sample offsets (sorted) at which a sibling choke-group track fires — the
     /// engine is fast-released at each. Hits and chokes are merged by frame so both stay
     /// sample-accurate; at a shared frame the choke is applied before the trig.
-    pub fn render_with_hits(&mut self, hits: &[Hit], chokes: &[usize], frames: usize) {
+    pub fn render_with_hits(&mut self, hits: &[TrigEvent], chokes: &[usize], frames: usize) {
         let frames = frames.min(self.mono.len());
         let engine: &mut dyn TrackEngine = &mut *self.engine;
         let mono = &mut self.mono[..frames];

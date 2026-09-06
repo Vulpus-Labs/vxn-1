@@ -1,6 +1,7 @@
-//! Integration tests for the 0048 pattern engine: polymeter phasing, per-trig
-//! probability, retrig n-over-m (curves + velocity ramp), sample-accuracy across
-//! blocks and transport jumps, and an allocation-free callback.
+//! Integration tests for the pattern engine (0048, hit list 0348): polymeter
+//! phasing, per-trig probability, retrig n-over-m (curves + velocity ramp),
+//! sample-accuracy across blocks and transport jumps, and an allocation-free
+//! callback — including under live lane-geometry edits.
 //!
 //! Most assertions use a spy `TrackEngine` that records the absolute sample
 //! position + velocity of every trig, so scheduling is checked exactly,
@@ -9,6 +10,7 @@
 use std::sync::{Arc, Mutex};
 
 use vxn3_engine::engine::Engine;
+use vxn3_engine::io::EngineCommand;
 use vxn3_engine::sequencer::{Retrig, RetrigCurve};
 use vxn3_engine::track_engine::{EngineKind, TrackEngine};
 use vxn3_engine::transport::Transport;
@@ -119,17 +121,17 @@ fn positions(log: &Log) -> Vec<usize> {
 #[test]
 fn tracks_of_different_lengths_phase() {
     let mut engine = Engine::new(SR, 512);
-    // Track 0: length 16; track 1: length 12. Both fire step 0 only, same tick.
-    engine.pattern_mut(0).len = 16;
+    // Track 0: four beats; track 1: three. Both fire slot 0 only, same slot width,
+    // so the lanes loop at different periods — polymeter as lane geometry (0348).
     engine.pattern_mut(0).set(0, 36.0, 1.0);
-    engine.pattern_mut(1).len = 12;
+    engine.pattern_mut(1).set_grid_beats(3);
     engine.pattern_mut(1).set(0, 36.0, 1.0);
     let log0 = spy_on(&mut engine, 0);
     let log1 = spy_on(&mut engine, 1);
 
     run(&mut engine, 40 * STEP, 512); // 40 steps — long enough to show drift
 
-    // Track 0 fires every 16 steps, track 1 every 12 → different periods, so
+    // Track 0 fires every 16 slots, track 1 every 12 → different periods, so
     // after coinciding at 0 they drift apart.
     assert_eq!(positions(&log0), vec![0, 16 * STEP, 32 * STEP]);
     assert_eq!(positions(&log1), vec![0, 12 * STEP, 24 * STEP, 36 * STEP]);
@@ -140,10 +142,9 @@ fn tracks_of_different_lengths_phase() {
 /// Count trigs over `n_steps` active steps at fire probability `p`.
 fn count_at_probability(p: f32, n_steps: usize) -> usize {
     let mut engine = Engine::new(SR, 512);
-    engine.pattern_mut(0).len = 16;
     for s in 0..16 {
+        engine.pattern_mut(0).set(s, 36.0, 1.0);
         engine.pattern_mut(0).set_probability(s, p);
-        engine.pattern_mut(0).steps[s].note = 36.0;
     }
     let log = spy_on(&mut engine, 0);
     run(&mut engine, n_steps * STEP, 512);
@@ -171,7 +172,6 @@ fn probability_half_thins_statistically() {
 #[test]
 fn retrig_even_is_sample_accurate_across_blocks() {
     let mut engine = Engine::new(SR, 512);
-    engine.pattern_mut(0).len = 16;
     engine.pattern_mut(0).set_retrig(
         0,
         Retrig {
@@ -193,8 +193,7 @@ fn retrig_even_is_sample_accurate_across_blocks() {
 #[test]
 fn retrig_velocity_ramps_linearly() {
     let mut engine = Engine::new(SR, 512);
-    engine.pattern_mut(0).len = 16;
-    engine.pattern_mut(0).steps[0].velocity = 1.0;
+    engine.pattern_mut(0).set(0, 36.0, 1.0);
     engine.pattern_mut(0).set_retrig(
         0,
         Retrig {
@@ -217,7 +216,6 @@ fn retrig_velocity_ramps_linearly() {
 #[test]
 fn retrig_accel_gaps_shrink() {
     let mut engine = Engine::new(SR, 512);
-    engine.pattern_mut(0).len = 16;
     engine.pattern_mut(0).set_retrig(
         0,
         Retrig {
@@ -245,8 +243,7 @@ fn retrig_accel_gaps_shrink() {
 #[test]
 fn transport_jump_resyncs_the_lane() {
     let mut engine = Engine::new(SR, 512);
-    engine.pattern_mut(0).len = 16;
-    engine.pattern_mut(0).set(0, 36.0, 1.0); // plain trig on step 0
+    engine.pattern_mut(0).set(0, 36.0, 1.0); // plain trig on slot 0
     let log = spy_on(&mut engine, 0);
 
     let mut l = vec![0.0_f32; 512];
@@ -260,8 +257,8 @@ fn transport_jump_resyncs_the_lane() {
     });
     engine.process_block(&mut l, &mut r);
 
-    // Host jumps to beat 4.0 (next bar boundary) → lane resyncs and step 0
-    // (index 16) fires at the jumped block's start.
+    // Host jumps to beat 4.0 (the loop wrap) → the lane resyncs and slot 0 of the
+    // next pass fires at the jumped block's start.
     engine.set_transport(Transport {
         playing: true,
         tempo_bpm: BPM,
@@ -270,7 +267,7 @@ fn transport_jump_resyncs_the_lane() {
     engine.process_block(&mut l, &mut r);
 
     let p = positions(&log);
-    assert_eq!(p.len(), 2, "jump re-fires the step");
+    assert_eq!(p.len(), 2, "jump re-fires the hit");
     assert_eq!(p[1], 512, "second fire at the jumped block's start");
 }
 
@@ -280,10 +277,11 @@ fn transport_jump_resyncs_the_lane() {
 fn process_block_alloc_free_with_probability_and_retrig() {
     let mut engine = Engine::new(SR, 512);
     for t in 0..vxn3_engine::N_TRACKS {
-        engine.pattern_mut(t).len = 8 + t; // polymeter (≤ MAX_STEPS)
+        engine.pattern_mut(t).set_grid_beats(1 + t); // polymeter (≤ MAX_BEATS)
         engine.pattern_mut(t).set_probability(0, 0.7);
+        // Slot 2 is live on even the shortest of these lanes (one beat = 4 slots).
         engine.pattern_mut(t).set_retrig(
-            4,
+            2,
             Retrig {
                 n: 6,
                 m: 3,
@@ -313,4 +311,53 @@ fn process_block_alloc_free_with_probability_and_retrig() {
         }
     });
     assert_eq!(allocs, 0, "pattern scheduling allocated on the audio path");
+}
+
+/// Live geometry edits are commands, so they are applied **on the audio thread**
+/// and each one re-times (and re-sorts) the whole lane. That has to stay
+/// allocation-free too — and it has to survive the sub-count changing under a
+/// running lane's cursors without panicking or going silent (0348).
+#[test]
+fn live_grid_edits_stay_allocation_free_and_keep_the_lane_running() {
+    let mut engine = Engine::new(SR, 512);
+    for t in 0..vxn3_engine::N_TRACKS {
+        for s in 0..16 {
+            engine.pattern_mut(t).set(s, 36.0, 1.0);
+        }
+    }
+    let io = engine.io(); // clone the handle once, outside the counted region
+    let bps = BPM / 60.0 / SR as f64;
+    let mut l = vec![0.0_f32; 512];
+    let mut r = vec![0.0_f32; 512];
+    engine.set_transport(Transport { playing: true, tempo_bpm: BPM, song_pos_beats: Some(0.0) });
+    engine.process_block(&mut l, &mut r); // prime
+
+    // A scalar, not a spy: the spy's log `Vec` would itself allocate inside the
+    // counted region and the trap cannot tell whose allocation it is.
+    let mut energy = 0.0_f64;
+    let allocs = alloc_trap::count_allocs(|| {
+        for b in 1..300 {
+            // Sweep beat counts and sub-counts under the running lanes.
+            io.edits.push(EngineCommand::SetGridBeats {
+                track: (b % 8) as u8,
+                beats: 1 + (b % 8) as u8,
+            });
+            io.edits.push(EngineCommand::SetGridSubs {
+                track: (b % 8) as u8,
+                subs: 1 + (b % 6) as u8,
+            });
+            engine.set_transport(Transport {
+                playing: true,
+                tempo_bpm: BPM,
+                song_pos_beats: Some((b * 512) as f64 * bps),
+            });
+            engine.process_block(&mut l, &mut r);
+            for &x in l.iter() {
+                energy += (x as f64) * (x as f64);
+            }
+        }
+    });
+    assert_eq!(allocs, 0, "a live grid edit allocated on the audio path");
+    assert!(energy > 1e-3, "the lanes kept sounding through the edits, energy={energy}");
+    assert!(l.iter().chain(r.iter()).all(|x| x.is_finite()), "finite output");
 }

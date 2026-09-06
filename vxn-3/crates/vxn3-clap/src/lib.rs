@@ -716,7 +716,7 @@ mod tests {
     /// renders an audible hit.
     fn primed_engine() -> Engine {
         let mut e = Engine::new(48_000.0, 512);
-        e.apply_command(EngineCommand::SetStep { track: 0, step: 0, note: 36.0, velocity: 1.0 });
+        e.apply_command(EngineCommand::SetHit { track: 0, slot: 0, note: 36.0, velocity: 1.0 });
         e.set_transport(Transport { playing: true, tempo_bpm: 120.0, song_pos_beats: Some(0.0) });
         e
     }

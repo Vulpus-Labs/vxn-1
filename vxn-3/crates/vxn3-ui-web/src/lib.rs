@@ -1,7 +1,11 @@
 //! VXN3 HTML faceplate: bundles the page assets and supplies the
-//! `parse_custom_ui` / `serialise_custom_view` hooks that map the grid's
+//! `parse_custom_ui` / `serialise_custom_view` hooks that map the lane editor's
 //! structured edits to [`Vxn3UiCustom`] and the playhead to the page. Wraps
 //! `vxn-core-ui-web`'s wry host (ticket 0052).
+//!
+//! The editing surface is still 0052's snapped cell grid, now sized and addressed
+//! by the lane's real subdivision markers rather than a fixed step count (0348);
+//! the continuous lane strip that replaces it is 0353.
 
 use std::any::Any;
 use std::ffi::c_void;
@@ -16,7 +20,7 @@ use vxn3_app::{Vxn3UiCustom, Vxn3ViewCustom};
 use vxn3_engine::flavour::{Binding, Curve, Flavour};
 use vxn3_engine::sequencer::{Retrig, RetrigCurve};
 use vxn3_engine::track_engine::{EngineKind, MACRO_SLOTS};
-use vxn3_engine::{EngineCommand, MAX_STEPS, N_TRACKS, flavours_for, params_for};
+use vxn3_engine::{EngineCommand, Grid, N_TRACKS, flavours_for, params_for};
 
 pub const EDITOR_WIDTH: u32 = 900;
 pub const EDITOR_HEIGHT: u32 = 420;
@@ -83,9 +87,14 @@ fn engine_json(id: &str, label: &str, kind: EngineKind) -> Json {
 
 /// Splice CSS, the config JSON, and the app JS into the HTML template.
 pub fn build_html() -> String {
+    // The cell grid is still the snapped-cell editor of 0052, now driven by the
+    // default lane's real subdivision markers rather than a step count. The free
+    // lane strip that replaces it is 0353's job.
+    let grid = Grid::default();
     let config = serde_json::json!({
         "tracks": N_TRACKS,
-        "steps": MAX_STEPS,
+        "steps": grid.total_subs(),
+        "subs": grid.default_subs(),
         "macro_slots": MACRO_SLOTS,
         "engines": [
             engine_json("kick", "Kick", EngineKind::KickTone),
@@ -102,6 +111,9 @@ pub fn build_html() -> String {
 
 fn u8_at(v: &Json, key: &str) -> Option<u8> {
     Some(v.get(key)?.as_u64()? as u8)
+}
+fn u16_at(v: &Json, key: &str) -> Option<u16> {
+    Some(v.get(key)?.as_u64()? as u16)
 }
 fn f32_at(v: &Json, key: &str) -> Option<f32> {
     Some(v.get(key)?.as_f64()? as f32)
@@ -202,24 +214,24 @@ fn parse_custom_ui(op: &str, v: &Json) -> Option<UiEvent> {
             track,
             amount: f32_at(v, "amount")?,
         })),
-        "toggle_step" => Some(edit(EngineCommand::ToggleStep {
+        "toggle_hit" => Some(edit(EngineCommand::ToggleHit {
             track,
-            step: u8_at(v, "step")?,
+            slot: u16_at(v, "slot")?,
         })),
-        "set_step" => Some(edit(EngineCommand::SetStep {
+        "set_hit" => Some(edit(EngineCommand::SetHit {
             track,
-            step: u8_at(v, "step")?,
+            slot: u16_at(v, "slot")?,
             note: f32_at(v, "note")?,
             velocity: f32_at(v, "velocity")?,
         })),
         "set_probability" => Some(edit(EngineCommand::SetProbability {
             track,
-            step: u8_at(v, "step")?,
+            slot: u16_at(v, "slot")?,
             probability: f32_at(v, "probability")?,
         })),
         "set_retrig" => Some(edit(EngineCommand::SetRetrig {
             track,
-            step: u8_at(v, "step")?,
+            slot: u16_at(v, "slot")?,
             retrig: Retrig {
                 n: u8_at(v, "n")?,
                 m: u8_at(v, "m")?,
@@ -227,13 +239,13 @@ fn parse_custom_ui(op: &str, v: &Json) -> Option<UiEvent> {
                 vel_end: f32_at(v, "vel_end").unwrap_or(1.0),
             },
         })),
-        "set_length" => Some(edit(EngineCommand::SetLength {
+        "set_grid_beats" => Some(edit(EngineCommand::SetGridBeats {
             track,
-            len: u8_at(v, "len")?,
+            beats: u8_at(v, "beats")?,
         })),
-        "set_step_beats" => Some(edit(EngineCommand::SetStepBeats {
+        "set_grid_subs" => Some(edit(EngineCommand::SetGridSubs {
             track,
-            beats: f32_at(v, "beats")?,
+            subs: u8_at(v, "subs")?,
         })),
         "set_gain" => Some(edit(EngineCommand::SetGain {
             track,
@@ -286,17 +298,32 @@ mod tests {
     }
 
     #[test]
-    fn parses_toggle_step() {
-        let ev = parse_custom_ui("toggle_step", &obj(r#"{"track":2,"step":5}"#)).unwrap();
+    fn parses_toggle_hit() {
+        let ev = parse_custom_ui("toggle_hit", &obj(r#"{"track":2,"slot":5}"#)).unwrap();
         match ev {
             UiEvent::Custom(b) => match *b.downcast::<Vxn3UiCustom>().unwrap() {
-                Vxn3UiCustom::Edit(EngineCommand::ToggleStep { track, step }) => {
-                    assert_eq!((track, step), (2, 5));
+                Vxn3UiCustom::Edit(EngineCommand::ToggleHit { track, slot }) => {
+                    assert_eq!((track, slot), (2, 5));
                 }
                 _ => panic!("wrong variant"),
             },
             _ => panic!("not custom"),
         }
+    }
+
+    #[test]
+    fn parses_grid_geometry_edits() {
+        let ev = parse_custom_ui("set_grid_beats", &obj(r#"{"track":1,"beats":3}"#)).unwrap();
+        match ev {
+            UiEvent::Custom(b) => match *b.downcast::<Vxn3UiCustom>().unwrap() {
+                Vxn3UiCustom::Edit(EngineCommand::SetGridBeats { track, beats }) => {
+                    assert_eq!((track, beats), (1, 3));
+                }
+                _ => panic!("wrong variant"),
+            },
+            _ => panic!("not custom"),
+        }
+        assert!(parse_custom_ui("set_grid_subs", &obj(r#"{"track":0,"subs":3}"#)).is_some());
     }
 
     #[test]
@@ -355,6 +382,9 @@ mod tests {
         assert!(!html.contains("__APP_JS__"));
         assert!(!html.contains("__CONFIG_JSON__"));
         assert!(html.contains("\"tracks\":8"));
+        // The cell grid is sized from the default lane's real markers (0348).
+        assert!(html.contains("\"steps\":16"));
+        assert!(html.contains("\"subs\":4"));
     }
 
     #[test]

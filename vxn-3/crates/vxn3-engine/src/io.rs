@@ -6,8 +6,8 @@
 //! uses the [`crate::swap::EngineSwap`] retire path instead.
 //!
 //! Playhead state flows **audio → main** through [`PlayheadState`] atomics: the
-//! engine publishes each lane's current step index every block; the GUI timer
-//! reads them to drive the per-lane playhead.
+//! engine publishes each lane's current subdivision-slot index every block; the
+//! GUI timer reads them to drive the per-lane playhead.
 
 use std::cell::UnsafeCell;
 use std::sync::{Arc, Mutex};
@@ -22,18 +22,18 @@ use crate::track_engine::EngineKind;
 /// ring with no heap ownership transfer (engine *swaps* go via `EngineSwap`).
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum EngineCommand {
-    /// Toggle a step's active flag.
-    ToggleStep { track: u8, step: u8 },
-    /// Set (and enable) a step's note + velocity.
-    SetStep { track: u8, step: u8, note: f32, velocity: f32 },
-    /// Set (and enable) a step's fire probability.
-    SetProbability { track: u8, step: u8, probability: f32 },
-    /// Set (and enable) a step's retrig macro.
-    SetRetrig { track: u8, step: u8, retrig: Retrig },
-    /// Set a lane's active length (steps) — polymeter.
-    SetLength { track: u8, len: u8 },
-    /// Set a lane's step duration in beats (lane-local tick).
-    SetStepBeats { track: u8, beats: f32 },
+    /// Add or remove a hit welded to a subdivision slot (the snapped-cell verb).
+    ToggleHit { track: u8, slot: u16 },
+    /// Set a hit's note + velocity, adding one in `slot` if there is none.
+    SetHit { track: u8, slot: u16, note: f32, velocity: f32 },
+    /// Set a hit's fire probability, adding one in `slot` if there is none.
+    SetProbability { track: u8, slot: u16, probability: f32 },
+    /// Set a hit's retrig macro, adding one in `slot` if there is none.
+    SetRetrig { track: u8, slot: u16, retrig: Retrig },
+    /// Set a lane's beat count (and its length to match) — polymeter (0348).
+    SetGridBeats { track: u8, beats: u8 },
+    /// Set a lane's subdivisions per beat — what `step_beats` was, as geometry.
+    SetGridSubs { track: u8, subs: u8 },
     /// Set a track's linear gain.
     SetGain { track: u8, gain: f32 },
     /// Set a track's pan (-1..1).
@@ -41,17 +41,18 @@ pub enum EngineCommand {
     /// Set one of a track engine's generic macro slots (0..1). The active engine
     /// reinterprets the slot onto its patch (ADR 0003 §2).
     SetMacro { track: u8, slot: u8, value: f32 },
-    /// Set a per-step p-lock on a continuous param.
+    /// Set a p-lock on a continuous param. Keyed by **hit index** (ADR 0007 §4):
+    /// a lock belongs to a hit, not to a grid cell.
     SetLock {
         track: u8,
-        step: u8,
+        hit: u16,
         param: LockParam,
         lock: Lock,
     },
-    /// Clear a per-step p-lock.
+    /// Clear a hit's p-lock.
     ClearLock {
         track: u8,
-        step: u8,
+        hit: u16,
         param: LockParam,
     },
     /// Set a track's delay-send amount (0..1).
@@ -89,7 +90,7 @@ unsafe impl Sync for EditQueue {}
 impl EditQueue {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
-            slots: [const { UnsafeCell::new(EngineCommand::ToggleStep { track: 0, step: 0 }) };
+            slots: [const { UnsafeCell::new(EngineCommand::ToggleHit { track: 0, slot: 0 }) };
                 QUEUE_CAP],
             head: AtomicU32::new(0),
             tail: AtomicU32::new(0),
@@ -125,9 +126,9 @@ impl EditQueue {
 
 /// Per-lane playhead, published by the audio thread, read by the GUI timer.
 ///
-/// `step[t]` is the lane's current step index, or [`PlayheadState::STOPPED`]
-/// when not playing. `generation` bumps every block so the UI can tell "still
-/// alive" from "stalled".
+/// `step[t]` is the lane's current subdivision-slot index within its pass, or
+/// [`PlayheadState::STOPPED`] when not playing. `generation` bumps every block so
+/// the UI can tell "still alive" from "stalled".
 pub struct PlayheadState {
     step: [AtomicU32; N_TRACKS],
     generation: AtomicU32,
@@ -146,7 +147,7 @@ impl PlayheadState {
         })
     }
 
-    /// **Audio thread:** publish this block's lane step indices + play state.
+    /// **Audio thread:** publish this block's lane slot indices + play state.
     pub fn publish(&self, steps: &[u32; N_TRACKS], playing: bool) {
         for (a, &s) in self.step.iter().zip(steps.iter()) {
             a.store(s, Ordering::Relaxed);

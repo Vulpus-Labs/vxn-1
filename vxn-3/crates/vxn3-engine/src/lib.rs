@@ -2,8 +2,8 @@
 //!
 //! 0047 makes it audible: eight heterogeneous [`track::Track`]s, each holding one
 //! active [`track_engine::TrackEngine`] over a per-track SoA voice block
-//! (ADR 0001 §4/§5), driven by a step [`sequencer`] off the host
-//! [`transport`] clock and summed to stereo by the instrument [`engine::Engine`].
+//! (ADR 0001 §4/§5), driven by a hit-list [`sequencer`] over [`grid`] geometry off
+//! the host [`transport`] clock and summed to stereo by [`engine::Engine`].
 //! The first engine is [`engines::KickTone`] (poly); `Metal` / `Noise` land in
 //! 0049. Engines hot-swap off-thread via [`swap::EngineSwap`].
 
@@ -30,10 +30,10 @@ pub use grid::{
     Grid, GridPos, MAX_BEATS, MAX_MARKERS, MAX_SUBS, MIN_SLOT, Swing, SwingShape,
 };
 pub use io::{EditQueue, EngineCommand, EngineIo, PlayheadState, TrackKinds};
-pub use lane::{Hit, LaneState};
+pub use lane::{LaneState, TrigEvent};
 pub use sequencer::{
-    EIGHTH, EIGHTH_TRIPLET, Lock, LockParam, MAX_STEPS, N_LOCK_PARAMS, Pattern, Retrig,
-    RetrigCurve, SIXTEENTH, Step, Termination,
+    EIGHTH, EIGHTH_TRIPLET, Hit, Lock, LockParam, MAX_HITS, MAX_NUDGE_TICKS, N_LOCK_PARAMS,
+    Pattern, Retrig, RetrigCurve, SIXTEENTH, TICKS_PER_BEAT, Termination,
 };
 pub use swap::EngineSwap;
 pub use track::Track;

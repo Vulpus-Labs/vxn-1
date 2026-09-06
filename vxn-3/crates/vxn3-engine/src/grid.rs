@@ -39,12 +39,12 @@
 //! rubber-bands the hits it owns, insert/delete preserves absolute time) are 0349;
 //! this module owns the geometry and its invariants only.
 //!
-//! This supersedes [`crate::sequencer::Pattern::step_beats`], which stays until 0348
-//! removes it. The ADR 0001 §2 polymeter it provides is not lost — marker sets are
-//! per-lane, which is what preserves it.
+//! This is the coordinate system [`crate::sequencer::Pattern`] stores its hits
+//! against (0348). The ADR 0001 §2 polymeter the old `len`/`step_beats` pair
+//! provided is not lost — marker sets are per-lane, which is what preserves it.
 
 /// Maximum beat slots in one lane's grid (storage ceiling; the live count may be
-/// shorter, exactly as [`crate::sequencer::MAX_STEPS`] ceilings a pattern's `len`).
+/// shorter, exactly as [`crate::sequencer::MAX_HITS`] ceilings a lane's hit list).
 ///
 /// Sixteen beats is four bars of 4/4. At the lane default of four subdivisions per
 /// beat that is 64 snap targets — four times the old 16-step grid — while the marker
@@ -1427,5 +1427,136 @@ mod tests {
             let b = (i / 4) as usize;
             assert_eq!(g.sub_pos(b, i % 4), i as f64 * crate::sequencer::SIXTEENTH);
         }
+    }
+}
+
+// ── Global subdivision indexing (ticket 0348) ─────────────────────────────────
+//
+// Appended as its own block so it sits clear of the geometry above: 0348 needs a
+// single integer naming every subdivision marker in the pattern, plus the
+// loop-extended form of it, and neither is a property of the warp.
+//
+// 0348 stores a hit as `(beat, sub, f, nudge)` while 0346's scheduler walks a
+// *continuous looping* timeline. `total_subs` counts the slots and `sub_pos`
+// places one; what was missing is the `index ↔ (beat, sub)` mapping between them,
+// and the extension of it past one pass — a lane's p-lock cursor counts crossed
+// subdivision slots (ADR 0007 §9), and that count runs on through the loop wrap.
+
+impl Grid {
+    /// `(beat, sub)` of subdivision index `i` within one pass of the pattern.
+    /// Out-of-range indices clamp to the last slot rather than panicking on the
+    /// audio thread, matching every other query here.
+    pub fn sub_of_index(&self, index: u32) -> (usize, u32) {
+        let mut rem = index;
+        for b in 0..self.n_beats() {
+            let n = self.subs(b);
+            if rem < n {
+                return (b, rem);
+            }
+            rem -= n;
+        }
+        let last = self.n_beats() - 1;
+        (last, self.subs(last) - 1)
+    }
+
+    /// Subdivision index of `(beat, sub)` within one pass — the inverse of
+    /// [`Grid::sub_of_index`]. Clamps its arguments the way [`Grid::sub_pos`] does.
+    pub fn sub_index(&self, beat: usize, sub: u32) -> u32 {
+        let b = beat.min(self.n_beats() - 1);
+        let mut i = 0;
+        for x in 0..b {
+            i += self.subs(x);
+        }
+        i + sub.min(self.subs(b) - 1)
+    }
+
+    /// Position in beats of **global** slot `g`: `g` runs past `total_subs()` into
+    /// the next pass of the pattern and negative into the previous one, so the
+    /// scheduler can count straight through the loop wrap.
+    ///
+    /// `slot_pos(total_subs())` is the pattern end exactly — the pass offset is a
+    /// whole multiple of `len_beats()` and `sub_pos(0, 0)` is a pinned marker.
+    pub fn slot_pos(&self, g: i64) -> f64 {
+        let total = self.total_subs() as i64; // >= 1: n_beats >= 1 and subs >= 1
+        let pass = g.div_euclid(total);
+        let (b, k) = self.sub_of_index(g.rem_euclid(total) as u32);
+        pass as f64 * self.len_beats() + self.sub_pos(b, k)
+    }
+
+    /// Width in beats of global slot `g` — what 0348's in-slot fraction is a
+    /// fraction *of*, and what its nudge clamp is measured against.
+    #[inline]
+    pub fn slot_span(&self, g: i64) -> f64 {
+        self.slot_pos(g.saturating_add(1)) - self.slot_pos(g)
+    }
+
+    /// The global slot owning position `t`: the largest `g` with
+    /// `slot_pos(g) <= t`. Non-finite input answers `0`.
+    pub fn slot_at(&self, t: f64) -> i64 {
+        if !t.is_finite() {
+            return 0;
+        }
+        let len = self.len_beats();
+        // A float→int cast saturates, so a large `t` would otherwise reach the
+        // multiply below as `i64::MAX` and overflow it — a debug panic on the
+        // audio thread. `MAX_PASS` is far beyond any beat position a host can
+        // report and leaves the product nowhere near the `i64` edge.
+        const MAX_PASS: f64 = 1e15;
+        let pass = (t / len).floor().clamp(-MAX_PASS, MAX_PASS);
+        if !pass.is_finite() {
+            return 0;
+        }
+        let at = self.locate(t - pass * len);
+        pass as i64 * self.total_subs() as i64 + self.sub_index(at.beat, at.sub) as i64
+    }
+}
+
+#[cfg(test)]
+mod index_tests {
+    use super::*;
+
+    #[test]
+    fn index_round_trips_across_a_tuplet_beat() {
+        let mut g = Grid::uniform(4, 4.0, 4);
+        g.set_beat_subs(2, Some(3));
+        assert_eq!(g.total_subs(), 15);
+        for i in 0..g.total_subs() {
+            let (b, k) = g.sub_of_index(i);
+            assert!(k < g.subs(b), "index {i} → ({b}, {k})");
+            assert_eq!(g.sub_index(b, k), i);
+            assert_eq!(g.slot_pos(i as i64), g.sub_pos(b, k));
+        }
+        // Past the end clamps to the last slot, and `sub_index` clamps its
+        // arguments the same way `sub_pos` does.
+        assert_eq!(g.sub_of_index(999), (3, 3));
+        assert_eq!(g.sub_index(99, 99), 14);
+    }
+
+    #[test]
+    fn global_slots_run_through_the_loop_wrap() {
+        let g = Grid::uniform(4, 4.0, 4);
+        assert_eq!(g.slot_pos(0), 0.0);
+        assert_eq!(g.slot_pos(16), 4.0, "one whole pass on");
+        assert_eq!(g.slot_pos(17), 4.25);
+        assert_eq!(g.slot_pos(-1), -0.25);
+        assert_eq!(g.slot_pos(-16), -4.0);
+        for i in -20..40 {
+            assert_eq!(g.slot_span(i), 0.25, "slot {i}");
+        }
+    }
+
+    #[test]
+    fn slot_at_locates_across_passes_and_uneven_beats() {
+        let mut g = Grid::uniform(4, 4.0, 4);
+        g.set_beat_subs(1, Some(2)); // 4 + 2 + 4 + 4 = 14 slots
+        assert_eq!(g.total_subs(), 14);
+        for i in -14..28 {
+            let p = g.slot_pos(i);
+            assert_eq!(g.slot_at(p), i, "slot {i} at {p}");
+            // Anywhere inside the slot resolves to the same slot.
+            assert_eq!(g.slot_at(p + g.slot_span(i) * 0.5), i, "mid-slot {i}");
+        }
+        assert_eq!(g.slot_at(f64::NAN), 0);
+        assert_eq!(g.slot_at(f64::INFINITY), 0);
     }
 }

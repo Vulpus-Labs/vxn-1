@@ -104,7 +104,7 @@ impl ParamModel for Vxn3Model {
 /// A structured UI edit (the `UiEvent::Custom` payload from the faceplate).
 #[derive(Debug)]
 pub enum Vxn3UiCustom {
-    /// A data-only engine edit (grid cell, length, gain, pan, knob…).
+    /// A data-only engine edit (hit, lane geometry, gain, pan, knob…).
     Edit(EngineCommand),
     /// Select a track's engine — built on the main thread, swapped in.
     SetEngine { track: u8, kind: EngineKind },
@@ -118,7 +118,7 @@ pub enum Vxn3UiCustom {
 /// A view update pushed to the faceplate.
 #[derive(Debug, Clone)]
 pub enum Vxn3ViewCustom {
-    /// Per-lane current step index (`u32::MAX` = stopped) + play state.
+    /// Per-lane current subdivision-slot index (`u32::MAX` = stopped) + play state.
     Playhead {
         steps: [u32; N_TRACKS],
         playing: bool,

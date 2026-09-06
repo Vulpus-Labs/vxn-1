@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! magic     : b"VX3S"           (4 bytes)
-//! version   : u16 LE            (= 2)
+//! version   : u16 LE            (= 3)
 //! n_params  : u16 LE            (= TOTAL_PARAMS)
 //! values    : f32 LE × n_params (from ParamCache, host-facing param values)
 //! n_tracks  : u8                (= N_TRACKS)
@@ -21,9 +21,12 @@
 //! back so the rebuilt engine can `deserialize_patch` **before** the macro/mix cache
 //! replays over it (the deep patch is the base layer; host-table values sit on top).
 //!
-//! Backward compat: a **v1** blob carried `patch_len == 0` per track; it still loads,
-//! leaving each engine at its default patch. A v1 → load → save transition upgrades
-//! the blob to v2 (each engine's current patch is written), which is intentional.
+//! **No backward compatibility, by decision** (ADR 0007 §Consequences, ticket 0348).
+//! vxn-3 is experimental with no user base, so 0348's pattern rewrite *redefines* the
+//! format rather than migrating it: there is no reader for any earlier version and no
+//! dual path. The version tag survives for exactly one purpose — a stale blob left on
+//! a developer's own disk must be **rejected**, never misparsed into the audio engine
+//! — so [`load`] compares it for **equality**, not for "not from the future".
 //!
 //! Today the main thread holds no *edited* deep patch (the flavour store lands in
 //! 0180), so a fresh project serializes each engine's **default** patch — real bytes,
@@ -37,7 +40,9 @@ use vxn3_engine::{EngineKind, N_TRACKS, TrackKinds, default_flavour_for, params_
 use crate::params::{ParamCache, TOTAL_PARAMS};
 
 const MAGIC: [u8; 4] = *b"VX3S";
-const VERSION: u16 = 2;
+/// Bumped to 3 by ticket 0348: the lane model changed shape (indexed steps → a hit
+/// list over marker geometry), so every blob written before it is unreadable here.
+const VERSION: u16 = 3;
 
 /// Serialize the current host state to a blob. Deterministic — the same state
 /// always produces identical bytes (required by `clap-validator`). Each track's deep
@@ -64,9 +69,9 @@ pub fn save(cache: &ParamCache, kinds: &TrackKinds, flavours: &FlavourStore) -> 
 }
 
 /// Restore host state from a blob into the cache + kind mirror + flavour store. Returns
-/// `Err` on bad magic / unknown-future version / truncated stream (the shell maps this
-/// to a failed `clap_plugin_state::load`). Each track's flavour is parsed from its patch
-/// bytes; an empty patch (v1 blob) or a shape mismatch leaves the kind's **default**
+/// `Err` on bad magic / any version but [`VERSION`] / truncated stream (the shell maps
+/// this to a failed `clap_plugin_state::load`). Each track's flavour is parsed from its
+/// patch bytes; an empty patch or a shape mismatch leaves the kind's **default**
 /// flavour. The caller rebuilds each engine and applies the restored flavour.
 #[allow(clippy::result_unit_err)] // parse-failure sentinel; shell maps it to PluginError
 pub fn load(
@@ -79,8 +84,11 @@ pub fn load(
     if r.take(4)? != MAGIC {
         return Err(());
     }
-    if r.u16()? > VERSION {
-        return Err(()); // a newer major format we can't understand
+    if r.u16()? != VERSION {
+        // Any other version — older or newer — is a format this build cannot read.
+        // Rejecting is the point: a v2 blob's params would parse and its lane would
+        // not, quietly loading a project that is half someone else's (0348).
+        return Err(());
     }
     let n_params = r.u16()? as usize;
     for id in 0..n_params {
@@ -192,53 +200,27 @@ mod tests {
     }
 
     #[test]
-    fn v1_blob_loads_with_default_flavour_then_upgrades() {
-        // A v1 blob: version 1, patch_len == 0 per track (0174's reserved format).
-        let cache = ParamCache::new();
-        let kinds = TrackKinds::new();
-        cache.set(3, 0.7);
-        kinds.set(0, EngineKind::Metal);
-        let mut v1 = Vec::new();
-        v1.extend_from_slice(&MAGIC);
-        v1.extend_from_slice(&1u16.to_le_bytes());
-        v1.extend_from_slice(&(TOTAL_PARAMS as u16).to_le_bytes());
-        for id in 0..TOTAL_PARAMS {
-            v1.extend_from_slice(&cache.get(id).to_le_bytes());
-        }
-        v1.push(N_TRACKS as u8);
-        for t in 0..N_TRACKS {
-            v1.push(kinds.get(t).as_u8());
-            v1.extend_from_slice(&0u16.to_le_bytes()); // patch_len == 0
-        }
-
-        let cache2 = ParamCache::new();
-        let kinds2 = TrackKinds::new();
-        let store2 = FlavourStore::new();
-        load(&v1, &cache2, &kinds2, &store2).unwrap();
-        assert_eq!(cache2.get(3), 0.7);
-        assert_eq!(kinds2.get(0), EngineKind::Metal);
-        // Track 0's empty patch → the kind's default flavour.
-        assert_eq!(store2.get(0), default_flavour_for(EngineKind::Metal));
-        // Resaving upgrades to v2 with real flavour bytes.
-        let up = save(&cache2, &kinds2, &store2);
-        assert_eq!(u16::from_le_bytes([up[4], up[5]]), 2, "v1 → save is v2");
-        assert!(up.len() > v1.len(), "v2 carries flavour bytes v1 did not");
-    }
-
-    #[test]
     fn empty_and_garbage_rejected() {
         let cache = ParamCache::new();
         let kinds = TrackKinds::new();
         let store = FlavourStore::new();
         assert!(load(&[], &cache, &kinds, &store).is_err(), "empty state");
         assert!(load(b"nope", &cache, &kinds, &store).is_err(), "bad magic");
-        assert!(load(b"VX3S\x01\x00", &cache, &kinds, &store).is_err(), "truncated");
+        assert!(load(b"VX3S\x03\x00", &cache, &kinds, &store).is_err(), "truncated");
     }
 
+    /// Any version but the current one is rejected — **including older ones**. A
+    /// stale blob is a different lane model (0348); it must fail loudly rather than
+    /// have its params parse and its pattern quietly not.
     #[test]
-    fn future_version_rejected() {
-        let mut blob = save(&ParamCache::new(), &TrackKinds::new(), &FlavourStore::new());
-        blob[4] = 0xFF; // bump version low byte past VERSION
-        assert!(load(&blob, &ParamCache::new(), &TrackKinds::new(), &FlavourStore::new()).is_err());
+    fn every_other_version_is_rejected() {
+        for v in [0u16, 1, 2, VERSION + 1, 0xFFFF] {
+            let mut blob = save(&ParamCache::new(), &TrackKinds::new(), &FlavourStore::new());
+            blob[4..6].copy_from_slice(&v.to_le_bytes());
+            assert!(
+                load(&blob, &ParamCache::new(), &TrackKinds::new(), &FlavourStore::new()).is_err(),
+                "version {v} must not load"
+            );
+        }
     }
 }

@@ -4,8 +4,11 @@
 (function () {
   "use strict";
 
-  var CFG = window.__VXN3_CONFIG__ || { tracks: 8, steps: 16, engines: [], macro_slots: 3 };
-  var NT = CFG.tracks, NS = CFG.steps;
+  var CFG = window.__VXN3_CONFIG__ || { tracks: 8, steps: 16, subs: 4, engines: [], macro_slots: 3 };
+  // NS = subdivision slots in the default lane, NSUB = subdivisions per beat, so
+  // NS / NSUB is its beat count. Cells are still snapped to slot markers; the free
+  // lane strip that replaces them is 0353.
+  var NT = CFG.tracks, NS = CFG.steps, NSUB = CFG.subs || 4;
   var ENGINES = CFG.engines; // [{id,label,params:[...],flavours:[...]}]
   var NSLOT = CFG.macro_slots || 3;
   var PROBS = [1.0, 0.75, 0.5, 0.25];
@@ -125,7 +128,7 @@
     var steps = [];
     for (var s = 0; s < NS; s++) steps.push({ on: false, prob: 1.0, retrig: false });
     var v = voiceByName(DEFAULT_LANE[t]) || voices[t % voices.length] || voices[0];
-    lanes.push({ voiceId: v ? v.id : 0, len: NS, steps: steps, choke: DEFAULT_CHOKE[t] || 0 });
+    lanes.push({ voiceId: v ? v.id : 0, beats: NS / NSUB, len: NS, steps: steps, choke: DEFAULT_CHOKE[t] || 0 });
   }
 
   // Assign a voice to a lane: update the reference, tell the backend (engine + the
@@ -137,7 +140,7 @@
     // lives in the note, so reassigning must re-note or the drum plays at the old pitch).
     var st = lanes[track].steps;
     for (var s = 0; s < st.length; s++) {
-      if (st[s].on) send("set_step", { track: track, step: s, note: v.note, velocity: 1.0 });
+      if (st[s].on) send("set_hit", { track: track, slot: s, note: v.note, velocity: 1.0 });
     }
     send("assign_voice", {
       track: track, engine: v.engine,
@@ -169,7 +172,7 @@
 
   function renderCell(t, s) {
     var el2 = cellEls[t][s], st = lanes[t].steps[s];
-    el2.className = "cell" + (s % 4 === 0 ? " beat" : "")
+    el2.className = "cell" + (s % NSUB === 0 ? " beat" : "")
       + (s >= lanes[t].len ? " off" : "")
       + (st.on ? " on" : "")
       + (st.retrig ? " retrig" : "");
@@ -221,18 +224,21 @@
         var c = document.createElement("div");
         cellEls[t][s] = c;
         c.addEventListener("mousedown", function (ev) {
+          // Cells past the lane's live length address no slot, and the engine
+          // ignores them (0348) — so must the click, or the two disagree.
+          if (s >= lanes[t].len) return;
           var st = lanes[t].steps[s];
           if (ev.shiftKey && st.on) {
             st.prob = PROBS[(PROBS.indexOf(st.prob) + 1) % PROBS.length];
-            send("set_probability", { track: t, step: s, probability: st.prob });
+            send("set_probability", { track: t, slot: s, probability: st.prob });
           } else if (ev.altKey && st.on) {
             st.retrig = !st.retrig;
-            if (st.retrig) send("set_retrig", { track: t, step: s, n: 4, m: 2, curve: "even", vel_end: 0.4 });
-            else send("set_retrig", { track: t, step: s, n: 1, m: 1, curve: "even", vel_end: 1.0 });
+            if (st.retrig) send("set_retrig", { track: t, slot: s, n: 4, m: 2, curve: "even", vel_end: 0.4 });
+            else send("set_retrig", { track: t, slot: s, n: 1, m: 1, curve: "even", vel_end: 1.0 });
           } else {
             st.on = !st.on;
-            if (st.on) send("set_step", { track: t, step: s, note: voiceById(lanes[t].voiceId).note, velocity: 1.0 });
-            else send("toggle_step", { track: t, step: s });
+            if (st.on) send("set_hit", { track: t, slot: s, note: voiceById(lanes[t].voiceId).note, velocity: 1.0 });
+            else send("toggle_hit", { track: t, slot: s });
           }
           renderCell(t, s);
         });
@@ -259,14 +265,22 @@
     knobs.appendChild(makeKnob("Pan", -1, 1, 0.01, 0.0, function (v) { send("set_pan", { track: t, pan: v }); }).wrap);
     knobs.appendChild(makeKnob("Send", 0, 1, 0.01, 0.0, function (v) { send("set_send", { track: t, amount: v }); }).wrap);
 
+    // Lane length is a beat count now, not a step count (0348): a lane of fewer
+    // beats loops sooner and phases against its neighbours — polymeter as geometry.
+    var maxBeats = Math.max(1, Math.floor(NS / NSUB));
     var len = el("div", "len");
-    len.appendChild(el("label", null, "Len"));
+    len.appendChild(el("label", null, "Bts"));
     var li = document.createElement("input");
-    li.type = "number"; li.min = 1; li.max = NS; li.value = lanes[t].len;
+    li.type = "number"; li.min = 1; li.max = maxBeats; li.value = lanes[t].beats;
+    li.title = "beats in this lane (its loop length)";
     li.addEventListener("change", function () {
-      var n = Math.max(1, Math.min(NS, parseInt(li.value, 10) || NS));
-      lanes[t].len = n; li.value = n;
-      send("set_length", { track: t, len: n });
+      var n = Math.max(1, Math.min(maxBeats, parseInt(li.value, 10) || maxBeats));
+      lanes[t].beats = n; lanes[t].len = n * NSUB; li.value = n;
+      send("set_grid_beats", { track: t, beats: n });
+      // Shortening a lane re-snaps the hits whose slots it removed onto the last
+      // surviving one (0348), so the cells past the end no longer stand for
+      // anything — clear them rather than leave the page asserting a lie.
+      for (var s = lanes[t].len; s < NS; s++) lanes[t].steps[s].on = false;
       for (var s = 0; s < NS; s++) renderCell(t, s);
     });
     len.appendChild(li);

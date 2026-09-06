@@ -73,11 +73,11 @@ fn edit_command_programs_a_trig() {
     let (l, _) = play_block(&mut engine, 0.0, 512);
     assert!(rms(&l) < 1e-6, "empty pattern silent");
 
-    // Program step 0 on track 0 from the "UI"; it fires at the next step-0
-    // boundary (beat 4.0).
-    assert!(io.edits.push(EngineCommand::SetStep {
+    // Program slot 0 on track 0 from the "UI"; it fires at the next pass of the
+    // lane (beat 4.0).
+    assert!(io.edits.push(EngineCommand::SetHit {
         track: 0,
-        step: 0,
+        slot: 0,
         note: 28.0,
         velocity: 1.0,
     }));
@@ -89,13 +89,13 @@ fn edit_command_programs_a_trig() {
 fn playhead_reflects_each_lanes_position() {
     let mut engine = Engine::new(SR, 512);
     let io = engine.io();
-    // Track 1 runs a 12-step lane; at beat 1.25 it's on a different step than a
-    // 16-step lane would be.
-    assert!(io.edits.push(EngineCommand::SetLength { track: 1, len: 12 }));
+    // Track 1 runs a three-beat lane (12 slots); at beat 3.5 it is on a different
+    // slot than the default four-beat lane.
+    assert!(io.edits.push(EngineCommand::SetGridBeats { track: 1, beats: 3 }));
 
     let _ = play_block(&mut engine, 3.5, 64); // 3.5 beats = 14 sixteenths
-    assert_eq!(io.playhead.step(0), 14, "track0 (len16): 14 % 16 = 14");
-    assert_eq!(io.playhead.step(1), 2, "track1 (len12): 14 % 12 = 2 (phased)");
+    assert_eq!(io.playhead.step(0), 14, "track0 (16 slots): 14 % 16 = 14");
+    assert_eq!(io.playhead.step(1), 2, "track1 (12 slots): 14 % 12 = 2 (phased)");
     assert!(io.playhead.playing());
 
     // Stopped → playhead parks.
@@ -128,7 +128,7 @@ fn command_drain_is_allocation_free() {
     let mut engine = Engine::new(SR, 512);
     let io = engine.io();
     for t in 0..vxn3_engine::N_TRACKS as u8 {
-        io.edits.push(EngineCommand::SetStep { track: t, step: 0, note: 36.0, velocity: 1.0 });
+        io.edits.push(EngineCommand::SetHit { track: t, slot: 0, note: 36.0, velocity: 1.0 });
     }
     let bps = BPM / 60.0 / SR as f64;
     let mut l = vec![0.0_f32; 512];

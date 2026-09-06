@@ -1,6 +1,6 @@
 //! End-to-end p-lock tests (0050): a lock resolved through the engine reaches
 //! the audio (gain latch silences the mix), and lock resolution stays
-//! allocation-free on the audio thread. Per-step revert/latch/preemption
+//! allocation-free on the audio thread. Per-hit revert/latch/preemption
 //! semantics are covered precisely by the lane resolver unit tests.
 
 use vxn3_engine::engine::Engine;
@@ -48,7 +48,10 @@ mod alloc_trap {
     }
 }
 
-fn kick_every_step(engine: &mut Engine) {
+/// A hit welded to every one of the default grid's 16 slots. In fire order, so
+/// hit index and slot index coincide — which is what lets these tests keep
+/// addressing p-locks by the number they always used.
+fn kick_every_slot(engine: &mut Engine) {
     for s in 0..16 {
         engine.pattern_mut(0).set(s, 28.0, 1.0);
     }
@@ -80,13 +83,13 @@ fn run(engine: &mut Engine, total: usize, block: usize) -> f32 {
 fn gain_latch_silences_the_mix() {
     // Baseline: kick on every step is audible.
     let mut base = Engine::new(SR, 512);
-    kick_every_step(&mut base);
+    kick_every_slot(&mut base);
     let baseline = run(&mut base, 96_000, 512);
     assert!(baseline > 0.02, "baseline audible, rms={baseline}");
 
-    // A latched gain=0 lock on step 0 holds the track silent for the whole loop.
+    // A latched gain=0 lock on the first hit holds the track silent for the loop.
     let mut locked = Engine::new(SR, 512);
-    kick_every_step(&mut locked);
+    kick_every_slot(&mut locked);
     locked.pattern_mut(0).set_lock(
         0,
         LockParam::Gain,
@@ -102,8 +105,8 @@ fn gain_latch_silences_the_mix() {
 #[test]
 fn lock_resolution_is_allocation_free() {
     let mut engine = Engine::new(SR, 512);
-    kick_every_step(&mut engine);
-    // A revert spike on every other step + a latched pan.
+    kick_every_slot(&mut engine);
+    // A revert spike on every other hit + a latched tone.
     for s in (0..16).step_by(2) {
         engine.pattern_mut(0).set_lock(
             s,
@@ -123,7 +126,7 @@ fn lock_resolution_is_allocation_free() {
             // Also push live lock edits through the queue.
             io.edits.push(EngineCommand::SetLock {
                 track: 0,
-                step: (b % 16) as u8,
+                hit: (b % 16) as u16,
                 param: LockParam::Tone,
                 lock: Lock { value: 0.5, termination: Termination::Latch },
             });

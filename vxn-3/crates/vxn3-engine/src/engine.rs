@@ -1,7 +1,7 @@
 //! The vxn-3 instrument engine: 8 heterogeneous tracks summed to stereo.
 //!
 //! Per block it (1) installs any pending off-thread engine swaps, (2) maps the
-//! host beat clock onto each track's step grid and schedules trigs
+//! host beat clock onto each track's lane geometry and schedules trigs
 //! **sample-accurately** by slicing the block at trig boundaries, (3) renders
 //! each track's active engine into mono scratch, and (4) mixes to stereo with
 //! per-track gain/pan. Allocation-free throughout.
@@ -12,7 +12,7 @@
 use std::sync::Arc;
 
 use crate::io::{EngineCommand, EngineIo, PlayheadState};
-use crate::lane::{Hit, LaneState};
+use crate::lane::{LaneState, TrigEvent};
 use crate::sequencer::{LockParam, Pattern};
 use crate::swap::EngineSwap;
 use crate::track::Track;
@@ -69,7 +69,7 @@ pub struct Engine {
     /// Per-track scheduled hits for one block — scheduled in a pre-pass (all tracks) so
     /// cross-track choke can see every track's trigs before any track renders. Pre-allocated,
     /// cleared (not freed) each block.
-    hits_by_track: Vec<Vec<Hit>>,
+    hits_by_track: Vec<Vec<TrigEvent>>,
     /// Reused scratch for one track's incoming choke frames (sibling choke-group trigs).
     choke_scratch: Vec<usize>,
     /// Shared main↔audio I/O: edit-command queue, playhead, engine-swap mailboxes.
@@ -246,12 +246,14 @@ impl Engine {
             self.free_run_beats
         };
 
-        // Publish each lane's current step for the UI playhead.
+        // Publish each lane's current subdivision slot for the UI playhead —
+        // resolved through the lane's own geometry, so a lane of a different beat
+        // count reports its own phase (polymeter).
         for t in 0..self.tracks.len() {
             self.playhead_scratch[t] = if playing {
-                let sb = self.tracks[t].pattern.step_beats.max(1e-9);
-                let len = self.tracks[t].pattern.len.clamp(1, crate::sequencer::MAX_STEPS) as i64;
-                ((beat0 / sb).floor() as i64).rem_euclid(len) as u32
+                let grid = self.tracks[t].pattern.grid();
+                let total = grid.total_subs() as i64;
+                grid.slot_at(beat0).rem_euclid(total) as u32
             } else {
                 PlayheadState::STOPPED
             };
@@ -275,7 +277,7 @@ impl Engine {
             // `render_with_hits` slices at each. Bounded by hit capacity; sort is in-place.
             for fnote in &self.free_notes {
                 if fnote.track as usize == t && self.hits_by_track[t].len() < HIT_CAPACITY {
-                    self.hits_by_track[t].push(Hit {
+                    self.hits_by_track[t].push(TrigEvent {
                         frame: (fnote.frame as usize).min(frames),
                         note: fnote.note,
                         velocity: fnote.velocity,
@@ -368,12 +370,12 @@ impl Engine {
             _ => {}
         }
         let t = match &cmd {
-            EngineCommand::ToggleStep { track, .. }
-            | EngineCommand::SetStep { track, .. }
+            EngineCommand::ToggleHit { track, .. }
+            | EngineCommand::SetHit { track, .. }
             | EngineCommand::SetProbability { track, .. }
             | EngineCommand::SetRetrig { track, .. }
-            | EngineCommand::SetLength { track, .. }
-            | EngineCommand::SetStepBeats { track, .. }
+            | EngineCommand::SetGridBeats { track, .. }
+            | EngineCommand::SetGridSubs { track, .. }
             | EngineCommand::SetGain { track, .. }
             | EngineCommand::SetPan { track, .. }
             | EngineCommand::SetMacro { track, .. }
@@ -392,26 +394,21 @@ impl Engine {
             return;
         };
         match cmd {
-            EngineCommand::ToggleStep { step, .. } => {
-                let s = step as usize;
-                if s < crate::sequencer::MAX_STEPS {
-                    track.pattern.steps[s].active = !track.pattern.steps[s].active;
-                }
+            EngineCommand::ToggleHit { slot, .. } => track.pattern.toggle(slot as usize),
+            EngineCommand::SetHit {
+                slot, note, velocity, ..
+            } => track.pattern.set(slot as usize, note, velocity),
+            EngineCommand::SetProbability { slot, probability, .. } => {
+                track.pattern.set_probability(slot as usize, probability)
             }
-            EngineCommand::SetStep {
-                step, note, velocity, ..
-            } => track.pattern.set(step as usize, note, velocity),
-            EngineCommand::SetProbability { step, probability, .. } => {
-                track.pattern.set_probability(step as usize, probability)
+            EngineCommand::SetRetrig { slot, retrig, .. } => {
+                track.pattern.set_retrig(slot as usize, retrig)
             }
-            EngineCommand::SetRetrig { step, retrig, .. } => {
-                track.pattern.set_retrig(step as usize, retrig)
+            EngineCommand::SetGridBeats { beats, .. } => {
+                track.pattern.set_grid_beats(beats as usize)
             }
-            EngineCommand::SetLength { len, .. } => {
-                track.pattern.len = (len as usize).clamp(1, crate::sequencer::MAX_STEPS)
-            }
-            EngineCommand::SetStepBeats { beats, .. } => {
-                track.pattern.step_beats = beats.max(1e-4) as f64
+            EngineCommand::SetGridSubs { subs, .. } => {
+                track.pattern.set_grid_subs(subs as u32)
             }
             EngineCommand::SetGain { gain, .. } => {
                 track.set_base(LockParam::Gain, gain.max(0.0))
@@ -425,10 +422,10 @@ impl Engine {
                 }
             }
             EngineCommand::SetLock {
-                step, param, lock, ..
-            } => track.pattern.set_lock(step as usize, param, lock),
-            EngineCommand::ClearLock { step, param, .. } => {
-                track.pattern.clear_lock(step as usize, param)
+                hit, param, lock, ..
+            } => track.pattern.set_lock(hit as usize, param, lock),
+            EngineCommand::ClearLock { hit, param, .. } => {
+                track.pattern.clear_lock(hit as usize, param)
             }
             EngineCommand::SetSend { amount, .. } => {
                 track.set_base(LockParam::Send, amount.clamp(0.0, 1.0))
