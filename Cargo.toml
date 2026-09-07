@@ -42,14 +42,17 @@ members = [
     "vxn-1b/crates/vxn1b-web-controller",
     "vxn-1b/xtask",
 
-    # vxn-4 (synth #4, sizing only). No engine, no plugin, no faceplate yet:
-    # the oversampling factor, the wavetable length and the lane-loop layout are
-    # open questions that move the polyphony ceiling more than anything else in
-    # the design, so they get measured before they get designed.
+    # vxn-4 (synth #4, playable, no faceplate). The sizing crates came first:
+    # the oversampling factor, the wavetable length and the lane-loop layout
+    # move the polyphony ceiling more than anything else in the design, so they
+    # got measured before they got designed. The engine and plugin sit on those
+    # measurements.
     "vxn-4/crates/vxn4-dsp",
     "vxn-4/crates/vxn4-engine",
+    "vxn-4/crates/vxn4-clap",
     "vxn-4/crates/vxn4-op-bench",
     "vxn-4/crates/vxn4-render",
+    "vxn-4/xtask",
 
     # The release runner (`cargo release`). Workspace-level rather than
     # per-product: the two synths ship on one tag, so there is one release.
@@ -96,9 +99,10 @@ vxn1b-engine = { path = "vxn-1b/crates/vxn1b-engine" }
 vxn1b-ui-web = { path = "vxn-1b/crates/vxn1b-ui-web" }
 vxn1b-web-controller = { path = "vxn-1b/crates/vxn1b-web-controller" }
 
-# vxn-4 (path). Sizing crates only — see the member list above.
+# vxn-4 (path).
 vxn4-dsp = { path = "vxn-4/crates/vxn4-dsp" }
 vxn4-engine = { path = "vxn-4/crates/vxn4-engine" }
+vxn4-clap = { path = "vxn-4/crates/vxn4-clap" }
 
 # clack — pinned to a known-good main commit (no compatible crates.io release of
 # this API yet). Single source of truth across all consumers.

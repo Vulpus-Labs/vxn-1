@@ -54,6 +54,7 @@
 //! the musically useful range of a modulation index is the bottom of the fader,
 //! and a linear depth puts every usable setting in the first few percent.
 
+use vxn_core_matrix::slot::MatrixTable;
 use vxn_core_matrix::{matrix_enum, matrix_roster};
 use vxn4_dsp::ops::NOPS;
 
@@ -69,6 +70,9 @@ pub const N_MATRIX_SLOTS: usize = 16;
 
 /// Routable destinations: 64 PM depths + 8 sum-bus sends.
 pub const N_DESTS: usize = NOPS * NOPS + NOPS;
+
+/// A patch's modulation table: [`N_MATRIX_SLOTS`] slots over vxn-4's roster.
+pub type Matrix = MatrixTable<SourceId, DestId, N_MATRIX_SLOTS>;
 
 matrix_enum! {
     /// Modulation source. `None` is the empty-slot sentinel.
@@ -259,7 +263,6 @@ pub const fn out_dest_index(op: usize) -> usize {
 mod tests {
     use super::*;
     use vxn_core_matrix::roster::MatrixRoster;
-    use vxn_core_matrix::slot::DestEndpoint;
 
     #[test]
     fn the_roster_is_the_size_the_brief_asks_for() {

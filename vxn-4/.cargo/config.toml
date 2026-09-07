@@ -1,0 +1,2 @@
+[alias]
+xtask = "run --quiet --package vxn4-xtask --release --"

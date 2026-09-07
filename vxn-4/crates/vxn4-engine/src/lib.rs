@@ -1,7 +1,7 @@
 //! VXN4 engine — enough machinery to hear the operator block.
 //!
 //! Scope is deliberately the brief's: voice allocation with vxn-2's note
-//! selection and trimming behaviour, per-operator envelopes, five hardwired
+//! selection and trimming behaviour, per-operator envelopes, six hardwired
 //! patches, and the oversampling chain down through a limiter. No FX, no
 //! faceplate, no parameter automation, no preset format.
 //!
@@ -22,8 +22,16 @@
 //! - [`alloc`] — 16 explicit voices + 4 declick spares, quietest-voice
 //!   stealing. The behavioural port from vxn-2.
 //! - [`eg`] — 4-rate/4-level envelopes, one per operator per voice.
-//! - [`patch`] — the five hardwired patches, graded by routing density.
+//! - [`patch`] — the six hardwired patches, graded by routing density.
+//! - [`matrix`] — the modulation roster: 8 macro sources, 72 destinations.
 //! - [`engine`] — banks, rate plan, limiter.
+//!
+//! ## Modulation
+//!
+//! Eight macro knobs are the only modulation sources, and the only thing about
+//! modulation a host ever sees ([`matrix`] says why). Their totals are **added**
+//! to the patch's authored depths at control rate, so all macros at zero is the
+//! patch exactly as the table writes it.
 //!
 //! ## Known placeholder
 //!
@@ -41,6 +49,6 @@ pub mod patch;
 
 pub use alloc::{Alloc, N_ACTIVE, N_DECLICK, N_SLOTS, Phase, Voice};
 pub use eg::{Eg, EgParams, Stage};
-pub use engine::{Engine, Quality, latency_samples};
-pub use matrix::{DestId, N_DESTS, N_MACROS, N_MATRIX_SLOTS, Roster, SourceId};
+pub use engine::{Engine, HOST_LATENCY_SAMPLES, MAX_MASTER_GAIN, Quality, latency_samples};
+pub use matrix::{DestId, Matrix, N_DESTS, N_MACROS, N_MATRIX_SLOTS, Roster, SourceId};
 pub use patch::{N_PATCHES, Patch, patch, patch_names};

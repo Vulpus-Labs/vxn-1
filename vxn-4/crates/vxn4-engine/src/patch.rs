@@ -1,4 +1,4 @@
-//! Five hardwired patches, spanning the complexity range the architecture has
+//! Six hardwired patches, spanning the complexity range the architecture has
 //! to cover.
 //!
 //! These are ear-fodder, not a preset format. They exist so the routing matrix,
@@ -18,18 +18,68 @@
 //! | 4 | `Web` | 64 | every route live; the worst case the bench sizes against |
 //! | 5 | `Grind` | 4 | saw modulating saw at high index — the aliasing torture case |
 
+use vxn_core_matrix::curve::{Polarity, Shape};
+use vxn_core_matrix::slot::MatrixSlot;
 use vxn4_dsp::ops::{NOPS, OpConfig, Routing};
 use vxn4_dsp::wavetable::Waveform;
 
 use crate::eg::EgParams;
+use crate::matrix::{DestId, Matrix, SourceId};
 
-/// A complete voice definition: operators, routing, and one envelope per
-/// operator.
+/// One matrix slot, wired and switched on.
+///
+/// `depth` is **raw** — untapered. `DestId::cook_depth` applies the PM cubic at
+/// evaluation, and cooking here as well would cube an already-cubed depth. That
+/// hazard is called out twice in `vxn_core_matrix::slot`; it is worth naming a
+/// third time at the only place in vxn-4 that authors a depth.
+fn route(source: SourceId, dest: DestId, depth: f32) -> MatrixSlot<SourceId, DestId> {
+    MatrixSlot {
+        source,
+        dest,
+        depth,
+        enabled: true,
+        ..MatrixSlot::default()
+    }
+}
+
+/// [`route`], with a second macro as a VCA on the route's depth.
+///
+/// The brief's "two sources per out, additive and scaling" — `source` adds,
+/// `scale_src` multiplies. Both come from the same 8-macro table, so the pair
+/// can never form a cycle.
+fn scaled_route(
+    source: SourceId,
+    scale: SourceId,
+    dest: DestId,
+    depth: f32,
+) -> MatrixSlot<SourceId, DestId> {
+    MatrixSlot {
+        scale_src: scale,
+        scale_polarity: Polarity::None,
+        scale_shape: Shape::Lin,
+        ..route(source, dest, depth)
+    }
+}
+
+/// Fill a table from a slice, leaving the remaining slots blank.
+fn matrix(slots: &[MatrixSlot<SourceId, DestId>]) -> Matrix {
+    let mut m = Matrix::default();
+    m.slots[..slots.len()].copy_from_slice(slots);
+    m
+}
+
+/// A complete voice definition: operators, routing, envelopes, and the
+/// modulation table the macro knobs drive.
 #[derive(Clone, Debug)]
 pub struct Patch {
     pub name: &'static str,
     pub ops: [OpConfig; NOPS],
+    /// Authored depths — where every route sits with all macros at zero.
     pub routing: Routing,
+    /// What the eight macro knobs do to [`Self::routing`]. Totals are
+    /// **added** to the authored depths, so a macro at zero is the patch as
+    /// written.
+    pub matrix: Matrix,
     pub eg: [EgParams; NOPS],
     /// Master trim, applied at the sum bus.
     ///
@@ -118,6 +168,15 @@ fn sine() -> Patch {
         name: "sine",
         ops,
         routing,
+        // Macro 1 opens the self-feedback diagonal, taking a pure sine to a
+        // buzz — from an authored depth of zero, so the knob is the only thing
+        // that makes this patch anything but a sine.
+        //
+        // The diagonal needs no lane reserved for it: `CompiledRouting` keeps
+        // feedback in its own `fb` array, which always has a slot per operator.
+        // The force mask matters for *off*-diagonal routes, which `saws`
+        // exercises.
+        matrix: matrix(&[route(SourceId::Macro1, DestId::Pm00, 0.70)]),
         eg,
         gain: 0.349,
     }
@@ -165,6 +224,13 @@ fn epiano() -> Patch {
         name: "epiano",
         ops,
         routing,
+        // M1 brightness on both stacks; M2 cross-feed, gated by M3 — the
+        // additive-plus-scaling pair the brief asks for, on one route.
+        matrix: matrix(&[
+            route(SourceId::Macro1, DestId::Pm01, 0.63),
+            route(SourceId::Macro1, DestId::Pm23, 0.63),
+            scaled_route(SourceId::Macro2, SourceId::Macro3, DestId::Pm03, 0.55),
+        ]),
         eg,
         gain: 0.373,
     }
@@ -211,6 +277,11 @@ fn bell() -> Patch {
         name: "bell",
         ops,
         routing,
+        matrix: matrix(&[
+            route(SourceId::Macro1, DestId::Pm11, 0.72),
+            route(SourceId::Macro2, DestId::Pm01, 0.60),
+            route(SourceId::Macro2, DestId::Pm23, 0.60),
+        ]),
         eg,
         gain: 0.340,
     }
@@ -265,6 +336,23 @@ fn saws() -> Patch {
         name: "saws",
         ops,
         routing,
+        // M2 is the one out-dest route in the set: linear taper, straight onto
+        // the sub's sum-bus send.
+        //
+        // M4 is the force-mask case. `pm[2][4]` is an off-diagonal route this
+        // patch does not author, so without a lane reserved for it there is
+        // nothing for `set_pm` to write and the knob is inert. Op4 is a live
+        // bright modulator, so the route has something real behind it —
+        // reserving a lane onto a silent operator would test the mask against
+        // a route that could not be heard either way. Pinned by
+        // `engine::tests::the_force_mask_is_exercised_by_the_patch_set`.
+        matrix: matrix(&[
+            route(SourceId::Macro1, DestId::Pm03, 0.60),
+            route(SourceId::Macro1, DestId::Pm13, 0.60),
+            route(SourceId::Macro2, DestId::Out2, 0.35),
+            route(SourceId::Macro3, DestId::Pm34, 0.70),
+            route(SourceId::Macro4, DestId::Pm24, 0.65),
+        ]),
         eg,
         gain: 0.448,
     }
@@ -327,6 +415,17 @@ fn web() -> Patch {
         name: "web",
         ops,
         routing,
+        // M1 opens four feedback diagonals at once, M2 the two corner routes.
+        // Every route here already has an authored depth, so unlike `sine` this
+        // exercises the *additive* path rather than the force mask.
+        matrix: matrix(&[
+            route(SourceId::Macro1, DestId::Pm00, 0.55),
+            route(SourceId::Macro1, DestId::Pm11, 0.55),
+            route(SourceId::Macro1, DestId::Pm22, 0.55),
+            route(SourceId::Macro1, DestId::Pm33, 0.55),
+            route(SourceId::Macro2, DestId::Pm07, 0.50),
+            route(SourceId::Macro2, DestId::Pm70, 0.50),
+        ]),
         eg,
         gain: 0.635,
     }
@@ -380,6 +479,12 @@ fn grind() -> Patch {
         name: "grind",
         ops,
         routing,
+        // M1 drives the index past 1.7 turns, which is the point of the patch:
+        // it makes the 8x-vs-16x difference a knob rather than a recompile.
+        matrix: matrix(&[
+            route(SourceId::Macro1, DestId::Pm01, 0.79),
+            scaled_route(SourceId::Macro2, SourceId::Macro3, DestId::Pm11, 0.63),
+        ]),
         eg,
         gain: 0.432,
     }
@@ -390,7 +495,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_five_exist_and_are_named() {
+    fn every_patch_exists_and_is_named() {
         let names = patch_names();
         assert_eq!(names.len(), N_PATCHES);
         for (i, n) in names.iter().enumerate() {
@@ -431,7 +536,11 @@ mod tests {
     #[test]
     fn the_set_spans_the_density_range() {
         assert_eq!(patch(0).routing.density(), 0, "sine should have no routes");
-        assert_eq!(patch(4).routing.density(), NOPS * NOPS, "web should be full");
+        assert_eq!(
+            patch(4).routing.density(),
+            NOPS * NOPS,
+            "web should be full"
+        );
         let mid: Vec<usize> = (1..4).map(|i| patch(i).routing.density()).collect();
         for d in &mid {
             assert!(*d > 0 && *d < NOPS * NOPS, "mid patch density {d}");

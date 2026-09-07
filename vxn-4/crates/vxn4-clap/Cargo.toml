@@ -1,0 +1,37 @@
+[package]
+name = "vxn4-clap"
+# Workspace version — vxn-4 ships on the same tag as the rest, as vxn-1b and
+# vxn-2 do. The xtask stamps this into the bundle Info.plist.
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "VXN4 CLAP plugin shell (clack) — 8-operator PM synth, no faceplate."
+
+[lib]
+# cdylib for the host-loadable plugin; rlib so in-process tests link the shell
+# without dlopen; staticlib for clap-wrapper to link into a bundled .vst3.
+crate-type = ["cdylib", "rlib", "staticlib"]
+
+[dependencies]
+vxn4-engine = { workspace = true }
+# batch_range (event-batch → frame offsets) and dispatch_notes (note + raw-MIDI
+# arms). vxn-4 has no MPE and no per-note expression, so the shared,
+# channel-agnostic dispatch is exactly right — unlike vxn-1b, which needs its
+# own.
+vxn-core-clap = { workspace = true }
+clack-plugin = { workspace = true }
+clack-extensions = { workspace = true, features = [
+    "audio-ports",
+    "note-ports",
+    "params",
+    "state",
+    "latency",
+    "clack-plugin",
+] }
+
+[dev-dependencies]
+# In-process lifecycle test: drives the plugin through the real CLAP calls via
+# clack-host without dlopen, so a panic surfaces with a backtrace.
+clack-host = { workspace = true }

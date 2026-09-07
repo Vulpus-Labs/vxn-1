@@ -111,12 +111,7 @@ impl Eg {
     /// `peak` scales every target — velocity lands here, so a soft note runs
     /// the same shape at a lower ceiling rather than a different shape.
     pub fn cook(&mut self, p: &EgParams, peak: f32) {
-        self.targets = [
-            p.l[0] * peak,
-            p.l[1] * peak,
-            p.l[2] * peak,
-            p.l[3] * peak,
-        ];
+        self.targets = [p.l[0] * peak, p.l[1] * peak, p.l[2] * peak, p.l[3] * peak];
         // Each segment's span is measured from where the previous one ended, so
         // the authored time is the time that segment actually takes. The
         // release is the exception and is paced in `note_off` instead; the
@@ -249,7 +244,11 @@ mod tests {
         assert_eq!(eg.stage, Stage::Sustain);
         assert!((eg.level - 0.6).abs() < 1e-3, "level {}", eg.level);
         run(&mut eg, 1.0);
-        assert!((eg.level - 0.6).abs() < 1e-3, "sustain drifted to {}", eg.level);
+        assert!(
+            (eg.level - 0.6).abs() < 1e-3,
+            "sustain drifted to {}",
+            eg.level
+        );
     }
 
     #[test]
@@ -278,9 +277,16 @@ mod tests {
         eg.note_on();
         run(&mut eg, 0.005);
         let after_attack = eg.level;
-        assert!((after_attack - 0.2).abs() < 0.05, "attack -> {after_attack}");
+        assert!(
+            (after_attack - 0.2).abs() < 0.05,
+            "attack -> {after_attack}"
+        );
         run(&mut eg, 0.06);
-        assert!(eg.level > 0.8, "decay1 should rise to 0.9, got {}", eg.level);
+        assert!(
+            eg.level > 0.8,
+            "decay1 should rise to 0.9, got {}",
+            eg.level
+        );
     }
 
     /// A percussive patch must retire itself with no note-off, or one-shot
@@ -359,7 +365,11 @@ mod tests {
                 eg.tick(DT);
             }
         }
-        assert!(egs.iter().all(|e| e.is_idle()), "{:?}", egs.map(|e| e.level));
+        assert!(
+            egs.iter().all(|e| e.is_idle()),
+            "{:?}",
+            egs.map(|e| e.level)
+        );
     }
 
     #[test]

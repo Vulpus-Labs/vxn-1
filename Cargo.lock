@@ -2517,6 +2517,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "vxn4-clap"
+version = "0.3.1"
+dependencies = [
+ "clack-extensions",
+ "clack-host",
+ "clack-plugin",
+ "vxn-core-clap",
+ "vxn4-engine",
+]
+
+[[package]]
 name = "vxn4-dsp"
 version = "0.3.1"
 
@@ -2542,6 +2553,13 @@ name = "vxn4-render"
 version = "0.3.1"
 dependencies = [
  "vxn4-engine",
+]
+
+[[package]]
+name = "vxn4-xtask"
+version = "0.3.1"
+dependencies = [
+ "vxn-xtask-common",
 ]
 
 [[package]]

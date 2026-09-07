@@ -7,7 +7,7 @@ name: Bundle
 # (`xtask --format clap,vst3`, tickets 0011/0012); a failed VST3 build fails the
 # job — it is a shipping artifact, not a side experiment (ticket 0014).
 #
-# Covers vxn-1b, vxn-2 and vxn-3. Each VST3 is checked for its bundle id after
+# Covers vxn-1b, vxn-2, vxn-3 and vxn-4. Each VST3 is checked for its bundle id after
 # linking: /OPT:REF once stripped the whole-archived staticlib out of every
 # Windows .vst3 and the link still SUCCEEDED, so "it built" proves nothing
 # (0321). vxn-1's jobs were still here after it was archived, building a
@@ -156,6 +156,57 @@ jobs:
         with:
           name: VXN3-macOS-clap
           path: target/bundled/vxn3.clap
+          if-no-files-found: error
+
+  # vxn-4 is CLAP-only and macOS-only, like vxn-3, and additionally has no
+  # faceplate — so there is no VST3 job and no asset staging. It is not a
+  # shipping product yet and the release workflow does not touch it; this job
+  # exists so its bundler and plugin shell are exercised on every push rather
+  # than discovered broken at the point someone wants to ship it.
+  #
+  # The signature check is here and not on the other jobs because those verify
+  # signing in `release.yml` instead, where it gates the actual upload. vxn-4
+  # has no release job to gate, so this is the only place it gets checked —
+  # and an unsigned macOS bundle is rejected by validating hosts and reported
+  # as "not a plugin", which is what shipped broken in 0.3.0.
+  macos-vxn4:
+    name: macOS vxn-4 (CLAP)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+
+      - name: Build CLAP
+        working-directory: vxn-4
+        run: cargo xtask bundle
+
+      - name: Verify the bundle carries the engine
+        run: |
+          BIN=target/bundled/vxn4.clap/Contents/MacOS/vxn4
+          test -f "$BIN" || { echo "::error::vxn4.clap has no executable"; exit 1; }
+          strings -a "$BIN" | grep -q 'labs.vulpus.vxn4' \
+            || { echo "::error::vxn4.clap does not contain labs.vulpus.vxn4"; exit 1; }
+          echo "ok: vxn4.clap embeds labs.vulpus.vxn4 ($(stat -f%z "$BIN") bytes)"
+
+      - name: Verify the bundle is signed
+        run: |
+          B=target/bundled/vxn4.clap
+          codesign --verify "$B" \
+            || { echo "::error::vxn4.clap fails signature verification"; exit 1; }
+          test -f "$B/Contents/_CodeSignature/CodeResources" \
+            || { echo "::error::vxn4.clap has no resource seal"; exit 1; }
+          echo "ok: vxn4.clap is signed and sealed"
+
+      - name: Upload CLAP
+        uses: actions/upload-artifact@v4
+        with:
+          name: VXN4-macOS-clap
+          path: target/bundled/vxn4.clap
           if-no-files-found: error
 
   macos-vxn1b:

@@ -29,13 +29,17 @@
 //! A bank is skipped wholesale when all 8 of its lanes are idle, so the common
 //! case of a few notes held costs one bank, not three.
 
+use vxn_core_matrix::eval::eval_dests;
 use vxn_core_utils::halfband::HalfbandFir;
 use vxn_core_utils::limiter::StereoLimiter;
 
-use vxn4_dsp::ops::{CompiledRouting, NOPS, SumBus, VoiceMajor};
+use vxn4_dsp::ops::{CompiledRouting, NOPS, Routing, SumBus, VoiceMajor};
 use vxn4_dsp::wavetable::{ValueSlope, WaveBank};
 
 use crate::alloc::{Action, Alloc, N_SLOTS, Phase};
+use crate::matrix::{
+    DestId, Matrix, N_DESTS, N_MACROS, Roster, SourceId, out_dest_index, pm_dest_index,
+};
 use crate::patch::{Patch, patch};
 
 /// Lanes per bank. 8 is what the sizing sweep found best; 4 and 16 both measured
@@ -88,6 +92,14 @@ pub const CONTROL_PERIOD: usize = 32;
 /// vxn-1b and vxn-2 do — or it gains true-peak detection. The brief wants FX at
 /// 4x with the limiter after them, so this is a live design question.
 const CEILING: f32 = 0.80;
+
+/// Upper bound on [`Engine::set_master_gain`].
+///
+/// Above unity because the patches are staged to leave the limiter alone at
+/// ordinary velocities (see `Patch::gain`), so a player who wants the limiter
+/// working needs somewhere to go. +6 dB is enough to drive it audibly and not
+/// enough to make the onset clipping in `CEILING`'s note (3) the normal case.
+pub const MAX_MASTER_GAIN: f32 = 2.0;
 
 /// Mip-0 wavetable length.
 ///
@@ -175,6 +187,23 @@ impl Chain {
     }
 }
 
+/// The latency a **host** is told, in samples: the worst case across qualities.
+///
+/// Real latency is 14 at 8x and 15 at 16x, and quality is a live parameter, so
+/// an exact report would have to change mid-session — which means a main-thread
+/// `latency.changed()` from an audio-thread parameter write, and a host free to
+/// re-plan its graph whenever a knob moves.
+///
+/// Reporting the constant worst case buys that away for a **one-sample** error
+/// at 8x: 21 µs at 48 kHz, well under any host's own scheduling jitter. The
+/// alternative that would be exact — padding the 8x path by a sample so the
+/// figure is true in both modes — is a delay line and a state reset for 21 µs,
+/// and is not worth it.
+///
+/// Named separately from [`latency_samples`] so the per-quality truth stays
+/// available and this stays visibly a *choice* rather than a wrong constant.
+pub const HOST_LATENCY_SAMPLES: u32 = latency_samples(Quality::X16);
+
 /// Base-rate latency of the decimation chain, in samples.
 ///
 /// Each halfband contributes 16 samples of group delay *at its own input rate*,
@@ -189,6 +218,31 @@ pub const fn latency_samples(q: Quality) -> u32 {
     }
 }
 
+/// Which PM routes the matrix can reach, whether or not the patch authors them.
+///
+/// [`CompiledRouting::compile_with`] takes this so the lane set is fixed for the
+/// life of the patch and `set_pm` can update depths on the audio thread without
+/// reallocating. A route the mask misses has no lane, and modulation into it is
+/// silently dropped — which is exactly the failure `sine` would hit.
+///
+/// Reads `is_wired`, not `is_active`: a slot switched off still needs its lane
+/// reserved, or arming it mid-note would need a recompile.
+fn force_mask(m: &Matrix) -> [[bool; NOPS]; NOPS] {
+    let mut force = [[false; NOPS]; NOPS];
+    for slot in &m.slots {
+        if !slot.is_wired() {
+            continue;
+        }
+        let Some(di) = DestId::idx(slot.dest) else {
+            continue;
+        };
+        if di < NOPS * NOPS {
+            force[di / NOPS][di % NOPS] = true;
+        }
+    }
+    force
+}
+
 pub struct Engine {
     sample_rate: f32,
     quality: Quality,
@@ -199,6 +253,23 @@ pub struct Engine {
     banks: [VoiceMajor<LANES>; N_BANKS],
     routing: CompiledRouting,
     bus: SumBus,
+
+    /// The eight macro knobs — the only modulation sources the host can see.
+    macros: [f32; N_MACROS],
+    /// Per-destination totals from the last matrix evaluation.
+    dests: [f32; N_DESTS],
+    /// Constant-power pan factors, one pair per operator. Cached at patch
+    /// change so rebuilding the sum bus after a macro move is eight multiplies
+    /// rather than eight `sin`/`cos` pairs.
+    pan_c: [f32; NOPS],
+    pan_s: [f32; NOPS],
+    /// Set when a macro or the patch has moved; cleared once the totals have
+    /// been pushed into the routing. Nothing else writes the routing, so a
+    /// clean flag means the compiled depths are already correct.
+    mod_dirty: bool,
+    /// Whether the patch has any active slot at all. False for a patch with an
+    /// empty table, and the whole modulation path is then skipped.
+    modulated: bool,
 
     alloc: Alloc,
 
@@ -212,31 +283,38 @@ pub struct Engine {
 
     /// Samples until the next control tick.
     control_countdown: usize,
+
+    /// Output trim, multiplied in **before** the limiter.
+    ///
+    /// Before, not after, because the limiter is the only thing standing
+    /// between this and full scale — a trim applied downstream of it would put
+    /// the user's knob outside the one guarantee the chain makes. See
+    /// [`CEILING`].
+    master_gain: f32,
 }
 
 impl Engine {
     pub fn new(sample_rate: f32) -> Self {
         let p = patch(0);
-        let waves = WaveBank::new(TABLE_LEN);
-        let routing = CompiledRouting::compile(&p.routing);
-        let bus = SumBus::new(&p.ops, &p.routing);
-        let mut banks = [(); N_BANKS].map(|_| VoiceMajor::<LANES>::new());
-        for b in banks.iter_mut() {
-            b.set_waves(&p.ops);
-        }
         // The limiter sits at 4x, so that is the rate it must be told about —
         // its lookahead and release are in samples.
         let mut limiter = StereoLimiter::new(sample_rate * 4.0);
         limiter.set_threshold(CEILING);
-        Self {
+        let mut e = Self {
             sample_rate,
             quality: Quality::default(),
             patch_index: 0,
+            routing: CompiledRouting::compile(&p.routing),
+            bus: SumBus::new(&p.ops, &p.routing),
             patch: p,
-            waves,
-            banks,
-            routing,
-            bus,
+            waves: WaveBank::new(TABLE_LEN),
+            banks: [(); N_BANKS].map(|_| VoiceMajor::<LANES>::new()),
+            macros: [0.0; N_MACROS],
+            dests: [0.0; N_DESTS],
+            pan_c: [1.0; NOPS],
+            pan_s: [1.0; NOPS],
+            mod_dirty: true,
+            modulated: false,
             alloc: Alloc::new(),
             left: Chain::new(),
             right: Chain::new(),
@@ -244,7 +322,10 @@ impl Engine {
             quad_l: [0.0; 4],
             quad_r: [0.0; 4],
             control_countdown: 0,
-        }
+            master_gain: 1.0,
+        };
+        e.load_patch(0);
+        e
     }
 
     pub fn sample_rate(&self) -> f32 {
@@ -300,20 +381,124 @@ impl Engine {
         }
     }
 
-    /// Select one of the five hardwired patches.
+    /// Select one of the six hardwired patches.
     ///
     /// Kills all sound: the patch defines the operator topology, so voices in
     /// flight are running a routing that is about to stop existing.
     pub fn set_patch(&mut self, index: usize) {
+        self.load_patch(index);
+        self.panic();
+    }
+
+    /// Install a patch's topology. Does not touch voices — [`Self::set_patch`]
+    /// owns that decision, and construction has none to touch.
+    fn load_patch(&mut self, index: usize) {
         let p = patch(index);
         self.patch_index = index % crate::patch::N_PATCHES;
-        self.routing = CompiledRouting::compile(&p.routing);
+
+        // Reserve a lane for every route the matrix can reach, live or not.
+        // `sine` authors no PM at all and still has a macro on its feedback
+        // diagonal; without the mask that knob would compile away to nothing.
+        let force = force_mask(&p.matrix);
+        self.routing = CompiledRouting::compile_with(&p.routing, &force);
+        self.modulated = p
+            .matrix
+            .slots
+            .iter()
+            .any(|s| s.is_active() && s.depth != 0.0);
+
+        for d in 0..NOPS {
+            let theta = (p.ops[d].pan.clamp(-1.0, 1.0) + 1.0) * 0.25 * std::f32::consts::PI;
+            self.pan_c[d] = theta.cos();
+            self.pan_s[d] = theta.sin();
+        }
         self.bus = SumBus::new(&p.ops, &p.routing);
+
         for b in self.banks.iter_mut() {
             b.set_waves(&p.ops);
         }
         self.patch = p;
-        self.panic();
+        // Macro positions survive a patch change — they are host automation,
+        // and a lane that holds macro 1 at 0.7 across a patch switch must not
+        // have the new patch snap back to its authored depths for a block.
+        self.mod_dirty = true;
+        self.apply_modulation();
+    }
+
+    /// A macro knob, `0..=7`, in `[0, 1]`. Out-of-range indices are ignored.
+    pub fn set_macro(&mut self, index: usize, value: f32) {
+        if index >= N_MACROS {
+            return;
+        }
+        let v = value.clamp(0.0, 1.0);
+        if self.macros[index] == v {
+            return;
+        }
+        self.macros[index] = v;
+        self.mod_dirty = true;
+    }
+
+    pub fn macro_value(&self, index: usize) -> f32 {
+        self.macros.get(index).copied().unwrap_or(0.0)
+    }
+
+    /// Output trim, applied upstream of the limiter. Clamped to
+    /// [`MAX_MASTER_GAIN`].
+    pub fn set_master_gain(&mut self, gain: f32) {
+        self.master_gain = gain.clamp(0.0, MAX_MASTER_GAIN);
+    }
+
+    pub fn master_gain(&self) -> f32 {
+        self.master_gain
+    }
+
+    /// Evaluate the matrix and push the totals into the live routing.
+    ///
+    /// Totals are **added** to the authored depths, so every macro at zero is
+    /// the patch exactly as written — which is what makes the patch table
+    /// readable on its own and keeps `set_macro` from being load-bearing for a
+    /// patch to sound right.
+    ///
+    /// Runs at control rate and only when something moved. Skipping it when
+    /// clean is not just an optimisation: with no active slots this path never
+    /// runs at all, so an unmodulated patch pays nothing for the matrix
+    /// existing.
+    fn apply_modulation(&mut self) {
+        if !self.mod_dirty {
+            return;
+        }
+        self.mod_dirty = false;
+        if !self.modulated {
+            return;
+        }
+
+        eval_dests::<Roster, SourceId, DestId, N_MACROS, N_DESTS>(
+            &self.patch.matrix.slots,
+            &self.macros,
+            &mut self.dests,
+        );
+
+        let base: &Routing = &self.patch.routing;
+        let mut pm = [[0.0f32; NOPS]; NOPS];
+        for (d, row) in pm.iter_mut().enumerate() {
+            for (s, cell) in row.iter_mut().enumerate() {
+                // Unclamped: a modulation index is not bounded by anything
+                // musical, and `phase_offset` wraps rather than saturating
+                // precisely so a hot route stays a sound instead of a clamp.
+                *cell = base.pm[d][s] + self.dests[pm_dest_index(d, s)];
+            }
+        }
+        self.routing.set_pm(&pm);
+
+        for d in 0..NOPS {
+            // Sum-bus sends *are* clamped. Below zero is a phase flip rather
+            // than silence, which is not what a send fader means, and the
+            // upper bound keeps a stack of modulated sends from walking into
+            // the limiter — see `CEILING` for why that is expensive here.
+            let g = (base.out[d] + self.dests[out_dest_index(d)]).clamp(0.0, 1.0);
+            self.bus.l[d] = g * self.pan_c[d];
+            self.bus.r[d] = g * self.pan_s[d];
+        }
     }
 
     /// Silence everything immediately.
@@ -368,6 +553,12 @@ impl Engine {
 
     /// Advance envelopes and push the resulting levels into the banks.
     fn control_tick(&mut self) {
+        // Before the steal weights are read: modulation moves the sum-bus
+        // sends, and those sends are what weight an operator's envelope in the
+        // heuristic below. Evaluating after would weight this block against
+        // last block's routing.
+        self.apply_modulation();
+
         let dt = CONTROL_PERIOD as f32 / self.sample_rate;
         // Weight each operator's envelope by its sum-bus presence, so a pure
         // modulator cannot make a voice look loud to the steal heuristic.
@@ -408,7 +599,7 @@ impl Engine {
     pub fn process(&mut self, out_l: &mut [f32], out_r: &mut [f32]) {
         debug_assert_eq!(out_l.len(), out_r.len());
         let ticks_per_4x = self.quality.ticks_per_4x();
-        let gain = self.patch.gain;
+        let gain = self.patch.gain * self.master_gain;
         let mut ticks = [0.0f32; 8];
 
         for i in 0..out_l.len() {
@@ -438,7 +629,9 @@ impl Engine {
                 // Interleaved into one scratch array so the two channels share a
                 // loop; the halves never overlap because ticks_per_4x <= 4.
                 self.quad_l[q] = self.left.fold_to_4x(&ticks[..ticks_per_4x], self.quality);
-                self.quad_r[q] = self.right.fold_to_4x(&ticks[4..4 + ticks_per_4x], self.quality);
+                self.quad_r[q] = self
+                    .right
+                    .fold_to_4x(&ticks[4..4 + ticks_per_4x], self.quality);
             }
 
             // Limiter at 4x — four samples per output sample.
@@ -448,12 +641,6 @@ impl Engine {
                 self.quad_r[q] = r;
             }
 
-            // Backstop only — see `CEILING`. The limiter runs two halfband
-            // stages upstream of here and so cannot itself guarantee the 1x
-            // output stays in range.
-            // Backstop only — see `CEILING`. The limiter runs two halfband
-            // stages upstream of here and so cannot itself guarantee the 1x
-            // output stays in range.
             // Backstop only — see `CEILING`. Two halfband stages run downstream
             // of the limiter, so the limiter cannot itself bound this.
             out_l[i] = self.left.fold_to_1x(self.quad_l).clamp(-1.0, 1.0);
@@ -503,7 +690,11 @@ mod tests {
                     e.patch_name(),
                     q
                 );
-                assert!(pk <= 1.0, "patch {} exceeded full scale: {pk}", e.patch_name());
+                assert!(
+                    pk <= 1.0,
+                    "patch {} exceeded full scale: {pk}",
+                    e.patch_name()
+                );
                 assert!(l.iter().all(|s| s.is_finite()));
                 assert!(r.iter().all(|s| s.is_finite()));
             }
@@ -548,7 +739,10 @@ mod tests {
                 }
                 let (l, r) = render(&mut e, 32_768);
                 // The hard guarantee, everywhere.
-                assert!(peak(&l).max(peak(&r)) <= 1.0, "patch {p} exceeded full scale");
+                assert!(
+                    peak(&l).max(peak(&r)) <= 1.0,
+                    "patch {p} exceeded full scale"
+                );
                 // The real check: steady state is limited, not clipped.
                 let tail = peak(&l[settle..]).max(peak(&r[settle..]));
                 assert!(
@@ -624,7 +818,11 @@ mod tests {
         assert!(b.iter().all(|s| s.is_finite()));
         // The seam must not produce a sample far outside the signal's own range.
         let bound = peak(&a) * 2.0 + 0.05;
-        assert!(peak(&b) < bound, "switch spiked to {} (bound {bound})", peak(&b));
+        assert!(
+            peak(&b) < bound,
+            "switch spiked to {} (bound {bound})",
+            peak(&b)
+        );
     }
 
     /// Pitch must survive a quality switch under a held note.
@@ -637,18 +835,6 @@ mod tests {
     #[test]
     fn a_held_note_keeps_its_pitch_across_a_quality_switch() {
         let f0 = vxn4_dsp::ops::note_to_freq(69); // A440
-        let energy_at = |x: &[f32], hz: f32| {
-            let w = 2.0 * std::f32::consts::PI * hz / SR;
-            let coeff = 2.0 * w.cos();
-            let (mut s1, mut s2) = (0.0f32, 0.0f32);
-            for &v in x {
-                let s0 = v + coeff * s1 - s2;
-                s2 = s1;
-                s1 = s0;
-            }
-            (s1 * s1 + s2 * s2 - coeff * s1 * s2).abs() * 2.0 / x.len() as f32
-        };
-
         let mut e = Engine::new(SR);
         e.set_patch(0);
         e.note_on(69, 100);
@@ -656,7 +842,7 @@ mod tests {
         e.set_quality(Quality::X16);
         let (l, _) = render(&mut e, 8192);
 
-        let total: f32 = l.iter().map(|s| s * s).sum::<f32>() / l.len() as f32;
+        let total = total_energy(&l);
         let fund = energy_at(&l, f0);
         let octave_up = energy_at(&l, f0 * 2.0);
         assert!(
@@ -671,10 +857,283 @@ mod tests {
         );
     }
 
+    /// Energy at `hz`, by Goertzel. Used to see modulation as spectrum rather
+    /// than as level, which is what the PM destinations actually change.
+    ///
+    /// Scaled to compare against **`total_energy`** — the sum of squares, not
+    /// the mean. Getting that wrong makes `fund` larger than the whole signal
+    /// by a factor of `len`, and every ratio test built on it passes without
+    /// measuring anything.
+    fn energy_at(x: &[f32], hz: f32) -> f32 {
+        let w = 2.0 * std::f32::consts::PI * hz / SR;
+        let coeff = 2.0 * w.cos();
+        let (mut s1, mut s2) = (0.0f32, 0.0f32);
+        for &v in x {
+            let s0 = v + coeff * s1 - s2;
+            s2 = s1;
+            s1 = s0;
+        }
+        (s1 * s1 + s2 * s2 - coeff * s1 * s2).abs() * 2.0 / x.len() as f32
+    }
+
+    fn total_energy(x: &[f32]) -> f32 {
+        x.iter().map(|s| s * s).sum()
+    }
+
+    /// Every macro at zero must render the patch exactly as authored. If this
+    /// fails the patch table has stopped being readable on its own, because
+    /// what you hear depends on knob positions the table does not mention.
+    #[test]
+    fn macros_at_zero_are_the_patch_as_written() {
+        for p in 0..crate::patch::N_PATCHES {
+            let mut a = Engine::new(SR);
+            a.set_patch(p);
+            a.note_on(60, 100);
+            let (la, _) = render(&mut a, 4096);
+
+            let mut b = Engine::new(SR);
+            b.set_patch(p);
+            for m in 0..N_MACROS {
+                b.set_macro(m, 0.0);
+            }
+            b.note_on(60, 100);
+            let (lb, _) = render(&mut b, 4096);
+
+            assert_eq!(la, lb, "patch {p} moved with every macro at zero");
+        }
+    }
+
+    /// A macro on a route the patch does not author must still reach it.
+    ///
+    /// `sine` has an empty `Routing` and a matrix slot on its own feedback
+    /// diagonal, so this is the force-mask contract end to end: without the
+    /// mask there is no lane for `set_pm` to write and the knob is inert.
+    /// Measured as harmonic content, because self-feedback on a sine adds
+    /// harmonics rather than level.
+    #[test]
+    fn a_macro_reaches_a_route_the_patch_never_authored() {
+        let f0 = vxn4_dsp::ops::note_to_freq(69);
+        let harmonics = |e: &mut Engine| {
+            e.note_on(69, 100);
+            render(e, 8192);
+            let (l, _) = render(e, 8192);
+            let total = total_energy(&l);
+            (total - energy_at(&l, f0)).max(0.0) / total
+        };
+
+        let mut off = Engine::new(SR);
+        off.set_patch(0);
+        let clean = harmonics(&mut off);
+
+        let mut on = Engine::new(SR);
+        on.set_patch(0);
+        on.set_macro(0, 1.0);
+        let dirty = harmonics(&mut on);
+
+        assert!(
+            clean < 0.03,
+            "the sine patch was not clean to begin with ({clean})"
+        );
+        assert!(
+            dirty > 0.20,
+            "macro 1 did not open the feedback diagonal ({dirty} of energy off the fundamental)"
+        );
+    }
+
+    /// The force mask must have something in the patch set that needs it, or
+    /// it is untested machinery that will rot.
+    ///
+    /// What needs it is an **off-diagonal** PM route the patch does not author:
+    /// the diagonal lives in `CompiledRouting::fb`, which always has a slot per
+    /// operator, so a feedback route is reachable with or without the mask.
+    #[test]
+    fn the_force_mask_is_exercised_by_the_patch_set() {
+        let mut found = Vec::new();
+        for p in 0..crate::patch::N_PATCHES {
+            let pat = crate::patch::patch(p);
+            for slot in &pat.matrix.slots {
+                if !slot.is_active() || slot.depth == 0.0 {
+                    continue;
+                }
+                let Some(di) = DestId::idx(slot.dest) else {
+                    continue;
+                };
+                if di >= NOPS * NOPS {
+                    continue; // a sum-bus send, not a PM route
+                }
+                let (d, s) = (di / NOPS, di % NOPS);
+                if d != s && pat.routing.pm[d][s] == 0.0 {
+                    found.push((pat.name, d, s));
+                }
+            }
+        }
+        assert!(
+            !found.is_empty(),
+            "no patch routes a macro onto an unauthored off-diagonal route, so \
+             `force_mask` is dead code as far as the tests can see"
+        );
+    }
+
+    /// The force mask, end to end: a macro on an off-diagonal route the patch
+    /// authors at zero must still be audible.
+    #[test]
+    fn a_macro_reaches_an_unauthored_off_diagonal_route() {
+        let run = |m4: f32| {
+            let mut e = Engine::new(SR);
+            e.set_patch(3); // saws — macro 4 is on pm[2][4], authored at zero
+            e.set_macro(3, m4);
+            e.note_on(52, 100);
+            render(&mut e, 4096);
+            let (l, _) = render(&mut e, 4096);
+            l
+        };
+        assert_ne!(run(1.0), run(0.0), "macro 4 had no lane to write into");
+    }
+
+    /// The scale VCA gates its route: `grind`'s macro 2 does nothing until
+    /// macro 3 opens it, and then it does something.
+    ///
+    /// This is the brief's additive-plus-scaling pair, which comes from the
+    /// shared `MatrixSlot` rather than from any vxn-4 code — so what is under
+    /// test is the wiring, not the arithmetic.
+    #[test]
+    fn a_scaled_route_is_gated_by_its_vca() {
+        let run = |m2: f32, m3: f32| {
+            let mut e = Engine::new(SR);
+            e.set_patch(5); // grind
+            e.set_macro(1, m2);
+            e.set_macro(2, m3);
+            e.note_on(69, 100);
+            render(&mut e, 4096);
+            let (l, _) = render(&mut e, 4096);
+            l
+        };
+
+        let closed = run(1.0, 0.0);
+        let shut = run(0.0, 0.0);
+        assert_eq!(closed, shut, "macro 2 was audible with its VCA closed");
+
+        let open = run(1.0, 1.0);
+        assert_ne!(open, shut, "opening the VCA changed nothing");
+    }
+
+    /// An out-dest route moves the sum bus, and the clamp holds at both ends.
+    #[test]
+    fn a_macro_on_a_sum_bus_send_changes_level() {
+        let level = |m2: f32| {
+            let mut e = Engine::new(SR);
+            e.set_patch(3); // saws — macro 2 is on Out2, the sub
+            e.set_macro(1, m2);
+            e.note_on(48, 100);
+            render(&mut e, 4096);
+            let (l, r) = render(&mut e, 4096);
+            peak(&l).max(peak(&r))
+        };
+        let lo = level(0.0);
+        let hi = level(1.0);
+        assert!(hi > lo * 1.05, "the send did not move ({lo} -> {hi})");
+        assert!(hi <= 1.0);
+    }
+
+    /// Macro positions are host automation and must survive a patch change.
+    /// A lane holding macro 1 at 0.7 across a switch must not snap back to the
+    /// new patch's authored depths, even for one control block.
+    #[test]
+    fn macros_survive_a_patch_change() {
+        let mut e = Engine::new(SR);
+        e.set_macro(0, 0.7);
+        e.set_patch(2);
+        assert_eq!(e.macro_value(0), 0.7);
+        e.set_patch(4);
+        assert_eq!(e.macro_value(0), 0.7);
+    }
+
+    #[test]
+    fn macro_indices_out_of_range_are_ignored() {
+        let mut e = Engine::new(SR);
+        e.set_macro(N_MACROS, 1.0);
+        e.set_macro(999, 1.0);
+        assert_eq!(e.macro_value(N_MACROS), 0.0);
+        for m in 0..N_MACROS {
+            assert_eq!(e.macro_value(m), 0.0);
+        }
+    }
+
+    /// Modulation must not be able to drive the output past full scale, on any
+    /// patch, with every macro pinned open and every voice sounding. This is
+    /// the case the gain staging was measured against and modulation is the
+    /// one thing that can walk out of it.
+    #[test]
+    fn every_macro_open_still_stays_in_range() {
+        let settle = (SR * 0.05) as usize;
+        for p in 0..crate::patch::N_PATCHES {
+            let mut e = Engine::new(SR);
+            e.set_patch(p);
+            for m in 0..N_MACROS {
+                e.set_macro(m, 1.0);
+            }
+            for n in 0..N_SLOTS {
+                e.note_on(40 + n as u8 * 2, 127);
+            }
+            let (l, r) = render(&mut e, 32_768);
+            assert!(
+                l.iter().chain(r.iter()).all(|s| s.is_finite()),
+                "patch {p} went non-finite"
+            );
+            let tail = peak(&l[settle..]).max(peak(&r[settle..]));
+            assert!(
+                tail < 0.999,
+                "patch {p} rides the clamp with every macro open ({tail})"
+            );
+        }
+    }
+
+    /// The trim scales, clamps at both ends, and the limiter still holds the
+    /// output at the top of its range — which is the point of it being applied
+    /// upstream rather than on the way out.
+    #[test]
+    fn master_gain_scales_and_stays_bounded() {
+        let at = |g: f32| {
+            let mut e = Engine::new(SR);
+            e.set_patch(1);
+            e.set_master_gain(g);
+            for n in [48u8, 55, 60, 64, 67] {
+                e.note_on(n, 100);
+            }
+            let (l, r) = render(&mut e, 16_384);
+            (peak(&l).max(peak(&r)), l, r)
+        };
+
+        let (silent, l, r) = at(0.0);
+        assert_eq!(silent, 0.0, "zero trim was not silent");
+        assert!(l.iter().chain(r.iter()).all(|s| *s == 0.0));
+
+        let (unity, ..) = at(1.0);
+        let (half, ..) = at(0.5);
+        assert!(
+            (half / unity - 0.5).abs() < 0.02,
+            "half trim gave {half} against {unity}"
+        );
+
+        let mut e = Engine::new(SR);
+        e.set_master_gain(99.0);
+        assert_eq!(e.master_gain(), MAX_MASTER_GAIN, "trim was not clamped");
+        e.set_master_gain(-1.0);
+        assert_eq!(e.master_gain(), 0.0);
+
+        let (hot, ..) = at(MAX_MASTER_GAIN);
+        assert!(hot <= 1.0, "the limiter let a hot trim through at {hot}");
+        assert!(hot > unity, "the trim did not push into the limiter");
+    }
+
     #[test]
     fn latency_is_reported_per_quality() {
         assert_eq!(latency_samples(Quality::X8), 14);
         assert_eq!(latency_samples(Quality::X16), 15);
+        // The host is told the worst case, so it never has to be renegotiated
+        // when quality moves. See `HOST_LATENCY_SAMPLES`.
+        assert_eq!(HOST_LATENCY_SAMPLES, 15);
+        assert!(HOST_LATENCY_SAMPLES >= latency_samples(Quality::X8));
         let mut e = Engine::new(SR);
         assert_eq!(e.latency_samples(), 14);
         e.set_quality(Quality::X16);

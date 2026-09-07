@@ -1,26 +1,37 @@
-# vxn-4 — sizing
+# vxn-4
 
 Synth #4: eight phase-modulation operators, every operator routed to every
 operator including itself, plus a panned output per operator into a stereo sum
 bus. No filter.
 
-No plugin and no faceplate yet. There is enough engine to **hear it**: voice
-allocation, envelopes, five hardwired patches, and the oversampling chain down
-through a limiter, rendered offline to WAV.
+Playable in a CLAP host, and playable offline. **No faceplate** — the plugin
+exposes eleven parameters and a host's generic UI is enough to turn them. Under
+that: voice allocation, envelopes, six hardwired patches, a modulation matrix on
+eight macro knobs, and the oversampling chain down through a limiter.
+
+Most of this README is the **sizing** work that came first, because the
+oversampling factor, the wavetable length and the lane-loop layout move the
+polyphony ceiling more than anything else in the design, and they were measured
+before they were designed.
 
 ## Crates
 
 | crate | what it is |
 |---|---|
 | [`vxn4-dsp`](crates/vxn4-dsp) | band-limited mip-mapped wavetables, and the 8-operator block in two lane-loop layouts |
-| [`vxn4-engine`](crates/vxn4-engine) | voice allocation, envelopes, patches, rate plan, limiter |
+| [`vxn4-engine`](crates/vxn4-engine) | voice allocation, envelopes, patches, the mod matrix, rate plan, limiter |
+| [`vxn4-clap`](crates/vxn4-clap) | the CLAP plugin shell — eleven params, no faceplate |
 | [`vxn4-render`](crates/vxn4-render) | offline renderer — plays a note sequence into a WAV |
 | [`vxn4-op-bench`](crates/vxn4-op-bench) | the sizing sweep and its criterion counterpart |
 
 ```sh
-# listen
-cargo run --release -p vxn4-render -- --all            # 25 WAVs into ./vxn4-out/
+# play it
+cd vxn-4 && cargo xtask install       # → ~/Library/Audio/Plug-Ins/CLAP/vxn4.clap
+
+# listen offline
+cargo run --release -p vxn4-render -- --all            # every patch x sequence
 cargo run --release -p vxn4-render -- --patch 2 --seq scale --os 16 bell.wav
+cargo run --release -p vxn4-render -- --patch 0 --macro 1=1.0 buzz.wav
 
 # measure
 cargo run --release -p vxn4-op-bench --bin sweep       # the decision
@@ -30,10 +41,48 @@ cargo bench -p vxn4-op-bench                           # confidence intervals
 **Build with `rustup run 1.95.0 cargo ...`** — see *Measurement* below for why
 plain `cargo` is the wrong compiler on this machine.
 
+## The plugin
+
+Eleven parameters, and the count is the design:
+
+| id | param | range |
+|---|---|---|
+| 0 | Patch | stepped, `sine`…`grind` |
+| 1 | Quality | stepped, 8x / 16x |
+| 2 | Master Gain | 0 … +6 dB, applied **upstream** of the limiter |
+| 3–10 | Macro 1–8 | 0 … 1 |
+
+**Modulation reaches the host as eight knobs and nothing else.** The synth has
+72 modulatable destinations, each taking two sources; exposing that would be
+several hundred automation lanes, and it would bake the patch's routing
+topology into every saved project — rewire a patch and every lane that named a
+route points somewhere else. The knobs are matrix *sources*; which routes each
+one drives, and how far, is patch state. A lane that says "macro 3" survives
+the patch behind it being rewired.
+
+The brief's "two sources per destination, additive and scaling" needed no vxn-4
+code at all: it is `MatrixSlot`'s `source` plus `scale_src` in
+[`vxn-core-matrix`](../crates/vxn-core-matrix), shared with vxn-1b and vxn-2.
+`epiano` and `grind` each wire one scaled route so the VCA path is exercised
+rather than merely available.
+
+Two things the plugin does that are worth knowing:
+
+- **Reported latency is constant at 15 samples**, which is the 16x figure. Real
+  latency is 14 at 8x. Quality is a live parameter, so an exact report would
+  mean renegotiating the host's graph whenever a knob moves; the constant costs
+  one sample — 21 µs — at 8x. Named as a choice in `HOST_LATENCY_SAMPLES`
+  rather than left as a wrong constant.
+- **Re-sending the current patch value is a no-op.** Selecting a patch panics
+  every sounding voice, and hosts that push their whole parameter set each
+  block exist, so the write is guarded on an actual change. Without the guard
+  one of those hosts is a permanent all-notes-off.
+
 ## Playing it
 
-Five patches, graded by routing density, and five sequences each chosen to put
-one question in front of your ears.
+Six patches — five graded by routing density, plus one that is off the ladder
+for aliasing — and six sequences, each chosen to put one question in front of
+your ears.
 
 | patch | routes | what it is for |
 |---|---|---|
@@ -57,6 +106,32 @@ Patch gains are set from measurement so a six-note chord lands near -6 dBFS on
 every patch. That matches them for loudness — so an A/B is about timbre, not
 level — and keeps ordinary playing clear of the limiter, which matters for the
 reason in *The limiter placement is a real problem* below.
+
+### What the macros do
+
+Each patch wires a few. All macros at zero **is** the patch as its table writes
+it, which is what keeps the patch source readable on its own — a default of 0.5
+would mean no patch ever sounded as authored without pulling eight knobs down.
+
+| patch | M1 | M2 | M3 | M4 |
+|---|---|---|---|---|
+| `sine` | self-feedback on op0 — a sine to a buzz | | | |
+| `epiano` | brightness on both stacks | cross-feed | **gates M2** | |
+| `bell` | feedback on the inharmonic modulator | brightness | | |
+| `saws` | triangle modulator into both saws | sub level (a sum-bus send) | op4 → op3 | **op4 → op2**, a route the patch does not author |
+| `web` | four feedback diagonals at once | the two corner routes | | |
+| `grind` | index past 1.7 turns | self-feedback | **gates M2** | |
+
+Two of those are load-bearing beyond the sound:
+
+- `sine`'s M1 and `saws`' M4 both drive routes whose authored depth is **zero**.
+  The lane set is fixed when a patch is compiled, so that a depth update on the
+  audio thread cannot reach an allocator — which means a route the matrix can
+  reach must have a lane reserved for it up front, whether or not the patch uses
+  it. `saws` M4 is the off-diagonal case that actually needs the reservation;
+  `sine` M1 is a feedback diagonal, which lives in its own array and would work
+  either way.
+- `epiano` M3 and `grind` M3 are scale VCAs. M2 does nothing until M3 opens it.
 
 ### Two things to listen for first
 
@@ -284,10 +359,18 @@ free.
 - **The decimator.** It runs on the stereo sum bus, not per voice, so it is a
   fixed cost that does not scale with polyphony and cannot change the answer
   here. `render` closes each oversampled group with a boxcar as a placeholder.
-- **Envelopes, the mod matrix, the FX block, the limiter.** Per-operator and
-  global envelopes will add real per-voice cost; the FX block will not, being
-  post-sum.
+- **Envelopes, the FX block, the limiter.** Per-operator and global envelopes
+  add real per-voice cost; the FX block will not, being post-sum.
 - **Voice allocation and note handling.**
+
+The **mod matrix** has since landed and is not on that list any more, because it
+turned out to cost nothing worth measuring. Every destination is `patch_global`,
+so a macro move is 16 slot evaluations, 64 depth writes and 8 sum-bus multiplies
+— once per control block, and only when a knob has actually moved. It touches
+nothing per voice and nothing per operator tick. That stays true only while
+every source is patch-wide; the day a per-voice source lands (an envelope, a
+velocity) the whole tier column in `matrix.rs` has to be revisited, and the
+coherence predicate is there to fail loudly when it is not.
 
 ## Measurement
 
@@ -333,3 +416,25 @@ immediately after a compile reads low.
 - **Band-limiting policy.** Mips are band-limited against the oversampled rate,
   so at 16x a low operator carries up to `len/2` harmonics — the table length
   binds before Nyquist does. Whether that is the right cap is a tonal question.
+
+## Still to build
+
+- **The brief's other mod sources.** Two LFOs and two envelopes, as matrix
+  sources beside the macros. That is new rows in `SourceId`, not a new
+  mechanism — but see the tier note above: an envelope is `per_lane`, and every
+  destination is currently `patch_global`, so it is the routing *tiers* that
+  need the work, not the sources.
+- **Smoothing.** Every destination declares `smooth = block`, which is the truth
+  and not a placeholder: totals are applied once per control block and held, so
+  a fast macro sweep zippers at the control rate. `vxn-core-matrix` has a
+  smoother bank; wiring it up is the follow-up. The column is declared honestly
+  meanwhile rather than claiming a filter that is not running.
+- **The FX block at 4x.** The chain shape is real — the limiter occupies that
+  slot — so FX drop in beside it. See *The limiter placement is a real problem*
+  for the question that has to be settled first.
+- **Editable patches, and a preset format.** The six are ear-fodder. When they
+  become editable the state blob gains a payload and a version bump; its header
+  is shaped for that.
+- **A faceplate.** Not obviously the next thing. An 8×8 routing grid with two
+  sources per cell is a real UI problem, and the host's generic UI is enough to
+  keep making ear-driven choices meanwhile.

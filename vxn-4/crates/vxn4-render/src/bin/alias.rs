@@ -27,7 +27,7 @@
 #[path = "../fft.rs"]
 mod fft;
 
-use vxn4_engine::{Engine, Quality, N_PATCHES, patch_names};
+use vxn4_engine::{Engine, N_PATCHES, Quality, patch_names};
 
 const SR: f32 = 48_000.0;
 const WINDOW: usize = 32_768;
@@ -102,7 +102,9 @@ fn band_fraction(spec: &[f32], lo_hz: f32, hi_hz: f32) -> f32 {
 fn main() {
     println!("vxn-4 — 8x vs 16x, measured\n");
     println!("Held note, {WINDOW} samples of steady state, difference after alignment.");
-    println!("`diff` is the 8x-vs-16x residue relative to the signal: more negative = more alike.\n");
+    println!(
+        "`diff` is the 8x-vs-16x residue relative to the signal: more negative = more alike.\n"
+    );
 
     // Up to MIDI 108 (C8, 4186 Hz). Above ~note 96 the fundamental is high
     // enough that fold-down lands in the middle of the audible range rather

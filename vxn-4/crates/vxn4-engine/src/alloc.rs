@@ -397,7 +397,10 @@ mod tests {
         let action = a.note_on(&params(), 90, 100);
         assert!(matches!(action, Action::Start { .. }), "{action:?}");
         assert_eq!(
-            a.voices.iter().filter(|v| v.phase == Phase::Declick).count(),
+            a.voices
+                .iter()
+                .filter(|v| v.phase == Phase::Declick)
+                .count(),
             1
         );
         assert_eq!(a.active_count(), N_ACTIVE, "cap must hold after the steal");
@@ -415,7 +418,10 @@ mod tests {
             a.note_on(&params(), 90 + n, 100);
         }
         assert_eq!(a.active_count(), N_ACTIVE);
-        assert!(a.sounding_count() > N_ACTIVE, "tails should still be sounding");
+        assert!(
+            a.sounding_count() > N_ACTIVE,
+            "tails should still be sounding"
+        );
         assert!(a.sounding_count() <= N_SLOTS);
     }
 
@@ -521,7 +527,10 @@ mod tests {
         a.note_on(&params(), 60, 100);
         a.note_off(61);
         assert_eq!(a.active_count(), 1);
-        assert_eq!(a.voices.iter().filter(|v| v.phase == Phase::Held).count(), 1);
+        assert_eq!(
+            a.voices.iter().filter(|v| v.phase == Phase::Held).count(),
+            1
+        );
     }
 
     /// A declick must actually finish and hand the slot back, or the spares
@@ -534,10 +543,19 @@ mod tests {
         }
         settle(&mut a, 0.2);
         a.note_on(&params(), 90, 100);
-        assert_eq!(a.voices.iter().filter(|v| v.phase == Phase::Declick).count(), 1);
+        assert_eq!(
+            a.voices
+                .iter()
+                .filter(|v| v.phase == Phase::Declick)
+                .count(),
+            1
+        );
         settle(&mut a, DECLICK_SECS * 4.0);
         assert_eq!(
-            a.voices.iter().filter(|v| v.phase == Phase::Declick).count(),
+            a.voices
+                .iter()
+                .filter(|v| v.phase == Phase::Declick)
+                .count(),
             0,
             "declick never completed"
         );
