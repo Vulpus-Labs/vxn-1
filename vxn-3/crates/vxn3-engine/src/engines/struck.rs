@@ -21,7 +21,7 @@
 use vxn3_dsp::{SILENCE_EPS, decay_coef, fast_sine_q32, note_to_freq, phase_inc_hz};
 
 use crate::flavour::{Binding, Curve, Flavour, ParamMeta};
-use crate::track_engine::{EngineKind, MACRO_SLOTS, MacroUnit, TrackEngine};
+use crate::track_engine::{EngineKind, MACRO_SLOTS, MacroUnit, TrackEngine, TrigMod};
 
 /// Struck modal partial count (one NEON `f32x4`).
 pub const STRUCK_MODES: usize = 4;
@@ -157,6 +157,10 @@ pub struct Struck {
     patch: StruckPatch,
     flavour: Flavour,
     macros: [f32; MACRO_SLOTS],
+    /// The modulation the **current** trig carries (ADR 0007 §7) — a per-hit colour
+    /// overriding the macro slots, plus the lateness source. Read by `resolve_patch`;
+    /// never merged into `macros`, which stays the host's own state.
+    trig: TrigMod,
     dirty: bool,
     sample_rate: f32,
 
@@ -188,6 +192,7 @@ impl Struck {
             patch: StruckPatch::default(),
             flavour,
             macros,
+            trig: TrigMod::default(),
             dirty: false,
             sample_rate,
             ratio: HARMONIC,
@@ -215,7 +220,8 @@ impl Struck {
 
     fn resolve_patch(&mut self) {
         let mut r = [0.0_f32; STRUCK_P];
-        crate::flavour::resolve(&STRUCK_PARAMS, &self.flavour.base, &self.flavour.bindings, &self.macros, &mut r);
+        let src = self.trig.sources(&self.macros);
+        crate::flavour::resolve(&STRUCK_PARAMS, &self.flavour.base, &self.flavour.bindings, &src, &mut r);
         self.patch.decay_s = r[P_DECAY];
         self.patch.tune = r[P_TUNE];
         self.patch.droop_depth_st = r[P_DROOP_DEPTH];
@@ -308,6 +314,17 @@ impl TrackEngine for Struck {
         {
             self.active = false;
         }
+    }
+
+    fn on_trig_with(&mut self, note: f32, velocity: f32, m: TrigMod) {
+        // A per-hit colour is a *source* change, so it re-resolves through exactly the
+        // path a macro move does — and only when it differs from the last trig's, so an
+        // uncoloured lane costs one comparison per trig and no re-cook.
+        if self.trig != m {
+            self.trig = m;
+            self.dirty = true;
+        }
+        self.on_trig(note, velocity);
     }
 
     fn on_trig(&mut self, note: f32, velocity: f32) {

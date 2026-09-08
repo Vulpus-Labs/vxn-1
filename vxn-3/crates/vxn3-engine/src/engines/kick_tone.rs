@@ -14,7 +14,7 @@
 use vxn3_dsp::{SILENCE_EPS, attack_coef, decay_coef, fast_sine_q32, note_to_freq, phase_inc_hz};
 
 use crate::flavour::{Binding, Curve, Flavour, ParamMeta};
-use crate::track_engine::{EngineKind, LANES, MACRO_SLOTS, MacroUnit, TrackEngine};
+use crate::track_engine::{EngineKind, LANES, MACRO_SLOTS, MacroUnit, TrackEngine, TrigMod};
 
 /// The **Driven** family's parameter space (ADR 0005 §Family): index → metadata. A
 /// flavour's base vector and the resolved per-trig vector are addressed by these ids.
@@ -161,6 +161,11 @@ pub struct KickTone {
     /// Live macro values (`0..1`) — performance/automation state, **not** part of the
     /// flavour. Driven by the host macro slots via [`TrackEngine::set_macro`].
     macros: [f32; MACRO_SLOTS],
+    /// The modulation the **current** trig carries (ADR 0007 §7): a per-hit colour
+    /// overriding the macro slots, plus the lateness source. Held here only so
+    /// [`KickTone::resolve_patch`] can read it; never merged into `macros`, which stays
+    /// the host's own state.
+    trig: TrigMod,
     /// The resolved vector is stale (a flavour or macro changed) → recompute at the
     /// next trig so a sounding voice never glitches mid-decay.
     dirty: bool,
@@ -211,6 +216,7 @@ impl KickTone {
             patch: KickTonePatch::default(),
             flavour,
             macros,
+            trig: TrigMod::default(),
             dirty: false,
             sample_rate,
             amp_attack_coef: 0.0,
@@ -248,7 +254,7 @@ impl KickTone {
             &DRIVEN_PARAMS,
             &self.flavour.base,
             &self.flavour.bindings,
-            &self.macros,
+            &self.trig.sources(&self.macros),
             &mut r,
         );
         self.patch.amp_attack_s = r[P_AMP_ATTACK];
@@ -338,6 +344,17 @@ impl TrackEngine for KickTone {
                 self.active[k] = false;
             }
         }
+    }
+
+    fn on_trig_with(&mut self, note: f32, velocity: f32, m: TrigMod) {
+        // A per-hit colour is a *source* change, so it re-resolves through exactly the
+        // path a macro move does — and only when it differs from the last trig's, so an
+        // uncoloured lane costs one comparison per trig and no re-cook.
+        if self.trig != m {
+            self.trig = m;
+            self.dirty = true;
+        }
+        self.on_trig(note, velocity);
     }
 
     fn on_trig(&mut self, note: f32, velocity: f32) {

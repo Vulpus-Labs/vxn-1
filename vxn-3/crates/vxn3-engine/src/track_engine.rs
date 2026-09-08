@@ -34,6 +34,18 @@ pub trait TrackEngine: Send {
     /// sub-spans, so it is sample-accurate.
     fn on_trig(&mut self, note: f32, velocity: f32);
 
+    /// Trigger the engine carrying this trig's own modulation (ADR 0007 §7): the firing
+    /// hit's colour as a macro vector, and where it landed in its swung slot.
+    ///
+    /// The default installs nothing and falls through to [`TrackEngine::on_trig`], so an
+    /// engine without a flavour runtime (and every test spy) is unaffected. An engine
+    /// that overrides it must fold `m` into the vector it hands
+    /// [`crate::flavour::resolve`] and **must not** write it into its host macro state —
+    /// the override lasts exactly this trig.
+    fn on_trig_with(&mut self, note: f32, velocity: f32, _m: TrigMod) {
+        self.on_trig(note, velocity);
+    }
+
     /// Silence all voices / collapse decaying state (transport stop, reset).
     fn reset(&mut self);
 
@@ -106,6 +118,42 @@ pub trait TrackEngine: Send {
 /// engine reinterprets slot `0..MACRO_SLOTS` onto its patch; the slot's *id/name*
 /// is generic and host-fixed while its *meaning + readout* are engine-defined.
 pub const MACRO_SLOTS: usize = 3;
+
+/// One trig's own modulation, resolved by the sequencer with the fire time and carried
+/// to the engine (ADR 0007 §7, ticket 0351).
+///
+/// A **per-trig override**, structurally alongside the p-lock overrides of ADR 0001 §3a:
+/// it is folded into the source vector [`crate::flavour::resolve`] reads and is gone the
+/// moment that trig has resolved. Host macro state is not touched — see
+/// [`crate::flavour::resolve`] for the precedence rule, and why a per-hit colour
+/// outranks a p-lock on the same slot.
+#[derive(Copy, Clone, Debug, PartialEq, Default)]
+pub struct TrigMod {
+    /// The firing hit's colour as its macro vector, normalised `0.00–1.00` per channel.
+    /// `None` when the hit carries no colour — and for a trig with no hit behind it at
+    /// all, such as a free-play MIDI note (0186) — in which case the slots fall through
+    /// to the p-lock/base of the block.
+    pub macros: Option<[f32; MACRO_SLOTS]>,
+    /// Where the hit fell in its own subdivision slot, as a fraction of that slot
+    /// **after** the swing warp: `(fire - marker) / slot_span`. Exposed to the binding
+    /// table at [`crate::flavour::SRC_LATENESS`]. Normally `[0, 1)`; a nudged hit
+    /// reaches `[-½, +1½)` (ADR 0007 §9), and [`crate::flavour::Curve::apply`] clamps.
+    pub lateness: f32,
+}
+
+impl TrigMod {
+    /// The source vector [`crate::flavour::resolve`] reads for this trig: the three
+    /// macro slots — the per-hit colour when there is one, else `host`, the engine's
+    /// live macro values — followed by the lateness source.
+    ///
+    /// This is the whole precedence rule in code, and it is a *read* of `host`: the
+    /// override never flows back into it.
+    #[inline]
+    pub fn sources(self, host: &[f32; MACRO_SLOTS]) -> [f32; crate::flavour::N_SOURCES] {
+        let m = self.macros.unwrap_or(*host);
+        [m[0], m[1], m[2], self.lateness]
+    }
+}
 
 /// The physical unit a macro slot maps to, for engine-aware value-text.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

@@ -35,8 +35,10 @@
 
 use crate::grid::Grid;
 use crate::sequencer::{Hit, MAX_HITS, N_LOCK_PARAMS, Pattern, Termination};
+use crate::track_engine::TrigMod;
 
-/// A scheduled trig within a block: a sample offset + note + velocity.
+/// A scheduled trig within a block: a sample offset + note + velocity + the modulation
+/// the firing hit carries.
 ///
 /// Distinct from [`Hit`], which is the *stored* lane position 0348 introduced.
 /// This is what one hit resolves to for one block — a retrig expands into several.
@@ -45,6 +47,10 @@ pub struct TrigEvent {
     pub frame: usize,
     pub note: f32,
     pub velocity: f32,
+    /// This trig's own modulation (ADR 0007 §7): the hit's colour as a macro vector,
+    /// and where it landed in its swung slot. `TrigMod::default()` for a trig with no
+    /// hit behind it, which carries no colour.
+    pub modulation: TrigMod,
 }
 
 // ── Lookahead window sizing (ADR 0007 §9) ─────────────────────────────────────
@@ -110,6 +116,9 @@ struct Pending {
     beat: f64,
     note: f32,
     velocity: f32,
+    /// The firing hit's own modulation, resolved with its fire time and carried to
+    /// the trig unchanged (ADR 0007 §7).
+    modulation: TrigMod,
     /// Came from a retrig expansion. A new retrig replaces the pending tail of
     /// the previous one (one live retrig per lane, as before 0346); plain hits
     /// are untouched by that.
@@ -120,6 +129,7 @@ const EMPTY_PENDING: Pending = Pending {
     beat: 0.0,
     note: 0.0,
     velocity: 0.0,
+    modulation: TrigMod { macros: None, lateness: 0.0 },
     from_retrig: false,
 };
 
@@ -202,7 +212,7 @@ impl Window {
             }
             if entry.beat >= beat0 - 1e-9 {
                 let frame = frame_of(entry.beat, beat0, bps, frames);
-                push_hit(out, frame, entry.note, entry.velocity);
+                push_hit(out, frame, entry.note, entry.velocity, entry.modulation);
             }
         }
         self.len = keep;
@@ -448,14 +458,16 @@ impl LaneState {
                     break;
                 }
                 if self.fires(hit.probability) {
+                    let modulation = trig_mod(pattern, &hit, fire, index);
                     if hit.retrig.is_retrig() {
                         let span = pattern.retrig_span(index, hit.retrig.m);
-                        self.expand_retrig(&hit, fire, span);
+                        self.expand_retrig(&hit, fire, span, modulation);
                     } else {
                         self.window.push(Pending {
                             beat: fire,
                             note: hit.note,
                             velocity: hit.velocity,
+                            modulation,
                             from_retrig: false,
                         });
                     }
@@ -478,7 +490,11 @@ impl LaneState {
     /// `span` is the width of the macro's `m` subdivision slots, measured on the
     /// real grid. Replaces the previous retrig's pending tail — a lane has one
     /// live retrig.
-    fn expand_retrig(&mut self, hit: &Hit, origin: f64, span: f64) {
+    ///
+    /// Every sub-hit carries the parent hit's `modulation` unchanged: a retrig is one
+    /// hit's expansion, so its colour and its in-slot position are the *hit's*
+    /// properties, not each sub-hit's. Only velocity ramps.
+    fn expand_retrig(&mut self, hit: &Hit, origin: f64, span: f64, modulation: TrigMod) {
         self.window.drop_retrig_tail();
         let n = hit.retrig.n as u32;
         for j in 0..n {
@@ -501,6 +517,7 @@ impl LaneState {
                 beat: origin + hit.retrig.curve.position(u) * span,
                 note: hit.note,
                 velocity,
+                modulation,
                 from_retrig: true,
             });
         }
@@ -524,13 +541,54 @@ fn frame_of(beat: f64, beat0: f64, bps: f64, frames: usize) -> usize {
 /// Push a trig, dropping it if `out` is at capacity (never reallocates on the
 /// audio thread — a dropped trig is preferable to an allocation).
 #[inline]
-fn push_hit(out: &mut Vec<TrigEvent>, frame: usize, note: f32, velocity: f32) {
+fn push_hit(out: &mut Vec<TrigEvent>, frame: usize, note: f32, velocity: f32, modulation: TrigMod) {
     if out.len() < out.capacity() {
         out.push(TrigEvent {
             frame,
             note,
             velocity,
+            modulation,
         });
+    }
+}
+
+/// The modulation a resolved hit carries to its trig (ADR 0007 §7): its colour as a
+/// macro vector, and its **lateness** — where it landed inside its own subdivision slot.
+/// Pure and `Copy`-only, so allocation-free; runs once per resolved hit, never per
+/// sample.
+///
+/// Lateness is the *resolved* fraction
+///
+/// ```text
+/// (fire_beat(i) - sub_pos(beat, sub)) / slot_span(i)
+/// ```
+///
+/// and deliberately **not** the stored `hit.f`. The two are different quantities: 0348
+/// stores `f` as a proportion of its slot *precisely so it scales with the slot*, which
+/// makes it swing-invariant — a hit 40% into its slot reads 0.4 at every swing amount,
+/// even as the slot lengthens under it and the hit moves in absolute time. The resolved
+/// fraction is measured against the markers where the warp actually put them, so it is
+/// lateness against the *swung* grid (the more musical modulator, ADR 0007 §7), and it
+/// carries the unscaled `nudge`, which `f` does not hold at all.
+fn trig_mod(pattern: &Pattern, hit: &Hit, fire: f64, index: i64) -> TrigMod {
+    let macros = crate::flavour::colour_override(hit.rgb);
+    let n = pattern.len() as i64;
+    let span = pattern.slot_span_at(index);
+    // `MIN_SLOT` makes a zero-width slot unreachable; the guard is what keeps the
+    // division below from producing the NaN that a degenerate grid otherwise would.
+    if n == 0 || !span.is_finite() || span <= 0.0 {
+        return TrigMod { macros, lateness: 0.0 };
+    }
+    let grid = pattern.grid();
+    // Clamped exactly as `Pattern::fire_beat` clamps, so this is measured against the
+    // very marker the fire time was built from.
+    let b = (hit.beat as usize).min(grid.n_beats() - 1);
+    let k = (hit.sub as u32).min(grid.subs(b) - 1);
+    let marker = index.div_euclid(n) as f64 * grid.len_beats() + grid.sub_pos(b, k);
+    let lateness = ((fire - marker) / span) as f32;
+    TrigMod {
+        macros,
+        lateness: if lateness.is_finite() { lateness } else { 0.0 },
     }
 }
 

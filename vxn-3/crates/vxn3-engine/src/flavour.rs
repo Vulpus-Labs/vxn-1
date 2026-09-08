@@ -28,6 +28,59 @@ use crate::track_engine::{MACRO_SLOTS, MacroUnit};
 /// coordinated with the per-engine patch version (0179) — a flavour *is* the patch.
 const FLAVOUR_VERSION: u8 = 2;
 
+// ── Modulation sources (ADR 0007 §7, ticket 0351) ─────────────────────────────
+//
+// [`Binding::slot`] indexes the source vector [`resolve`] reads. Slots
+// `0..MACRO_SLOTS` are the host macro params of ADR 0003 §2, unchanged. Index
+// [`SRC_LATENESS`] is the per-trig lateness of ADR 0007 §7 — a *source*, not a
+// destination: the destination space, the curve set, the depth-additive form and
+// `MACRO_SLOTS` itself are all exactly what ADR 0005 specified, and no new routing
+// mechanism is introduced. `resolve` needed no change to read it, because it has
+// always indexed the source slice by `b.slot` and reads a missing slot as zero.
+
+/// Source index of the per-trig **lateness**: where the hit sat in its own subdivision
+/// slot *after* the swing warp (ADR 0007 §7). Sits directly above the macro slots, so
+/// every index below it still names a macro.
+pub const SRC_LATENESS: usize = MACRO_SLOTS;
+
+/// Length of the source vector [`resolve`] reads — the macro slots plus
+/// [`SRC_LATENESS`].
+pub const N_SOURCES: usize = MACRO_SLOTS + 1;
+
+/// Out-of-band channel value marking a hit that carries **no colour** (ADR 0007 §7).
+///
+/// Colour channels are normalised `0.00–1.00`, so a negative channel cannot be
+/// confused with one that is merely dark. The distinction is load-bearing: black
+/// (`[0, 0, 0]`) is a legitimate macro vector that sends **zero** to all three slots,
+/// while an uncoloured hit sends nothing at all and leaves those slots to the p-lock
+/// or base of the block.
+pub const NO_COLOUR: f32 = -1.0;
+
+const _: () = assert!(
+    MACRO_SLOTS == 3,
+    "a hit's colour *is* its macro vector (ADR 0007 §7): three channels, three slots"
+);
+
+/// Decode a hit's stored `rgb` into a per-trig macro override, or `None` when the hit
+/// carries no colour ([`NO_COLOUR`], or any other out-of-band channel).
+///
+/// Channels are clamped into the normalised `0.00–1.00` the macro slots take — there is
+/// no `0–255` representation anywhere in this path. Pure and `Copy`-only, so it runs on
+/// the audio thread at resolve time.
+#[inline]
+pub fn colour_override(rgb: [f32; 3]) -> Option<[f32; MACRO_SLOTS]> {
+    // One out-of-band channel disqualifies the whole vector: a colour is three channels
+    // or it is nothing, and half a macro vector has no meaning.
+    if rgb.iter().any(|c| !c.is_finite() || *c < 0.0) {
+        return None;
+    }
+    let mut out = [0.0; MACRO_SLOTS];
+    for (o, c) in out.iter_mut().zip(rgb) {
+        *o = c.min(1.0);
+    }
+    Some(out)
+}
+
 /// Response curve for a macro binding. Minimal set (0180): linear + one exponential.
 /// Widen behind this enum in the flavour editor (0185) without a format break — the
 /// tag is a `u8`.
@@ -215,18 +268,44 @@ impl Flavour {
 
 /// Resolve a flavour to its per-trig param vector: additive-from-base, clamped to
 /// each param's range. **Allocation-free** — writes into caller-owned `out` (len `P`).
-/// Called at a voice's trig, when the macros + flavour are stable; the per-sample
+/// Called at a voice's trig, when the sources + flavour are stable; the per-sample
 /// kernel consumes `out` unchanged.
+///
+/// `sources` is indexed by [`Binding::slot`]: `0..MACRO_SLOTS` are the macro slots and
+/// [`SRC_LATENESS`] is the per-trig lateness. A slot the caller did not supply reads as
+/// `0.0`, so a short slice is legal and an out-of-range binding is inert rather than a
+/// panic on the audio thread.
+///
+/// # Precedence of the macro slots (ADR 0007 §7, ticket 0351)
+///
+/// Three layers can each want to name a macro slot's value at a trig. They are ordered,
+/// highest first:
+///
+/// 1. **The firing hit's colour** — its `rgb`, decoded by [`colour_override`].
+/// 2. **A p-lock** on that slot's lock param (`Decay`/`Tone`/`Pitch`), resolved by
+///    [`crate::lane::LaneState::override_value`].
+/// 3. **The host macro param** — base value or automation (ADR 0003 §2).
+///
+/// **Per-hit colour beats a p-lock**, and not for symmetry: a colour is attached to the
+/// hit being fired, whereas a p-lock hold — a `Latch` especially — can be an accident of
+/// a lock left running from an *earlier* position, which the hit under it never asked
+/// for. So a latched p-lock on a macro slot governs exactly the hits carrying no colour.
+/// Black is not "no colour": `[0, 0, 0]` is a colour that sends zero to all three slots,
+/// and only [`NO_COLOUR`] falls through to layer 2.
+///
+/// A per-hit override lives entirely in the `sources` vector handed to this call and is
+/// **never written back** to host macro state (what `TrackEngine::set_macro` holds), so
+/// a coloured hit cannot leave the host's automated value changed behind it.
 ///
 /// `O(P · bindings)` with tiny constants (P and the binding table are both small);
 /// no per-param binding index is needed.
 #[inline]
-pub fn resolve(meta: &[ParamMeta], base: &[f32], bindings: &[Binding], macros: &[f32], out: &mut [f32]) {
+pub fn resolve(meta: &[ParamMeta], base: &[f32], bindings: &[Binding], sources: &[f32], out: &mut [f32]) {
     for (p, slot) in out.iter_mut().enumerate().take(meta.len().min(base.len())) {
         let mut v = base[p];
         for b in bindings {
             if b.param as usize == p {
-                let m = macros.get(b.slot as usize).copied().unwrap_or(0.0);
+                let m = sources.get(b.slot as usize).copied().unwrap_or(0.0);
                 v += b.curve.apply(m) * b.depth;
             }
         }

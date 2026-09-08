@@ -281,6 +281,9 @@ impl Engine {
                         frame: (fnote.frame as usize).min(frames),
                         note: fnote.note,
                         velocity: fnote.velocity,
+                        // No hit behind it, so no colour: the macro slots stay with the
+                        // p-lock/base of the block (ADR 0007 §7).
+                        modulation: crate::track_engine::TrigMod::default(),
                     });
                 }
             }

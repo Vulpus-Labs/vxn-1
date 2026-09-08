@@ -27,8 +27,9 @@
 //! Trig **attributes** (probability, retrig n/m/curve/velocity ramp) live on the
 //! hit — they have no base to revert to. Continuous params that *do* have a base
 //! are p-locked, and a lock now belongs to a **hit** rather than to a grid cell
-//! (ADR 0001 §3a's split is not revisited). `y` and `rgb` are stored here and not
-//! yet consumed; 0350 and 0351 wire them up.
+//! (ADR 0001 §3a's split is not revisited). `rgb` — the hit's colour — *is* its macro
+//! vector, consumed at trig time by [`crate::lane`] (0351); `y` is stored and not yet
+//! consumed (0350).
 
 use crate::grid::{Grid, MIN_SLOT};
 
@@ -196,7 +197,13 @@ pub struct Hit {
     pub nudge: i16,
     /// The lane's modulation axis (ADR 0007 §6). Stored, not yet consumed (0350).
     pub y: f32,
-    /// Per-hit macro vector (ADR 0007 §7). Stored, not yet consumed (0351).
+    /// Per-hit macro vector — the hit's **colour** (ADR 0007 §7). Normalised
+    /// `0.00–1.00` per channel; drives the track's three macro slots at trig time
+    /// (0351), outranking a p-lock on the same slot.
+    ///
+    /// A channel of [`crate::flavour::NO_COLOUR`] means the hit carries no colour, and
+    /// its slots fall through to the p-lock/base. Black is *not* that: `[0, 0, 0]` is a
+    /// colour, and it sends zero to all three slots.
     pub rgb: [f32; 3],
     /// Equal-tempered MIDI note (fractional allowed).
     pub note: f32,
@@ -219,7 +226,9 @@ impl Default for Hit {
             f: 0.0,
             nudge: 0,
             y: 0.5,
-            rgb: [0.0; 3],
+            // Uncoloured, not black: a fresh hit must leave the host macro params (and
+            // any p-lock on them) in charge, and black is a real macro vector.
+            rgb: [crate::flavour::NO_COLOUR; 3],
             note: 36.0, // C2
             velocity: 1.0,
             probability: 1.0,
@@ -397,6 +406,22 @@ impl Pattern {
         if hit < self.n_hits {
             self.hits[hit].locks[param.index()] = None;
         }
+    }
+
+    /// Paint a hit's colour — its macro vector (ADR 0007 §7). Channels are stored as
+    /// given (normalised `0.00–1.00`; [`crate::flavour::colour_override`] clamps on the
+    /// way to the slots). Out-of-range hit indices are ignored.
+    ///
+    /// Not a position edit, so it cannot change fire order and does not re-sort.
+    pub fn set_colour(&mut self, hit: usize, rgb: [f32; 3]) {
+        if hit < self.n_hits {
+            self.hits[hit].rgb = rgb;
+        }
+    }
+
+    /// Strip a hit's colour, handing its macro slots back to the p-lock/base.
+    pub fn clear_colour(&mut self, hit: usize) {
+        self.set_colour(hit, [crate::flavour::NO_COLOUR; 3]);
     }
 
     /// The lock (if any) on hit `hit` for `param_index`.

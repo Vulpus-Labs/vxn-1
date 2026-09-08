@@ -97,6 +97,11 @@ impl Track {
     /// Resolve this block's effective params (`override ?? base`) and apply any
     /// that changed: gain/pan feed [`Track::pan_gains`]; knob changes re-cook the
     /// engine. Called once per block before render. Allocation-free.
+    ///
+    /// This is the **host** layer of the macro slots — automation and p-locks, per
+    /// block. A firing hit's own colour outranks both and is applied per trig in
+    /// [`Track::render_with_hits`]; it never comes back through here (ADR 0007 §7,
+    /// precedence documented on [`crate::flavour::resolve`]).
     pub fn apply_effective(&mut self, lane: &LaneState) {
         for p in 0..N_LOCK_PARAMS {
             let eff = lane.override_value(p).unwrap_or(self.base[p]);
@@ -163,7 +168,13 @@ impl Track {
                 engine.choke();
                 ci += 1;
             } else {
-                engine.on_trig(hits[hi].note, hits[hi].velocity);
+                // The trig carries its own modulation (ADR 0007 §7): the hit's colour
+                // as a macro vector, and its lateness in the swung slot. Handed to the
+                // engine *with* the trig rather than pushed through `set_macro`
+                // beforehand — a per-hit override must not become host param state, and
+                // `apply_effective`'s per-block values stay exactly what the host set.
+                let h = hits[hi];
+                engine.on_trig_with(h.note, h.velocity, h.modulation);
                 hi += 1;
             }
         }
