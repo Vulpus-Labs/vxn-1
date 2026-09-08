@@ -41,6 +41,12 @@ const FLAVOUR_VERSION: u8 = 2;
 /// Source index of the per-trig **lateness**: where the hit sat in its own subdivision
 /// slot *after* the swing warp (ADR 0007 §7). Sits directly above the macro slots, so
 /// every index below it still names a macro.
+///
+/// A binding on this slot was **inert** before 0351 (`resolve` was handed only the
+/// three macro values, and a missing slot reads as zero), so a flavour blob authored
+/// against an older build that happens to carry `slot: 3` changes meaning rather than
+/// failing to parse. No shipped flavour does; the format version is deliberately not
+/// bumped for it, on ADR 0007's "no user base, redefine rather than migrate" rule.
 pub const SRC_LATENESS: usize = MACRO_SLOTS;
 
 /// Length of the source vector [`resolve`] reads — the macro slots plus
@@ -252,7 +258,14 @@ impl Flavour {
 
     /// The display label for a macro slot: the user override, else the first bound
     /// param's name, else `None` (an unbound, unnamed slot).
+    ///
+    /// Macro slots only. Since 0351 a binding can also sit on [`SRC_LATENESS`], which is
+    /// a source rather than a host knob and has no label to give — without the guard it
+    /// would answer for slot 3 as though a fourth macro existed.
     pub fn macro_label<'a>(&'a self, meta: &'a [ParamMeta], slot: usize) -> Option<&'a str> {
+        if slot >= MACRO_SLOTS {
+            return None;
+        }
         if let Some(nm) = self.macro_names.get(slot) {
             if !nm.is_empty() {
                 return Some(nm.as_str());
@@ -281,10 +294,17 @@ impl Flavour {
 /// Three layers can each want to name a macro slot's value at a trig. They are ordered,
 /// highest first:
 ///
-/// 1. **The firing hit's colour** — its `rgb`, decoded by [`colour_override`].
+/// 1. **The firing hit's colour** — its `rgb`, decoded by [`colour_override`], per trig.
 /// 2. **A p-lock** on that slot's lock param (`Decay`/`Tone`/`Pitch`), resolved by
 ///    [`crate::lane::LaneState::override_value`].
 /// 3. **The host macro param** — base value or automation (ADR 0003 §2).
+///
+/// Layer 1 is applied per **trig**, here. Layers 2 and 3 are applied per **block**, by
+/// [`crate::track::Track::apply_effective`], and that asymmetry is pre-existing rather
+/// than introduced with the colour: a p-lock whose whole `Revert` hold opens and closes
+/// inside one block is not seen by that block's trigs at all. Per-trig p-lock
+/// resolution is not this ticket's, and nothing here forecloses it — a colour would
+/// still outrank it.
 ///
 /// **Per-hit colour beats a p-lock**, and not for symmetry: a colour is attached to the
 /// hit being fired, whereas a p-lock hold — a `Latch` especially — can be an accident of
@@ -325,6 +345,10 @@ pub fn flavour_macro_display(
     norm: f32,
     out: &mut impl core::fmt::Write,
 ) -> core::fmt::Result {
+    // Macro slots only — [`SRC_LATENESS`] is a source, not a knob with a readout.
+    if slot >= MACRO_SLOTS {
+        return out.write_str("—");
+    }
     let Some(b) = flavour.bindings.iter().find(|b| b.slot as usize == slot) else {
         return out.write_str("—");
     };
@@ -471,6 +495,53 @@ mod tests {
         // A source the caller did not supply is inert, not a panic on the audio thread.
         resolve(&META, &f.base, &f.bindings, &[0.0; MACRO_SLOTS], &mut out);
         assert_eq!(out[1], 12.0);
+    }
+
+    /// A lateness change must only re-resolve when the flavour actually reads lateness.
+    /// Lateness differs between any two hits with different `f` or `nudge`, so a plain
+    /// `!=` here would re-resolve and re-cook on every trig of any humanised lane, for
+    /// a patch that came out bit-identical.
+    #[test]
+    fn a_lateness_change_only_re_resolves_when_something_binds_it() {
+        use crate::track_engine::TrigMod;
+        let plain = flav(); // binds slots 0 and 1 only
+        let bound = Flavour {
+            bindings: vec![Binding {
+                slot: SRC_LATENESS as u8,
+                param: 0,
+                curve: Curve::Linear,
+                depth: 0.5,
+            }],
+            ..flav()
+        };
+        let a = TrigMod { macros: None, lateness: 0.1 };
+        let b = TrigMod { macros: None, lateness: 0.9 };
+        assert!(!a.differs_for(b, &plain.bindings), "no binding reads lateness");
+        assert!(a.differs_for(b, &bound.bindings), "this flavour does read it");
+        assert!(!a.differs_for(a, &bound.bindings), "an identical trig changes nothing");
+        // A colour change always re-resolves, whatever the table binds.
+        let c = TrigMod { macros: Some([0.0; MACRO_SLOTS]), lateness: 0.1 };
+        assert!(a.differs_for(c, &plain.bindings), "gaining a colour must re-resolve");
+        assert!(c.differs_for(a, &plain.bindings), "losing one must too");
+    }
+
+    /// [`SRC_LATENESS`] is a source, not a fourth macro slot: the host-facing readouts
+    /// must not answer for it just because a binding sits there.
+    #[test]
+    fn the_lateness_source_is_not_a_fourth_macro_slot() {
+        let f = Flavour {
+            bindings: vec![Binding {
+                slot: SRC_LATENESS as u8,
+                param: 0,
+                curve: Curve::Linear,
+                depth: 0.5,
+            }],
+            ..flav()
+        };
+        assert_eq!(f.macro_label(&META, SRC_LATENESS), None);
+        let mut s = String::new();
+        flavour_macro_display(&META, &f, SRC_LATENESS, 0.5, &mut s).unwrap();
+        assert_eq!(s, "—");
     }
 
     #[test]

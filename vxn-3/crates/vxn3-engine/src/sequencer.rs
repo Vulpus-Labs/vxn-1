@@ -413,6 +413,11 @@ impl Pattern {
     /// way to the slots). Out-of-range hit indices are ignored.
     ///
     /// Not a position edit, so it cannot change fire order and does not re-sort.
+    ///
+    /// A hit's colour is snapshotted when the scheduler **resolves** it, which is up to
+    /// half a slot ahead of its fire time (ADR 0007 §9), so a repaint can miss a hit
+    /// already sitting in the lookahead window and land from the next pass. Same
+    /// snapshot semantics `note` and `velocity` have had since 0346.
     pub fn set_colour(&mut self, hit: usize, rgb: [f32; 3]) {
         if hit < self.n_hits {
             self.hits[hit].rgb = rgb;

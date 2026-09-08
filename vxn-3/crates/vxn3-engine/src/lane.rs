@@ -561,15 +561,21 @@ fn push_hit(out: &mut Vec<TrigEvent>, frame: usize, note: f32, velocity: f32, mo
 ///
 /// ```text
 /// (fire_beat(i) - sub_pos(beat, sub)) / slot_span(i)
+///   =  f  +  clamp(nudge, ±½ span) / span
 /// ```
 ///
-/// and deliberately **not** the stored `hit.f`. The two are different quantities: 0348
-/// stores `f` as a proportion of its slot *precisely so it scales with the slot*, which
-/// makes it swing-invariant — a hit 40% into its slot reads 0.4 at every swing amount,
-/// even as the slot lengthens under it and the hit moves in absolute time. The resolved
-/// fraction is measured against the markers where the warp actually put them, so it is
-/// lateness against the *swung* grid (the more musical modulator, ADR 0007 §7), and it
-/// carries the unscaled `nudge`, which `f` does not hold at all.
+/// measured rather than read off `hit.f`, and the expansion says exactly what that
+/// buys. Both terms are wanted and only the resolved form has both:
+///
+/// - `f` is *already* a fraction of the **swung** slot — 0348 stores it that way so it
+///   scales with the slot. So a hit held at a fixed absolute time while the warp moves
+///   the markers under it (the real editing gesture: a hit stays where it was dropped
+///   when the groove changes) reports a fraction that tracks the swung geometry. That
+///   is what makes this lateness against the swung grid rather than a straight one.
+/// - `nudge` is **absolute** and deliberately unscaled by swing (ADR 0007 §4), so its
+///   share of the slot grows as the warp narrows that slot and shrinks as it widens it.
+///   `hit.f` does not carry that term at all, and it is the one part of where a hit
+///   actually fired that is invisible from storage alone.
 fn trig_mod(pattern: &Pattern, hit: &Hit, fire: f64, index: i64) -> TrigMod {
     let macros = crate::flavour::colour_override(hit.rgb);
     let n = pattern.len() as i64;
@@ -994,37 +1000,56 @@ mod tests {
     /// AC: `f` is a modulation source reflecting position within the **swung** slot —
     /// asserted by holding one hit at a fixed *absolute* time and sweeping the swing.
     ///
-    /// Fixed absolute time, not a fixed `(beat, sub, f)` triple, and that is the whole
-    /// point of the test. Stored `f` is swing-invariant by construction: 0348 stores it
-    /// as a proportion of its slot *precisely so it scales with the slot*, so a fixed
-    /// triple reads the same fraction at every swing amount and the assertion would be
-    /// vacuous. Re-deriving the triple through [`Grid::locate`] at each amount is what
-    /// makes the markers move underneath a hit that has not itself moved — which is
-    /// also the real editing gesture (a hit stays where it was dropped while the groove
-    /// changes around it).
+    /// Fixed absolute time, not a fixed `(beat, sub, f)` triple, and that is the point.
+    /// A fixed triple would keep the hit welded to its marker and move it bodily with
+    /// the warp; re-deriving the triple through [`Grid::locate`] at each amount is what
+    /// makes the markers move *underneath* a hit that has not itself moved — the real
+    /// editing gesture, where a hit stays where it was dropped while the groove changes
+    /// around it.
+    ///
+    /// The hit carries a `nudge`, which is what stops the assertion being satisfiable
+    /// by the stored fraction: `nudge` is absolute and unscaled by swing (ADR 0007 §4),
+    /// so its share of the slot moves as the warp resizes the slot — and `hit.f` does
+    /// not carry it. The final check pins that divergence directly.
     #[test]
     fn lateness_moves_with_the_swing_under_a_hit_held_at_one_time() {
         use crate::grid::Swing;
-        const T: f64 = 0.30; // beats — inside beat 0, off every straight 16th marker
+        use crate::sequencer::{MAX_NUDGE_TICKS, TICKS_PER_BEAT};
+        // Beats — inside beat 0 and off every straight 16th marker. The nudge is part
+        // of the hit's identity, so the *marker* is offset by it to keep the fire time
+        // pinned at T across the sweep.
+        const T: f64 = 0.30;
+        const NUDGE: i16 = MAX_NUDGE_TICKS;
+        let nudge_beats = NUDGE as f64 / TICKS_PER_BEAT;
 
-        let mut seen: Vec<f32> = Vec::new();
+        let (mut seen, mut stored) = (Vec::new(), Vec::new());
         for i in 0..5 {
             let amount = i as f64 / 4.0;
             let mut pat = Pattern::default();
             pat.edit_grid(|g| g.set_swing(Swing::mpc(amount)));
-            let at = pat.grid().locate(T);
-            pat.insert(Hit { f: at.frac as f32, ..Hit::at(at.beat as u16, at.sub as u8) });
-            // The hit is at the same absolute time at every amount; only the slot it
-            // sits in, and where in that slot it sits, have moved.
+            let at = pat.grid().locate(T - nudge_beats);
+            pat.insert(Hit {
+                f: at.frac as f32,
+                nudge: NUDGE,
+                ..Hit::at(at.beat as u16, at.sub as u8)
+            });
+            // Same absolute time at every amount: only the slot the hit sits in, and
+            // where in that slot it sits, have moved.
             assert!((pat.fire_beat(0) - T).abs() < 1e-6, "amount={amount}");
             let got = trigs(&pat, 1);
             assert_eq!(got.len(), 1, "amount={amount}");
             seen.push(got[0].modulation.lateness);
+            stored.push(pat.hits()[0].f);
         }
         for (i, w) in seen.windows(2).enumerate() {
             assert!(w[0] != w[1], "lateness is swing-invariant at step {i}: {seen:?}");
         }
-        assert!(seen.iter().all(|&l| (0.0..1.0).contains(&l)), "{seen:?}");
+        assert!(seen.iter().all(|&l| (0.0..1.5).contains(&l)), "{seen:?}");
+        // …and it is the *resolved* fraction, not the stored one: the unscaled nudge
+        // separates them, by an amount that itself moves with the swing.
+        let gap: Vec<f32> = seen.iter().zip(&stored).map(|(l, f)| l - f).collect();
+        assert!(gap.iter().all(|&g| g > 0.0), "the nudge must show: {gap:?}");
+        assert!(gap[0] != gap[4], "the nudge's share of the slot must move too: {gap:?}");
     }
 
     /// A welded hit reads dead-on at every swing amount, and the slot it is welded to

@@ -136,12 +136,37 @@ pub struct TrigMod {
     pub macros: Option<[f32; MACRO_SLOTS]>,
     /// Where the hit fell in its own subdivision slot, as a fraction of that slot
     /// **after** the swing warp: `(fire - marker) / slot_span`. Exposed to the binding
-    /// table at [`crate::flavour::SRC_LATENESS`]. Normally `[0, 1)`; a nudged hit
-    /// reaches `[-½, +1½)` (ADR 0007 §9), and [`crate::flavour::Curve::apply`] clamps.
+    /// table at [`crate::flavour::SRC_LATENESS`].
+    ///
+    /// Normally `[0, 1)`; an early-nudged hit goes negative and a late-nudged one past
+    /// 1, within `[-½, +1½)` (ADR 0007 §9). It is emitted raw and
+    /// [`crate::flavour::Curve::apply`] clamps at the binding, so the *modulator* is
+    /// one-sided: a hit nudged early reads the same as one dead on the marker.
     pub lateness: f32,
 }
 
 impl TrigMod {
+    /// Whether swapping `self` for `next` can change what
+    /// [`crate::flavour::resolve`] produces under `bindings`.
+    ///
+    /// Not a plain `!=`, and the difference is load-bearing on the audio thread. A
+    /// colour change always matters. A **lateness** change matters only if something is
+    /// bound to [`crate::flavour::SRC_LATENESS`] — and nothing is, in any stock flavour.
+    /// Since lateness differs between any two hits with different `f` or `nudge`, a
+    /// plain `!=` would re-resolve and re-cook the whole flavour on every trig of any
+    /// humanised lane, for a bit-identical patch. That is the per-trig work this gate
+    /// exists to not do.
+    #[inline]
+    pub fn differs_for(self, next: TrigMod, bindings: &[crate::flavour::Binding]) -> bool {
+        if self.macros != next.macros {
+            return true;
+        }
+        self.lateness != next.lateness
+            && bindings
+                .iter()
+                .any(|b| b.slot as usize == crate::flavour::SRC_LATENESS)
+    }
+
     /// The source vector [`crate::flavour::resolve`] reads for this trig: the three
     /// macro slots — the per-hit colour when there is one, else `host`, the engine's
     /// live macro values — followed by the lateness source.

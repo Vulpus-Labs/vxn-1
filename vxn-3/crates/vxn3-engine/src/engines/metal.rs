@@ -351,12 +351,13 @@ impl TrackEngine for Metal {
 
     fn on_trig_with(&mut self, note: f32, velocity: f32, m: TrigMod) {
         // A per-hit colour is a *source* change, so it re-resolves through exactly the
-        // path a macro move does — and only when it differs from the last trig's, so an
-        // uncoloured lane costs one comparison per trig and no re-cook.
-        if self.trig != m {
-            self.trig = m;
+        // path a macro move does — but only when it would actually move the resolved
+        // vector. `differs_for` is what keeps a humanised uncoloured lane from
+        // re-cooking on every trig for a bit-identical patch.
+        if self.trig.differs_for(m, &self.flavour.bindings) {
             self.dirty = true;
         }
+        self.trig = m;
         self.on_trig(note, velocity);
     }
 
