@@ -26,7 +26,9 @@ before they were designed.
 
 ```sh
 # play it
-cd vxn-4 && cargo xtask install       # → ~/Library/Audio/Plug-Ins/CLAP/vxn4.clap
+./deploy.sh                           # → ~/Library/Audio/Plug-Ins/CLAP/vxn4.clap
+./deploy.sh --bundle-only             # stage into target/bundled/, do not install
+./deploy.sh --uninstall
 
 # listen offline
 cargo run --release -p vxn4-render -- --all            # every patch x sequence
