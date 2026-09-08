@@ -420,6 +420,59 @@ mod tests {
         assert!((out[0] - (0.1 + 0.5 + 0.4)).abs() < 1e-6, "both bindings sum: {}", out[0]);
     }
 
+    /// AC: black is a colour and sends **zero** to all three slots; only an
+    /// out-of-band channel means "no colour". The two must never collapse — one is a
+    /// macro vector the user chose, the other is a hit that has not been painted.
+    #[test]
+    fn black_is_a_colour_and_no_colour_is_not() {
+        assert_eq!(colour_override([0.0, 0.0, 0.0]), Some([0.0, 0.0, 0.0]));
+        assert_eq!(colour_override([NO_COLOUR; 3]), None);
+        // A hit is uncoloured the moment any channel is out of band — half a macro
+        // vector is not a colour.
+        assert_eq!(colour_override([0.5, NO_COLOUR, 0.5]), None);
+        assert_eq!(colour_override([0.5, f32::NAN, 0.5]), None);
+        assert_eq!(colour_override([0.5, f32::INFINITY, 0.5]), None);
+        // And the default hit of the sequencer is uncoloured, not black.
+        assert_eq!(colour_override(crate::sequencer::Hit::default().rgb), None);
+    }
+
+    /// AC: values are normalised `0.00–1.00` end to end — no `0–255` anywhere in the
+    /// value path. An over-unity channel clamps rather than scaling.
+    #[test]
+    fn colour_channels_reach_the_slots_normalised() {
+        assert_eq!(colour_override([1.0, 0.5, 0.0]), Some([1.0, 0.5, 0.0]));
+        assert_eq!(colour_override([255.0, 128.0, 1.5]), Some([1.0, 1.0, 1.0]));
+    }
+
+    /// `f` is addressable by the **unchanged** binding table: a binding on
+    /// [`SRC_LATENESS`] reads the trig's in-slot position exactly as one on a macro
+    /// slot reads its knob. A new source, no new destination, `MACRO_SLOTS` still 3.
+    #[test]
+    fn lateness_is_a_bindable_source_beside_the_macro_slots() {
+        assert_eq!(MACRO_SLOTS, 3);
+        assert_eq!(SRC_LATENESS, 3);
+        assert_eq!(N_SOURCES, 4);
+        let f = Flavour {
+            base: vec![0.3, 12.0],
+            bindings: vec![Binding {
+                slot: SRC_LATENESS as u8,
+                param: 1,
+                curve: Curve::Linear,
+                depth: 24.0,
+            }],
+            macro_defaults: [0.0; MACRO_SLOTS],
+            macro_names: Default::default(),
+        };
+        let mut out = [0.0; 2];
+        resolve(&META, &f.base, &f.bindings, &[0.0, 0.0, 0.0, 0.0], &mut out);
+        assert_eq!(out[1], 12.0, "dead on the marker adds nothing");
+        resolve(&META, &f.base, &f.bindings, &[0.0, 0.0, 0.0, 0.5], &mut out);
+        assert!((out[1] - 24.0).abs() < 1e-6, "half a slot late: {}", out[1]);
+        // A source the caller did not supply is inert, not a panic on the audio thread.
+        resolve(&META, &f.base, &f.bindings, &[0.0; MACRO_SLOTS], &mut out);
+        assert_eq!(out[1], 12.0);
+    }
+
     #[test]
     fn byte_layout_round_trips() {
         let f = flav();

@@ -361,3 +361,93 @@ fn live_grid_edits_stay_allocation_free_and_keep_the_lane_running() {
     assert!(energy > 1e-3, "the lanes kept sounding through the edits, energy={energy}");
     assert!(l.iter().chain(r.iter()).all(|x| x.is_finite()), "finite output");
 }
+
+/// Paint every hit on every lane a different colour (ADR 0007 §7, 0351).
+fn paint(engine: &mut Engine) {
+    for t in 0..vxn3_engine::N_TRACKS {
+        for s in 0..16 {
+            engine.pattern_mut(t).set(s, 36.0, 1.0);
+        }
+        for i in 0..engine.pattern_mut(t).len() {
+            let u = (i + t) as f32 / 16.0;
+            engine.pattern_mut(t).set_colour(i, [u, 1.0 - u, (u * 3.0).fract()]);
+        }
+    }
+}
+
+/// AC: per-hit colour resolves **per trig**, not per sample, and stays
+/// allocation-free.
+///
+/// The worst case on purpose: every hit on every lane carries a *different* colour, so
+/// each trig's source vector differs from the last and the flavour re-resolves and
+/// re-cooks every time. That is the path the trap has to see — a colour that changed
+/// nothing would prove nothing.
+#[test]
+fn per_hit_colour_resolution_is_allocation_free() {
+    let mut engine = Engine::new(SR, 512);
+    paint(&mut engine);
+    let bps = BPM / 60.0 / SR as f64;
+    let mut l = vec![0.0_f32; 512];
+    let mut r = vec![0.0_f32; 512];
+    engine.set_transport(Transport { playing: true, tempo_bpm: BPM, song_pos_beats: Some(0.0) });
+    engine.process_block(&mut l, &mut r); // prime
+
+    let mut energy = 0.0_f64;
+    let allocs = alloc_trap::count_allocs(|| {
+        for b in 1..300 {
+            engine.set_transport(Transport {
+                playing: true,
+                tempo_bpm: BPM,
+                song_pos_beats: Some((b * 512) as f64 * bps),
+            });
+            engine.process_block(&mut l, &mut r);
+            for &x in l.iter() {
+                energy += (x as f64) * (x as f64);
+            }
+        }
+    });
+    assert_eq!(allocs, 0, "per-hit macro resolution allocated on the audio path");
+    assert!(energy > 1e-3, "the coloured lanes kept sounding, energy={energy}");
+    assert!(l.iter().chain(r.iter()).all(|x| x.is_finite()), "finite output");
+}
+
+/// End to end: colour is *heard*. The same pattern, the same notes and velocities,
+/// differing only in what the hits are painted, renders differently — which is the
+/// whole claim of ADR 0007 §7, through the unchanged binding table.
+#[test]
+fn colour_changes_what_the_lane_sounds_like() {
+    fn render_bar(paint_it: bool) -> Vec<f32> {
+        let mut engine = Engine::new(SR, 512);
+        if paint_it {
+            paint(&mut engine);
+        } else {
+            for t in 0..vxn3_engine::N_TRACKS {
+                for s in 0..16 {
+                    engine.pattern_mut(t).set(s, 36.0, 1.0);
+                }
+            }
+        }
+        let bps = BPM / 60.0 / SR as f64;
+        let mut out = Vec::new();
+        for b in 0..16 {
+            let mut l = vec![0.0_f32; 512];
+            let mut r = vec![0.0_f32; 512];
+            engine.set_transport(Transport {
+                playing: true,
+                tempo_bpm: BPM,
+                song_pos_beats: Some((b * 512) as f64 * bps),
+            });
+            engine.process_block(&mut l, &mut r);
+            out.extend_from_slice(&l);
+        }
+        out
+    }
+    let plain = render_bar(false);
+    let painted = render_bar(true);
+    let diff: f64 = plain
+        .iter()
+        .zip(&painted)
+        .map(|(a, b)| ((a - b) as f64).abs())
+        .sum();
+    assert!(diff > 1e-3, "painting the hits changed nothing audible, diff={diff}");
+}

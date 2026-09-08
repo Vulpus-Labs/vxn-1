@@ -943,4 +943,121 @@ mod tests {
         let (split, _) = drive(&pat, 0, 8 * STEP_FRAMES, &[4 * STEP_FRAMES - 500]);
         assert_eq!(split, got, "the early hit must not be lost at a block boundary");
     }
+
+    // ── Per-hit modulation (0351) ────────────────────────────────────────────
+
+    /// Schedule one block wide enough to hold `beats` of this lane, returning the
+    /// trigs it emitted.
+    fn trigs(pat: &Pattern, beats: usize) -> Vec<TrigEvent> {
+        let mut lane = LaneState::new(0);
+        let mut hits = Vec::with_capacity(64);
+        lane.schedule(pat, 0.0, BPS, beats * 4 * STEP_FRAMES, true, &mut hits);
+        hits
+    }
+
+    /// AC: a hit's `rgb` channels arrive at the trig as its macro vector, `[0, 0, 0]`
+    /// included — black is a colour that sends zero to all three slots, not the
+    /// absence of one, and an unpainted hit overrides nothing.
+    #[test]
+    fn a_hits_colour_arrives_at_the_trig_as_its_macro_vector() {
+        let mut pat = Pattern::default();
+        for s in [0, 4, 8] {
+            pat.set(s, 36.0, 1.0);
+        }
+        pat.set_colour(0, [0.25, 0.5, 1.0]);
+        pat.set_colour(1, [0.0, 0.0, 0.0]);
+        let got = trigs(&pat, 3);
+        assert_eq!(got.len(), 3);
+        assert_eq!(got[0].modulation.macros, Some([0.25, 0.5, 1.0]));
+        assert_eq!(got[1].modulation.macros, Some([0.0; 3]), "black sends zero");
+        assert_eq!(got[2].modulation.macros, None, "an unpainted hit overrides nothing");
+        // …and stripping a colour hands the slots back.
+        pat.clear_colour(0);
+        assert_eq!(trigs(&pat, 3)[0].modulation.macros, None);
+    }
+
+    /// A retrig is **one hit's** expansion, so every sub-hit fires with that hit's
+    /// colour and its in-slot position. Only velocity ramps across the window.
+    #[test]
+    fn retrig_sub_hits_carry_the_hits_own_modulation() {
+        let mut pat = Pattern::default();
+        pat.set(0, 36.0, 1.0);
+        pat.set_retrig(0, Retrig { n: 4, m: 2, curve: RetrigCurve::Even, vel_end: 0.2 });
+        pat.set_colour(0, [0.1, 0.2, 0.3]);
+        let got = trigs(&pat, 2);
+        assert_eq!(got.len(), 4);
+        assert!(got.iter().all(|h| h.modulation.macros == Some([0.1, 0.2, 0.3])));
+        assert!(got.iter().all(|h| h.modulation.lateness == got[0].modulation.lateness));
+        assert!(got[3].velocity < got[0].velocity, "velocity still ramps");
+    }
+
+    /// AC: `f` is a modulation source reflecting position within the **swung** slot —
+    /// asserted by holding one hit at a fixed *absolute* time and sweeping the swing.
+    ///
+    /// Fixed absolute time, not a fixed `(beat, sub, f)` triple, and that is the whole
+    /// point of the test. Stored `f` is swing-invariant by construction: 0348 stores it
+    /// as a proportion of its slot *precisely so it scales with the slot*, so a fixed
+    /// triple reads the same fraction at every swing amount and the assertion would be
+    /// vacuous. Re-deriving the triple through [`Grid::locate`] at each amount is what
+    /// makes the markers move underneath a hit that has not itself moved — which is
+    /// also the real editing gesture (a hit stays where it was dropped while the groove
+    /// changes around it).
+    #[test]
+    fn lateness_moves_with_the_swing_under_a_hit_held_at_one_time() {
+        use crate::grid::Swing;
+        const T: f64 = 0.30; // beats — inside beat 0, off every straight 16th marker
+
+        let mut seen: Vec<f32> = Vec::new();
+        for i in 0..5 {
+            let amount = i as f64 / 4.0;
+            let mut pat = Pattern::default();
+            pat.edit_grid(|g| g.set_swing(Swing::mpc(amount)));
+            let at = pat.grid().locate(T);
+            pat.insert(Hit { f: at.frac as f32, ..Hit::at(at.beat as u16, at.sub as u8) });
+            // The hit is at the same absolute time at every amount; only the slot it
+            // sits in, and where in that slot it sits, have moved.
+            assert!((pat.fire_beat(0) - T).abs() < 1e-6, "amount={amount}");
+            let got = trigs(&pat, 1);
+            assert_eq!(got.len(), 1, "amount={amount}");
+            seen.push(got[0].modulation.lateness);
+        }
+        for (i, w) in seen.windows(2).enumerate() {
+            assert!(w[0] != w[1], "lateness is swing-invariant at step {i}: {seen:?}");
+        }
+        assert!(seen.iter().all(|&l| (0.0..1.0).contains(&l)), "{seen:?}");
+    }
+
+    /// A welded hit reads dead-on at every swing amount, and the slot it is welded to
+    /// is the *swung* one — the fixed point the test above sweeps around.
+    #[test]
+    fn a_welded_hit_is_never_late() {
+        use crate::grid::Swing;
+        for i in 0..9 {
+            let amount = -1.0 + 0.25 * i as f64;
+            let mut pat = Pattern::default();
+            pat.edit_grid(|g| g.set_swing(Swing::mpc(amount)));
+            for s in 0..4 {
+                pat.set(s, 36.0, 1.0);
+            }
+            let got = trigs(&pat, 1);
+            assert_eq!(got.len(), 4, "amount={amount}");
+            assert!(got.iter().all(|h| h.modulation.lateness == 0.0), "amount={amount}");
+        }
+    }
+
+    /// Lateness carries the `nudge` that `f` does not: an absolute flam moves a hit
+    /// inside its slot without touching its stored fraction, and the source has to see
+    /// it or it is not measuring where the hit fired.
+    #[test]
+    fn lateness_carries_the_nudge_that_f_does_not() {
+        use crate::sequencer::MAX_NUDGE_TICKS;
+        let mut pat = Pattern::default();
+        pat.set(4, 36.0, 1.0);
+        pat.set_offset(0, 0.5, MAX_NUDGE_TICKS);
+        assert_eq!(pat.hits()[0].f, 0.5, "the stored fraction is untouched by the nudge");
+        let late = trigs(&pat, 2)[0].modulation.lateness;
+        assert!(late > 0.5, "the nudge must show in the resolved fraction: {late}");
+        // ½ MIN_SLOT into a 16th slot: 1/128 of a beat over a 1/4-beat slot.
+        assert!((late - (0.5 + (1.0 / 128.0) / 0.25)).abs() < 1e-6, "{late}");
+    }
 }

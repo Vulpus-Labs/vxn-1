@@ -219,3 +219,145 @@ impl Track {
         self.engine.reset();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::sequencer::{Lock, Termination};
+    use crate::swap::EngineSwap;
+    use crate::track_engine::{EngineKind, MACRO_SLOTS, TrigMod};
+
+    const SR: f32 = 48_000.0;
+    const BPS: f64 = 120.0 / 60.0 / 48_000.0;
+    const BLOCK: usize = 12_000; // two 16ths at 120/48k
+
+    /// What a trig actually resolved against, and everything the host wrote.
+    #[derive(Default)]
+    struct Log {
+        /// The macro vector each trig would hand `flavour::resolve`.
+        resolved: Vec<[f32; MACRO_SLOTS]>,
+        /// Every `set_macro` — the host-state writes. A per-hit override must appear
+        /// in `resolved` and **never** here.
+        host_writes: Vec<(usize, f32)>,
+    }
+
+    /// A stand-in engine that resolves its sources exactly as a real family does, so
+    /// the precedence rule is tested where it is implemented rather than re-stated.
+    struct Spy {
+        macros: [f32; MACRO_SLOTS],
+        log: Arc<Mutex<Log>>,
+    }
+
+    impl TrackEngine for Spy {
+        fn render(&mut self, out: &mut [f32]) {
+            out.fill(0.0);
+        }
+        fn on_trig(&mut self, _note: f32, _velocity: f32) {
+            self.log.lock().unwrap().resolved.push(self.macros);
+        }
+        fn on_trig_with(&mut self, _note: f32, _velocity: f32, m: TrigMod) {
+            let s = m.sources(&self.macros);
+            self.log.lock().unwrap().resolved.push([s[0], s[1], s[2]]);
+        }
+        fn reset(&mut self) {}
+        fn set_sample_rate(&mut self, _sr: f32) {}
+        fn kind(&self) -> EngineKind {
+            EngineKind::KickTone
+        }
+        fn set_macro(&mut self, slot: usize, value: f32) {
+            if slot < MACRO_SLOTS {
+                self.macros[slot] = value;
+            }
+            self.log.lock().unwrap().host_writes.push((slot, value));
+        }
+    }
+
+    fn spied_track() -> (Track, Arc<Mutex<Log>>) {
+        let log = Arc::new(Mutex::new(Log::default()));
+        let mut track = Track::new(SR, BLOCK, EngineSwap::new());
+        track.engine = Box::new(Spy { macros: [0.0; MACRO_SLOTS], log: log.clone() });
+        (track, log)
+    }
+
+    /// AC: precedence between a per-hit colour and a p-lock on the same macro slot,
+    /// **both ways round**, in one pass of one lane.
+    ///
+    /// The lock is a `Latch` on Decay — macro slot 0 — set by the hit on slot 0 and
+    /// still held when the hit on slot 1 fires. The coloured hit ignores it; the
+    /// uncoloured one obeys it. That is exactly the rule documented on
+    /// [`crate::flavour::resolve`]: a colour is attached to the hit being fired, and a
+    /// latched lock is not.
+    #[test]
+    fn a_per_hit_colour_outranks_a_p_lock_and_an_uncoloured_hit_does_not() {
+        let (mut track, log) = spied_track();
+        track.pattern.set(0, 36.0, 1.0);
+        track.pattern.set(1, 36.0, 1.0);
+        track.pattern.set_colour(0, [0.1, 0.2, 0.3]);
+        track
+            .pattern
+            .set_lock(0, LockParam::Decay, Lock { value: 0.9, termination: Termination::Latch });
+
+        let mut lane = LaneState::new(0);
+        let mut hits = Vec::with_capacity(16);
+        let pattern = track.pattern;
+        lane.schedule(&pattern, 0.0, BPS, BLOCK, true, &mut hits);
+        assert_eq!(hits.len(), 2, "both hits fire in this block");
+        assert_eq!(lane.override_value(LockParam::Decay.index()), Some(0.9), "the latch is live");
+
+        track.apply_effective(&lane);
+        track.render_with_hits(&hits, &[], BLOCK);
+
+        let log = log.lock().unwrap();
+        assert_eq!(
+            log.resolved[0],
+            [0.1, 0.2, 0.3],
+            "the coloured hit's own vector wins over the latched lock"
+        );
+        assert_eq!(
+            log.resolved[1],
+            [0.9, 0.5, 0.5],
+            "the uncoloured hit takes the lock on slot 0 and the base on 1 and 2"
+        );
+    }
+
+    /// AC: a per-hit override does not write back to host macro param state. After the
+    /// trig the host's echo (`effective`, what `get_value` reports) is still the
+    /// automated value, and the engine was never handed the colour through `set_macro`.
+    #[test]
+    fn a_per_hit_colour_never_becomes_host_macro_state() {
+        let (mut track, log) = spied_track();
+        track.set_base(LockParam::Decay, 0.42);
+        track.pattern.set(0, 36.0, 1.0);
+        track.pattern.set_colour(0, [1.0, 1.0, 1.0]);
+
+        let mut lane = LaneState::new(0);
+        let mut hits = Vec::with_capacity(16);
+        let pattern = track.pattern;
+        lane.schedule(&pattern, 0.0, BPS, BLOCK, true, &mut hits);
+        track.apply_effective(&lane);
+        track.render_with_hits(&hits, &[], BLOCK);
+
+        assert_eq!(log.lock().unwrap().resolved[0], [1.0, 1.0, 1.0], "the colour reached resolve");
+        assert_eq!(
+            track.effective(LockParam::Decay),
+            0.42,
+            "the host echo must still report the automated value"
+        );
+        // The one write is `apply_effective`'s, carrying the automated value — never
+        // the hit's colour.
+        let writes = log.lock().unwrap().host_writes.clone();
+        assert_eq!(writes.iter().filter(|(s, _)| *s == 0).collect::<Vec<_>>(), vec![&(0, 0.42)]);
+
+        // A second block with no colour in it resolves against that same host value,
+        // which is the observable form of "the override was not sticky".
+        track.pattern.clear_colour(0);
+        let pattern = track.pattern;
+        lane.reset();
+        lane.schedule(&pattern, 0.0, BPS, BLOCK, true, &mut hits);
+        track.apply_effective(&lane);
+        track.render_with_hits(&hits, &[], BLOCK);
+        assert_eq!(log.lock().unwrap().resolved[1], [0.42, 0.5, 0.5]);
+    }
+}
