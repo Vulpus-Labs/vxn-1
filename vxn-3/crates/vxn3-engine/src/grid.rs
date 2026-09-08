@@ -31,7 +31,9 @@
 //! `t = sub_pos(b, k) + f · (sub_pos(b, k+1) - sub_pos(b, k)) + nudge`; a zero-width
 //! slot makes `f` unresolvable and divides by ~0, silently poisoning downstream hits
 //! with NaN. Every mutation path here therefore goes through the clamp, and there is
-//! no `&mut` into the marker array to bypass it.
+//! no `&mut` into the marker array to bypass it. [`MAX_LEN_BEATS`] is the other half
+//! of that guarantee: `MIN_SLOT` is absolute, so a clamp against it only separates
+//! two markers while it is larger than an ulp of them.
 //!
 //! Pure data and math: no scheduler, no UI, **no allocation on any query path**, and
 //! storage is fixed-capacity arrays sized from [`MAX_BEATS`] / [`MAX_SUBS`] so the
@@ -67,6 +69,32 @@ pub const MAX_SUBS: u32 = 16;
 /// position fraction unresolvable and its inverse mapping divide by ~0. Exactly
 /// representable in binary, so the clamp arithmetic does not itself introduce drift.
 pub const MIN_SLOT: f64 = 1.0 / 64.0;
+
+/// Maximum pattern length in beats — 2¹⁶, about nine hours of 4/4 at 120 bpm and
+/// four thousand times the longest lane [`MAX_BEATS`] allows.
+///
+/// A ceiling rather than a taste. Two absolute quantities are compared against
+/// marker positions, and both stop meaning anything once a marker's ulp overtakes
+/// them:
+///
+/// - [`MIN_SLOT`], past `MIN_SLOT · 2⁵³ ≈ 2⁴⁸` beats. `m ± MIN_SLOT` is then `m`, so
+///   [`Grid::set_beat_marker`]'s clamp parks a dragged marker exactly *on* its
+///   neighbour and leaves the zero-width slot [`Grid::locate`] divides by.
+/// - The `f32` a hit's in-slot fraction is stored in, past `2¹⁸`ish beats. Once
+///   `ulp(m)` exceeds an `f32` ulp of the narrowest slot, re-deriving a fraction no
+///   longer round-trips, and 0349's "an untouched slot keeps its triple bit-for-bit"
+///   stops holding.
+///
+/// The constant sits below **both**, with margin — the assertion below is the second
+/// and tighter one, written out rather than trusted. Everything in this module and
+/// in [`crate::sequencer`] that argues "the clamp keeps this slot positive" or "this
+/// fraction round-trips" is really arguing from here (adversarial review, 0349).
+///
+/// A power of two, so a length change stays an exact rescale.
+pub const MAX_LEN_BEATS: f64 = (1u32 << 16) as f64;
+const _: () = assert!(
+    MAX_LEN_BEATS * f64::EPSILON < (MIN_SLOT / MAX_SUBS as f64) * f32::EPSILON as f64
+);
 
 /// Shape of the swing warp `w`. Minimal set (0347): straight plus the classic
 /// piecewise-linear MPC pull. Widen behind this enum without a format break — the
@@ -518,11 +546,112 @@ impl Grid {
         len
     }
 
+    /// Insert a beat marker at `pos`, taking index `i` — splitting beat slot `i - 1`
+    /// in two. Returns the index taken, or `None` if the insert is refused.
+    ///
+    /// Refused when the lane is already at [`MAX_BEATS`]; when `i` is not an interior
+    /// index (`1..=n_beats`) or `pos` is outside the pattern, both of which would
+    /// unpin an outer marker; when `pos` is non-finite; and when the slot being split
+    /// is too narrow to yield two of [`MIN_SLOT`]. A refused insert leaves the grid
+    /// bit-for-bit as it was.
+    ///
+    /// `pos` is written through [`Grid::set_beat_marker`], so it takes exactly the
+    /// clamp a drag takes and there is no second path into the marker array.
+    ///
+    /// The two halves inherit the sub-count of the beat they were cut from, so
+    /// splitting a tuplet beat gives two tuplet beats rather than silently reverting
+    /// to the lane default.
+    ///
+    /// **Geometry only.** The hits hanging off the grid keep their *absolute* times
+    /// across an insert (ADR 0007 §5); that is
+    /// [`crate::sequencer::Pattern::insert_beat_marker`]'s half, and reaching this
+    /// through `edit_grid` instead applies the relative rule a *drag* follows — the
+    /// opposite gesture.
+    pub fn insert_beat_marker(&mut self, i: usize, pos: f64) -> Option<usize> {
+        if self.n_beats >= MAX_BEATS || i == 0 || i > self.n_beats || !pos.is_finite() {
+            return None;
+        }
+        if pos <= self.markers[0] || pos >= self.markers[self.n_beats] {
+            return None;
+        }
+        // Splitting a slot narrower than two MIN_SLOTs could only produce a slot
+        // thinner than the minimum, which is the one thing the clamp exists to stop.
+        if self.markers[i] - self.markers[i - 1] < 2.0 * MIN_SLOT {
+            return None;
+        }
+        for j in (i..=self.n_beats).rev() {
+            self.markers[j + 1] = self.markers[j];
+        }
+        for j in (i..self.n_beats).rev() {
+            self.sub_override[j + 1] = self.sub_override[j];
+        }
+        self.sub_override[i] = self.sub_override[i - 1];
+        self.n_beats += 1;
+        self.markers[i] = self.markers[i - 1]; // overwritten by the clamped write below
+        self.set_beat_marker(i, pos);
+        // The width test above is in beats and the clamp is in floats: at an absurd
+        // pattern length `m + MIN_SLOT` rounds back to `m`, and a zero-width slot is
+        // what makes 0348's inverse mapping divide by ~0. Checking the result rather
+        // than trusting the precondition is what makes that unreachable.
+        if self.markers[i] <= self.markers[i - 1] || self.markers[i + 1] <= self.markers[i] {
+            self.drop_marker(i);
+            return None;
+        }
+        self.canonicalise_tail();
+        Some(i)
+    }
+
+    /// Delete beat marker `i`, merging slots `i - 1` and `i` into one. Returns whether
+    /// it was deleted: the outer markers are the pattern bounds and are refused, which
+    /// also means a one-beat lane has nothing to delete.
+    ///
+    /// The merged slot keeps the **left** beat's sub-count, the one whose marker
+    /// survives. A delete can only widen a slot, so no clamp can bind here.
+    ///
+    /// Geometry only, exactly as [`Grid::insert_beat_marker`] — hits keep their
+    /// absolute times through [`crate::sequencer::Pattern::delete_beat_marker`].
+    pub fn delete_beat_marker(&mut self, i: usize) -> bool {
+        if i == 0 || i >= self.n_beats {
+            return false;
+        }
+        self.drop_marker(i);
+        true
+    }
+
+    /// Shift marker `i` and every sub-count override past it down one place. The body
+    /// of a delete, and the exact inverse of the shift an insert makes — which is what
+    /// lets a refused insert roll itself back.
+    fn drop_marker(&mut self, i: usize) {
+        for j in i..self.n_beats {
+            self.markers[j] = self.markers[j + 1];
+        }
+        for j in i..self.n_beats - 1 {
+            self.sub_override[j] = self.sub_override[j + 1];
+        }
+        self.n_beats -= 1;
+        self.canonicalise_tail();
+    }
+
+    /// Hold the storage past the live geometry at its canonical value, so two grids
+    /// with the same geometry compare equal however they were built: marker padding
+    /// equal to the end marker, no override on a beat that is not live.
+    fn canonicalise_tail(&mut self) {
+        let end = self.markers[self.n_beats];
+        for m in self.markers.iter_mut().skip(self.n_beats + 1) {
+            *m = end;
+        }
+        for o in self.sub_override.iter_mut().skip(self.n_beats) {
+            *o = 0;
+        }
+    }
+
     /// Set the beat count, re-laying the markers uniformly over the current length.
     ///
-    /// A deliberate rebuild: preserving user marker edits across an insert or delete
-    /// (and rubber-banding the hits that hang off them) is 0349's job, and doing half
-    /// of it here would leave two different answers in the codebase.
+    /// A deliberate rebuild, and the *other* answer to a change of beat count: this
+    /// one throws the marker positions away and re-lays them evenly, which is what a
+    /// "4 beats, not 3" control means. [`Grid::insert_beat_marker`] and
+    /// [`Grid::delete_beat_marker`] are the marker-preserving pair, where every other
+    /// marker holds its position and only one slot changes shape.
     pub fn set_n_beats(&mut self, n_beats: usize) {
         let n = n_beats.clamp(1, MAX_BEATS);
         let len = sane_len(self.markers[self.n_beats], n);
@@ -593,12 +722,22 @@ impl Grid {
     }
 }
 
-/// A pattern length that can actually hold `n` beat slots: finite, and at least
-/// `n · MIN_SLOT`. Below that no marker arrangement satisfies the invariant, so the
-/// grid would have to choose between a zero-width slot and a lie — it takes neither.
+/// A pattern length that can actually hold `n` beat slots: finite, at least
+/// `n · MIN_SLOT`, and at most [`MAX_LEN_BEATS`]. Below the floor no marker
+/// arrangement satisfies the invariant, so the grid would have to choose between a
+/// zero-width slot and a lie — it takes neither. Above the ceiling the invariant
+/// stops meaning anything, because `MIN_SLOT` falls below one ulp of a marker.
+///
+/// This is the single gate on the marker array's magnitude: every position in the
+/// grid lies in `[0, len]`, so capping the length here is what makes the `MIN_SLOT`
+/// arithmetic exact everywhere else in the module.
 fn sane_len(len_beats: f64, n: usize) -> f64 {
     let floor = n as f64 * MIN_SLOT;
-    if len_beats.is_finite() && len_beats > floor { len_beats } else { floor }
+    if len_beats.is_finite() && len_beats > floor {
+        len_beats.min(MAX_LEN_BEATS)
+    } else {
+        floor
+    }
 }
 
 #[cfg(test)]
@@ -625,6 +764,10 @@ mod tests {
         /// `[-1, 1)`.
         fn bipolar(&mut self) -> f64 {
             self.unit() * 2.0 - 1.0
+        }
+        /// `[0, n)`.
+        fn below(&mut self, n: u32) -> u32 {
+            self.next_u32() % n.max(1)
         }
     }
 
@@ -891,6 +1034,244 @@ mod tests {
         g.set_n_beats(0);
         assert_eq!(g.n_beats(), 1);
         assert_increasing(&g);
+    }
+
+    // ── marker insert / delete (0349) ─────────────────────────────────────────
+
+    /// AC: an insert splits one slot and leaves every other marker exactly where it
+    /// was — the whole point of the pair, against [`Grid::set_n_beats`]'s rebuild.
+    #[test]
+    fn insert_splits_one_slot_and_moves_no_other_marker() {
+        let mut g = Grid::uniform(4, 4.0, 4);
+        g.set_beat_marker(1, 0.75);
+        let before: [f64; 5] = std::array::from_fn(|i| g.beat_marker(i));
+
+        assert_eq!(g.insert_beat_marker(2, 1.5), Some(2));
+        assert_eq!(g.n_beats(), 5);
+        assert_eq!(g.len_beats(), 4.0);
+        assert_eq!(g.beat_marker(2), 1.5);
+        // Everything below the split is where it was; everything above it shifted
+        // index but not position.
+        assert_eq!(g.beat_marker(0), before[0]);
+        assert_eq!(g.beat_marker(1), before[1]);
+        for (i, m) in before.iter().enumerate().skip(2) {
+            assert_eq!(g.beat_marker(i + 1), *m, "marker {i} moved");
+        }
+        assert_increasing(&g);
+
+        // And deleting it again puts the geometry back, exactly.
+        assert!(g.delete_beat_marker(2));
+        assert_eq!(g.n_beats(), 4);
+        for (i, m) in before.iter().enumerate() {
+            assert_eq!(g.beat_marker(i), *m, "marker {i} after delete");
+        }
+        assert_increasing(&g);
+    }
+
+    /// AC: outer markers reject insert-outside and delete. They are the pattern
+    /// bounds — a hit before `m[0]` would have no owning slot.
+    #[test]
+    fn outer_markers_reject_insert_and_delete() {
+        let mut g = Grid::uniform(4, 4.0, 4);
+        let before = g;
+        // Index 0 is before the pinned start; past `n_beats` is past the pinned end.
+        assert_eq!(g.insert_beat_marker(0, 0.5), None);
+        assert_eq!(g.insert_beat_marker(5, 3.5), None);
+        assert_eq!(g.insert_beat_marker(99, 3.5), None);
+        // A position outside the pattern is refused whatever index is asked for.
+        for (i, pos) in [(1, 0.0), (1, -1.0), (4, 4.0), (4, 9.0)] {
+            assert_eq!(g.insert_beat_marker(i, pos), None, "i={i} pos={pos}");
+        }
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(g.insert_beat_marker(2, bad), None);
+        }
+        assert!(!g.delete_beat_marker(0), "the start marker is pinned");
+        assert!(!g.delete_beat_marker(4), "the end marker is pinned");
+        assert!(!g.delete_beat_marker(99));
+        assert_eq!(g, before, "a refused edit changes nothing");
+
+        // A one-beat lane has only outer markers, so nothing to delete at all.
+        let mut one = Grid::uniform(1, 1.0, 4);
+        assert!(!one.delete_beat_marker(1));
+        assert_eq!(one.n_beats(), 1);
+    }
+
+    /// AC: no path can write a marker position that bypasses the [`MIN_SLOT`] clamp —
+    /// an insert goes through the very write a drag does, and a slot too narrow to
+    /// split is refused rather than halved.
+    #[test]
+    fn insert_takes_the_drag_clamp_and_refuses_an_unsplittable_slot() {
+        let mut g = Grid::uniform(2, 2.0, 4);
+        assert_eq!(g.insert_beat_marker(1, 99.0), None, "outside the pattern");
+        // Just short of the right-hand marker: parks one MIN_SLOT off it, as a drag does.
+        assert_eq!(g.insert_beat_marker(1, 1.0 - 1e-9), Some(1));
+        assert_eq!(g.beat_marker(1), 1.0 - MIN_SLOT);
+        assert_increasing(&g);
+
+        // A slot exactly two MIN_SLOTs wide splits into two of exactly MIN_SLOT; one
+        // hair narrower is refused rather than yielding a slot below the minimum.
+        let mut tight = Grid::uniform(1, 2.0 * MIN_SLOT, 4);
+        assert_eq!(tight.insert_beat_marker(1, MIN_SLOT), Some(1));
+        assert_eq!(tight.beat_marker(1), MIN_SLOT);
+        assert_increasing(&tight);
+        let mut too_tight = Grid::uniform(1, 2.0 * MIN_SLOT - 1e-9, 4);
+        assert_eq!(too_tight.insert_beat_marker(1, MIN_SLOT), None);
+        assert_eq!(too_tight.n_beats(), 1);
+    }
+
+    #[test]
+    fn insert_stops_at_the_beat_ceiling() {
+        let mut full = Grid::uniform(MAX_BEATS, MAX_BEATS as f64, 4);
+        let before = full;
+        assert_eq!(full.insert_beat_marker(1, 0.5), None);
+        assert_eq!(full, before);
+        // One below the ceiling still takes it, and lands exactly on it.
+        let mut g = Grid::uniform(MAX_BEATS - 1, MAX_BEATS as f64, 4);
+        assert_eq!(g.insert_beat_marker(1, 0.5), Some(1));
+        assert_eq!(g.n_beats(), MAX_BEATS);
+        assert_increasing(&g);
+    }
+
+    /// The split halves inherit the sub-count of the beat they came from, and a merge
+    /// keeps the surviving marker's. Every other override rides its own beat.
+    #[test]
+    fn insert_and_delete_carry_the_sub_count_overrides() {
+        let mut g = Grid::uniform(4, 4.0, 4);
+        g.set_beat_subs(1, Some(3));
+        g.set_beat_subs(3, Some(6));
+        assert_eq!(g.insert_beat_marker(2, 1.5), Some(2));
+        assert_eq!(g.sub_override(0), None);
+        assert_eq!(g.sub_override(1), Some(3), "the split beat keeps its count");
+        assert_eq!(g.sub_override(2), Some(3), "and so does the half cut off it");
+        assert_eq!(g.sub_override(3), None, "old beat 2 rode up one index");
+        assert_eq!(g.sub_override(4), Some(6));
+
+        // Deleting the marker again merges them back onto the left beat's count.
+        assert!(g.delete_beat_marker(2));
+        let mut want = Grid::uniform(4, 4.0, 4);
+        want.set_beat_subs(1, Some(3));
+        want.set_beat_subs(3, Some(6));
+        assert_eq!(g, want);
+
+        // The other order does not round-trip, and cannot: two beats of different
+        // sub-counts merge into one beat, which has room for one count. The right
+        // one is what a delete spends, and a re-insert gives both halves the left's.
+        let mut mixed = Grid::uniform(2, 2.0, 4);
+        mixed.set_beat_subs(1, Some(3));
+        assert!(mixed.delete_beat_marker(1));
+        assert_eq!(mixed.subs(0), 4, "the surviving marker's beat keeps its count");
+        assert_eq!(mixed.insert_beat_marker(1, 1.0), Some(1));
+        assert_eq!(mixed.sub_override(1), None);
+    }
+
+    /// A refused insert must roll its shift back, overrides included — otherwise the
+    /// rejection path is worse than the edit it declined.
+    #[test]
+    fn a_refused_insert_leaves_the_grid_untouched() {
+        let mut g = Grid::uniform(3, 3.0, 4);
+        g.set_beat_subs(0, Some(3));
+        g.set_beat_subs(2, Some(6));
+        g.set_beat_marker(1, 1.2);
+        g.set_swing(Swing::mpc(0.4));
+        let before = g;
+        for (i, pos) in [(0, 0.5), (4, 2.5), (1, 0.0), (1, 3.0), (2, f64::NAN)] {
+            assert_eq!(g.insert_beat_marker(i, pos), None, "i={i} pos={pos}");
+            assert_eq!(g, before, "i={i} pos={pos}");
+        }
+    }
+
+    /// The length cap is what makes the [`MIN_SLOT`] clamp mean something rather than
+    /// merely say something: past `MIN_SLOT · 2⁵³` beats, `m ± MIN_SLOT` rounds back
+    /// to `m`, so a drag clamps a marker exactly onto its neighbour and leaves the
+    /// zero-width slot every other argument here assumes away.
+    ///
+    /// The narrowest slot a lane can reach is `MIN_SLOT / MAX_SUBS`, and the cap has
+    /// to sit below the point where an ulp of a marker overtakes an `f32` ulp of
+    /// *that* — the tighter of the two bounds, and the one 0349's exactness claim
+    /// rests on. Checked here as arithmetic rather than as a remembered number.
+    #[test]
+    fn the_length_cap_keeps_the_min_slot_clamp_meaningful() {
+        // Both bounds, as arithmetic rather than as a remembered number. The tighter
+        // one is also a `const` assertion beside the constant, so raising the cap past
+        // it is a compile error and not a test failure.
+        const { assert!(MAX_LEN_BEATS * f64::EPSILON < MIN_SLOT) };
+        const {
+            assert!(MAX_LEN_BEATS * f64::EPSILON < (MIN_SLOT / MAX_SUBS as f64) * f32::EPSILON as f64)
+        };
+
+        let mut g = Grid::uniform(4, 1e300, 4);
+        assert_eq!(g.len_beats(), MAX_LEN_BEATS);
+        assert_eq!(g.set_len_beats(f64::MAX), MAX_LEN_BEATS);
+        g.set_n_beats(MAX_BEATS);
+        assert_eq!(g.len_beats(), MAX_LEN_BEATS);
+        assert_increasing(&g);
+
+        // At the ceiling every marker still separates from its neighbours, which is
+        // the property the clamp is asserting. Dragged hard against both bounds.
+        for i in 1..g.n_beats() {
+            g.set_beat_marker(i, f64::MAX);
+        }
+        assert_increasing(&g);
+        for i in (1..g.n_beats()).rev() {
+            g.set_beat_marker(i, f64::MIN);
+        }
+        assert_increasing(&g);
+        for i in 0..=g.n_beats() {
+            let m = g.beat_marker(i);
+            assert!(m + MIN_SLOT > m && m - MIN_SLOT < m, "MIN_SLOT vanishes at {m}");
+        }
+        // And an insert at the ceiling still splits rather than collapsing.
+        let mut g = Grid::uniform(2, MAX_LEN_BEATS, 4);
+        assert_eq!(g.insert_beat_marker(2, MAX_LEN_BEATS * 0.75), Some(2));
+        assert_increasing(&g);
+    }
+
+    /// AC (the NaN one): randomised insert / delete / drag over a randomised grid
+    /// never leaves a marker non-finite, out of order, or a slot degenerate.
+    #[test]
+    fn random_marker_edits_never_degenerate_the_grid() {
+        let mut rng = Rng(0x0349_0001);
+        for trial in 0..300 {
+            let mut g = Grid::uniform(1 + trial % MAX_BEATS, 4.0, 1 + trial as u32 % MAX_SUBS);
+            g.set_swing(Swing::mpc(rng.bipolar()).with_period(PERIODS[trial % PERIODS.len()]));
+            for _ in 0..40 {
+                let i = rng.below(MAX_BEATS as u32 + 2) as usize;
+                // Wild positions on purpose: outside the pattern, and non-finite.
+                let pos = match rng.below(8) {
+                    0 => f64::NAN,
+                    1 => f64::INFINITY,
+                    2 => rng.bipolar() * 50.0,
+                    _ => rng.unit() * g.len_beats(),
+                };
+                match rng.below(4) {
+                    0 => {
+                        g.set_beat_marker(i, pos);
+                    }
+                    1 => {
+                        g.insert_beat_marker(i, pos);
+                    }
+                    2 => {
+                        g.delete_beat_marker(i);
+                    }
+                    _ => g.set_beat_subs(i, Some(1 + rng.below(MAX_SUBS))),
+                }
+                assert!((1..=MAX_BEATS).contains(&g.n_beats()));
+                assert_eq!(g.beat_marker(0), 0.0, "the start marker moved");
+                assert_eq!(g.len_beats(), 4.0, "the end marker moved");
+                for b in 0..g.n_beats() {
+                    let (lo, hi) = (g.beat_marker(b), g.beat_marker(b + 1));
+                    assert!(lo.is_finite() && hi.is_finite(), "non-finite marker");
+                    assert!(hi - lo > 0.0, "degenerate beat slot {b}: {lo}..{hi}");
+                    // And no subdivision slot inside it collapsed either — that span
+                    // is what 0348's in-slot fraction divides by.
+                    for k in 0..g.subs(b) {
+                        let span = g.sub_pos(b, k + 1) - g.sub_pos(b, k);
+                        assert!(span > 0.0, "degenerate sub slot {b}/{k}: {span}");
+                        assert!(!g.locate(g.sub_pos(b, k)).frac.is_nan());
+                    }
+                }
+            }
+        }
     }
 
     // ── subdivision geometry ──────────────────────────────────────────────────
