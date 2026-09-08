@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use crate::io::{EngineCommand, EngineIo, PlayheadState};
 use crate::lane::{LaneState, TrigEvent};
-use crate::sequencer::{LockParam, Pattern};
+use crate::sequencer::{Hit, LockParam, Pattern};
 use crate::swap::EngineSwap;
 use crate::track::Track;
 use crate::transport::Transport;
@@ -377,6 +377,15 @@ impl Engine {
             | EngineCommand::SetHit { track, .. }
             | EngineCommand::SetProbability { track, .. }
             | EngineCommand::SetRetrig { track, .. }
+            | EngineCommand::AddHit { track, .. }
+            | EngineCommand::RemoveHit { track, .. }
+            | EngineCommand::SetHitPosition { track, .. }
+            | EngineCommand::SetHitY { track, .. }
+            | EngineCommand::SetHitNote { track, .. }
+            | EngineCommand::SetHitProbability { track, .. }
+            | EngineCommand::SetHitRetrig { track, .. }
+            | EngineCommand::QuantiseHitX { track, .. }
+            | EngineCommand::QuantiseHitY { track, .. }
             | EngineCommand::SetGridBeats { track, .. }
             | EngineCommand::SetGridSubs { track, .. }
             | EngineCommand::SetGain { track, .. }
@@ -406,6 +415,55 @@ impl Engine {
             }
             EngineCommand::SetRetrig { slot, retrig, .. } => {
                 track.pattern.set_retrig(slot as usize, retrig)
+            }
+            // The freely-positioned hit verbs (0353). `insert`'s over-capacity
+            // `None` is dropped here on purpose: the ceiling is the editor's to
+            // show, and the audio thread has nowhere to report it to.
+            EngineCommand::AddHit {
+                beat,
+                sub,
+                f,
+                nudge,
+                y,
+                note,
+                velocity,
+                ..
+            } => {
+                track.pattern.insert(Hit {
+                    f,
+                    nudge,
+                    y,
+                    note,
+                    velocity,
+                    ..Hit::at(beat, sub)
+                });
+            }
+            EngineCommand::RemoveHit { hit, .. } => track.pattern.remove(hit as usize),
+            EngineCommand::SetHitPosition {
+                hit,
+                beat,
+                sub,
+                f,
+                nudge,
+                ..
+            } => {
+                track.pattern.set_position(hit as usize, beat, sub, f, nudge);
+            }
+            EngineCommand::SetHitY { hit, y, .. } => track.pattern.set_hit_y(hit as usize, y),
+            EngineCommand::SetHitNote {
+                hit, note, velocity, ..
+            } => track.pattern.set_hit_note(hit as usize, note, velocity),
+            EngineCommand::SetHitProbability { hit, probability, .. } => {
+                track.pattern.set_hit_probability(hit as usize, probability)
+            }
+            EngineCommand::SetHitRetrig { hit, retrig, .. } => {
+                track.pattern.set_hit_retrig(hit as usize, retrig)
+            }
+            EngineCommand::QuantiseHitX { hit, amount, .. } => {
+                track.pattern.quantise_x(hit as usize, amount);
+            }
+            EngineCommand::QuantiseHitY { hit, amount, .. } => {
+                track.pattern.quantise_y(hit as usize, amount)
             }
             EngineCommand::SetGridBeats { beats, .. } => {
                 track.pattern.set_grid_beats(beats as usize)

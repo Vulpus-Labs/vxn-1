@@ -30,6 +30,47 @@ pub enum EngineCommand {
     SetProbability { track: u8, slot: u16, probability: f32 },
     /// Set a hit's retrig macro, adding one in `slot` if there is none.
     SetRetrig { track: u8, slot: u16, retrig: Retrig },
+    /// Add a freely-positioned hit (ADR 0007 §4, ticket 0353). The lane strip's
+    /// placement verb: the position is a coordinate, not a slot index, and an
+    /// over-capacity add **drops** — the editor enforces [`crate::MAX_HITS`]
+    /// itself so the user sees the ceiling rather than a hit vanishing.
+    AddHit {
+        track: u8,
+        beat: u16,
+        sub: u8,
+        f: f32,
+        nudge: i16,
+        y: f32,
+        note: f32,
+        velocity: f32,
+    },
+    /// Remove a hit by **fire-order index**, the key every verb below shares: with
+    /// hits placed freely a slot can hold several, so a slot cannot name one.
+    RemoveHit { track: u8, hit: u16 },
+    /// Move a hit — its `(beat, sub)` and in-slot offset together, because a drag
+    /// across a beat marker changes both (the drag verb).
+    SetHitPosition {
+        track: u8,
+        hit: u16,
+        beat: u16,
+        sub: u8,
+        f: f32,
+        nudge: i16,
+    },
+    /// Set a hit's position on the lane's modulation axis (ADR 0007 §6).
+    SetHitY { track: u8, hit: u16, y: f32 },
+    /// Re-pitch a hit — what reassigning a lane's voice has to do to every hit it
+    /// holds, since a hat's open/closed identity *is* its note.
+    SetHitNote { track: u8, hit: u16, note: f32, velocity: f32 },
+    /// Set a hit's fire probability (hit-keyed form of [`Self::SetProbability`]).
+    SetHitProbability { track: u8, hit: u16, probability: f32 },
+    /// Set a hit's retrig macro (hit-keyed form of [`Self::SetRetrig`]).
+    SetHitRetrig { track: u8, hit: u16, retrig: Retrig },
+    /// Quantise a hit toward its nearest subdivision marker, `amount ∈ [0, 1]`.
+    QuantiseHitX { track: u8, hit: u16, amount: f32 },
+    /// Quantise a hit toward the groove's Y-centre curve. Separate from
+    /// [`Self::QuantiseHitX`] on purpose: X and Y are not corrected together.
+    QuantiseHitY { track: u8, hit: u16, amount: f32 },
     /// Set a lane's beat count (and its length to match) — polymeter (0348).
     SetGridBeats { track: u8, beats: u8 },
     /// Set a lane's subdivisions per beat — what `step_beats` was, as geometry.
