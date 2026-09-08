@@ -3,9 +3,17 @@
 //! structured edits to [`Vxn3UiCustom`] and the playhead to the page. Wraps
 //! `vxn-core-ui-web`'s wry host (ticket 0052).
 //!
-//! The editing surface is still 0052's snapped cell grid, now sized and addressed
-//! by the lane's real subdivision markers rather than a fixed step count (0348);
-//! the continuous lane strip that replaces it is 0353.
+//! The editing surface is the **continuous lane strip** of ADR 0007 §1 (0353):
+//! one rectangular strip per track with X as time and Y as a modulation value,
+//! hits as freely-draggable diamonds. The grid is drawn, not stored into, so the
+//! page needs the lane's real geometry rather than a step count — [`build_html`]
+//! ships each lane's beat markers, per-beat subdivision counts and swing warp,
+//! and the page places every marker through that geometry (never through a
+//! pixels-per-step multiplication, which the swung grid would make a lie).
+//!
+//! The snapped-slot opcodes are kept: [`vxn3_engine::Pattern`] still has the
+//! slot-keyed verbs, and they remain the right vocabulary for a caller that has
+//! a slot index. The strip does not use them — it is hit-keyed throughout.
 
 use std::any::Any;
 use std::ffi::c_void;
@@ -18,9 +26,12 @@ use vxn_core_ui_web::{DEFAULT_MAX_BATCH_BYTES, WebEditorConfig, open_editor as c
 pub use vxn_core_ui_web::{EditorHandle, OpenEditorError};
 use vxn3_app::{Vxn3UiCustom, Vxn3ViewCustom};
 use vxn3_engine::flavour::{Binding, Curve, Flavour};
-use vxn3_engine::sequencer::{Retrig, RetrigCurve};
+use vxn3_engine::sequencer::{Retrig, RetrigCurve, Y_CENTRE};
 use vxn3_engine::track_engine::{EngineKind, MACRO_SLOTS};
-use vxn3_engine::{EngineCommand, Grid, N_TRACKS, flavours_for, params_for};
+use vxn3_engine::{
+    EngineCommand, Grid, MAX_BEATS, MAX_HITS, MAX_NUDGE_TICKS, MAX_SUBS, N_TRACKS, TICKS_PER_BEAT,
+    flavours_for, params_for,
+};
 
 pub const EDITOR_WIDTH: u32 = 900;
 pub const EDITOR_HEIGHT: u32 = 420;
@@ -85,17 +96,51 @@ fn engine_json(id: &str, label: &str, kind: EngineKind) -> Json {
     serde_json::json!({ "id": id, "label": label, "params": params, "flavours": flavours })
 }
 
+/// One lane's timing **geometry** as faceplate JSON (ADR 0007 §2).
+///
+/// Everything the page needs to place a marker itself: the stored beat markers,
+/// each beat's resolved subdivision count (and whether that count is an override
+/// or the lane default, so a sub-count edit does not silently erase a tuplet),
+/// and the swing warp as its tag encoding. Subdivision markers are *derived* and
+/// deliberately not sent — they are unevenly spaced under swing, and a list of
+/// them would go stale the moment the lane's geometry changed.
+fn grid_json(g: &Grid) -> Json {
+    let markers: Vec<f64> = (0..=g.n_beats()).map(|i| g.beat_marker(i)).collect();
+    let subs: Vec<u32> = (0..g.n_beats()).map(|b| g.subs(b)).collect();
+    let overrides: Vec<u32> = (0..g.n_beats()).map(|b| g.sub_override(b).unwrap_or(0)).collect();
+    let sw = g.swing();
+    serde_json::json!({
+        "n_beats": g.n_beats(),
+        "len_beats": g.len_beats(),
+        "markers": markers,
+        "subs": subs,
+        "sub_override": overrides,
+        "default_subs": g.default_subs(),
+        "swing": { "shape": sw.shape.as_u8(), "amount": sw.amount, "period": sw.period.as_u8() },
+    })
+}
+
 /// Splice CSS, the config JSON, and the app JS into the HTML template.
 pub fn build_html() -> String {
-    // The cell grid is still the snapped-cell editor of 0052, now driven by the
-    // default lane's real subdivision markers rather than a step count. The free
-    // lane strip that replaces it is 0353's job.
-    let grid = Grid::default();
+    // Per-lane geometry, not one global grid: lanes are independently subdivided
+    // and independently long (polymeter, ADR 0001 §2), and the strip draws each
+    // one's own markers. They start identical; the page diverges them as the user
+    // edits, and the shape is per-lane from the first frame so nothing has to be
+    // rebuilt when they do.
+    let lanes: Vec<Json> = (0..N_TRACKS).map(|_| grid_json(&Grid::default())).collect();
     let config = serde_json::json!({
         "tracks": N_TRACKS,
-        "steps": grid.total_subs(),
-        "subs": grid.default_subs(),
+        "lanes": lanes,
         "macro_slots": MACRO_SLOTS,
+        // Editor-side limits: the strip enforces the hit ceiling itself, with
+        // visible feedback, rather than letting an over-capacity add be dropped
+        // silently on the audio thread.
+        "max_hits": MAX_HITS,
+        "max_beats": MAX_BEATS,
+        "max_subs": MAX_SUBS,
+        "ticks_per_beat": TICKS_PER_BEAT,
+        "max_nudge_ticks": MAX_NUDGE_TICKS,
+        "y_centre": Y_CENTRE,
         "engines": [
             engine_json("kick", "Kick", EngineKind::KickTone),
             engine_json("metal", "Metal", EngineKind::Metal),
@@ -117,6 +162,12 @@ fn u16_at(v: &Json, key: &str) -> Option<u16> {
 }
 fn f32_at(v: &Json, key: &str) -> Option<f32> {
     Some(v.get(key)?.as_f64()? as f32)
+}
+/// A signed field — `nudge` is the only one, and it is the half of a hit's
+/// position that does *not* scale with the slot, so it must survive as a signed
+/// tick count rather than being read through the unsigned helpers above.
+fn i16_at(v: &Json, key: &str) -> Option<i16> {
+    Some(v.get(key)?.as_i64()? as i16)
 }
 
 fn kind_of(s: &str) -> Option<EngineKind> {
@@ -209,6 +260,88 @@ fn parse_custom_ui(op: &str, v: &Json) -> Option<UiEvent> {
         _ => {}
     }
     let track = u8_at(v, "track")?;
+    // The lane strip's vocabulary (0353). Hit-keyed: `hit` is a fire-order index,
+    // which the page mirrors by resolving positions through the same geometry the
+    // engine does.
+    match op {
+        "add_hit" => {
+            return Some(edit(EngineCommand::AddHit {
+                track,
+                beat: u16_at(v, "beat")?,
+                sub: u8_at(v, "sub")?,
+                f: f32_at(v, "f").unwrap_or(0.0),
+                nudge: i16_at(v, "nudge").unwrap_or(0),
+                y: f32_at(v, "y").unwrap_or(Y_CENTRE),
+                note: f32_at(v, "note")?,
+                velocity: f32_at(v, "velocity").unwrap_or(1.0),
+            }));
+        }
+        "remove_hit" => {
+            return Some(edit(EngineCommand::RemoveHit {
+                track,
+                hit: u16_at(v, "hit")?,
+            }));
+        }
+        "set_hit_position" => {
+            return Some(edit(EngineCommand::SetHitPosition {
+                track,
+                hit: u16_at(v, "hit")?,
+                beat: u16_at(v, "beat")?,
+                sub: u8_at(v, "sub")?,
+                f: f32_at(v, "f").unwrap_or(0.0),
+                nudge: i16_at(v, "nudge").unwrap_or(0),
+            }));
+        }
+        "set_hit_y" => {
+            return Some(edit(EngineCommand::SetHitY {
+                track,
+                hit: u16_at(v, "hit")?,
+                y: f32_at(v, "y")?,
+            }));
+        }
+        "set_hit_note" => {
+            return Some(edit(EngineCommand::SetHitNote {
+                track,
+                hit: u16_at(v, "hit")?,
+                note: f32_at(v, "note")?,
+                velocity: f32_at(v, "velocity").unwrap_or(1.0),
+            }));
+        }
+        "set_hit_probability" => {
+            return Some(edit(EngineCommand::SetHitProbability {
+                track,
+                hit: u16_at(v, "hit")?,
+                probability: f32_at(v, "probability")?,
+            }));
+        }
+        "set_hit_retrig" => {
+            return Some(edit(EngineCommand::SetHitRetrig {
+                track,
+                hit: u16_at(v, "hit")?,
+                retrig: Retrig {
+                    n: u8_at(v, "n")?,
+                    m: u8_at(v, "m")?,
+                    curve: curve_of(v.get("curve").and_then(|c| c.as_str()).unwrap_or("even")),
+                    vel_end: f32_at(v, "vel_end").unwrap_or(1.0),
+                },
+            }));
+        }
+        "quantise_hit_x" => {
+            return Some(edit(EngineCommand::QuantiseHitX {
+                track,
+                hit: u16_at(v, "hit")?,
+                amount: f32_at(v, "amount")?,
+            }));
+        }
+        "quantise_hit_y" => {
+            return Some(edit(EngineCommand::QuantiseHitY {
+                track,
+                hit: u16_at(v, "hit")?,
+                amount: f32_at(v, "amount")?,
+            }));
+        }
+        _ => {}
+    }
     match op {
         "set_send" => Some(edit(EngineCommand::SetSend {
             track,
@@ -382,9 +515,83 @@ mod tests {
         assert!(!html.contains("__APP_JS__"));
         assert!(!html.contains("__CONFIG_JSON__"));
         assert!(html.contains("\"tracks\":8"));
-        // The cell grid is sized from the default lane's real markers (0348).
-        assert!(html.contains("\"steps\":16"));
-        assert!(html.contains("\"subs\":4"));
+        // The strip draws its markers from real per-lane geometry (0353), so the
+        // page must be able to place one without a step count to multiply by.
+        assert!(html.contains("\"markers\":[0.0,1.0,2.0,3.0,4.0]"));
+        assert!(html.contains("\"subs\":[4,4,4,4]"));
+        assert!(html.contains("\"max_hits\":64"));
+        assert!(html.contains("\"swing\":{\"amount\":0.0,\"period\":2,\"shape\":0}"));
+    }
+
+    /// Every lane ships its own geometry — the strip is per-lane, and polymeter
+    /// means the lanes diverge the moment the user edits one.
+    #[test]
+    fn config_ships_geometry_for_every_lane() {
+        let config = serde_json::json!({ "lanes": (0..N_TRACKS).map(|_| grid_json(&Grid::default())).collect::<Vec<_>>() });
+        let lanes = config["lanes"].as_array().unwrap();
+        assert_eq!(lanes.len(), N_TRACKS);
+        for l in lanes {
+            assert_eq!(l["n_beats"], 4);
+            assert_eq!(l["len_beats"], 4.0);
+            assert_eq!(l["markers"].as_array().unwrap().len(), 5, "n_beats + 1 markers");
+            assert_eq!(l["subs"].as_array().unwrap().len(), 4);
+            assert_eq!(l["sub_override"][0], 0);
+        }
+    }
+
+    /// A tuplet beat rides on the sub-count override, not on the resolved count —
+    /// the page has to be able to tell one from the other or a lane-wide sub edit
+    /// would silently erase it.
+    #[test]
+    fn grid_json_reports_tuplet_overrides_separately() {
+        let mut g = Grid::default();
+        g.set_beat_subs(2, Some(3));
+        let j = grid_json(&g);
+        assert_eq!(j["subs"], serde_json::json!([4, 4, 3, 4]));
+        assert_eq!(j["sub_override"], serde_json::json!([0, 0, 3, 0]));
+    }
+
+    #[test]
+    fn parses_the_lane_strip_vocabulary() {
+        let ev = parse_custom_ui(
+            "add_hit",
+            &obj(r#"{"track":1,"beat":2,"sub":3,"f":0.5,"nudge":-12,"y":0.25,"note":36,"velocity":0.8}"#),
+        )
+        .unwrap();
+        match ev {
+            UiEvent::Custom(b) => match *b.downcast::<Vxn3UiCustom>().unwrap() {
+                Vxn3UiCustom::Edit(EngineCommand::AddHit {
+                    track, beat, sub, f, nudge, y, ..
+                }) => {
+                    assert_eq!((track, beat, sub), (1, 2, 3));
+                    assert_eq!((f, nudge, y), (0.5, -12, 0.25));
+                }
+                _ => panic!("wrong variant"),
+            },
+            _ => panic!("not custom"),
+        }
+        // The two quantise verbs are separate opcodes, so a selection can be
+        // corrected in one axis without touching the other.
+        for op in ["quantise_hit_x", "quantise_hit_y"] {
+            assert!(parse_custom_ui(op, &obj(r#"{"track":0,"hit":3,"amount":0.5}"#)).is_some());
+        }
+        for op in ["remove_hit", "set_hit_y", "set_hit_position", "set_hit_probability"] {
+            let json = r#"{"track":0,"hit":1,"beat":0,"sub":1,"f":0.2,"y":0.3,"probability":0.5}"#;
+            assert!(parse_custom_ui(op, &obj(json)).is_some(), "{op}");
+        }
+        // A missing offset reads as a welded hit rather than failing the parse.
+        let ev =
+            parse_custom_ui("set_hit_position", &obj(r#"{"track":0,"hit":0,"beat":1,"sub":0}"#))
+                .unwrap();
+        match ev {
+            UiEvent::Custom(b) => match *b.downcast::<Vxn3UiCustom>().unwrap() {
+                Vxn3UiCustom::Edit(EngineCommand::SetHitPosition { f, nudge, .. }) => {
+                    assert_eq!((f, nudge), (0.0, 0));
+                }
+                _ => panic!("wrong variant"),
+            },
+            _ => panic!("not custom"),
+        }
     }
 
     #[test]

@@ -1,16 +1,28 @@
 // VXN3 faceplate. Voice-library model: named voices (engine + flavour) live in a
 // library and are edited in the Voices tab; lanes reference a voice. Structured edits
 // → IPC ops; playhead ← view events.
+//
+// The pattern surface is the continuous lane strip of ADR 0007 §1 (0353): one
+// rectangular strip per track, X time and Y a modulation value, hits as freely
+// draggable diamonds. The grid is **drawn, not stored into** — a diamond's
+// position is the engine's (beat, sub, f, nudge) resolved for display through the
+// same geometry the engine fires it at.
 (function () {
   "use strict";
 
-  var CFG = window.__VXN3_CONFIG__ || { tracks: 8, steps: 16, subs: 4, engines: [], macro_slots: 3 };
-  // NS = subdivision slots in the default lane, NSUB = subdivisions per beat, so
-  // NS / NSUB is its beat count. Cells are still snapped to slot markers; the free
-  // lane strip that replaces them is 0353.
-  var NT = CFG.tracks, NS = CFG.steps, NSUB = CFG.subs || 4;
+  var CFG = window.__VXN3_CONFIG__ || { tracks: 8, lanes: [], engines: [], macro_slots: 3 };
+  var NT = CFG.tracks;
   var ENGINES = CFG.engines; // [{id,label,params:[...],flavours:[...]}]
   var NSLOT = CFG.macro_slots || 3;
+  // Engine-side limits, shipped rather than duplicated: the editor enforces the
+  // hit ceiling itself so the user sees it, instead of an over-capacity add being
+  // dropped silently on the audio thread.
+  var MAX_HITS = CFG.max_hits || 64;
+  var MAX_BEATS = CFG.max_beats || 16;
+  var MAX_SUBS = CFG.max_subs || 16;
+  var TICKS_PER_BEAT = CFG.ticks_per_beat || 30720;
+  var MAX_NUDGE_TICKS = CFG.max_nudge_ticks || 240;
+  var Y_CENTRE = CFG.y_centre != null ? CFG.y_centre : 0.5;
   var PROBS = [1.0, 0.75, 0.5, 0.25];
   var CURVES = ["linear", "exp"];
 
@@ -27,6 +39,8 @@
     if (txt != null) e.textContent = txt;
     return e;
   }
+  function clamp(x, lo, hi) { return x < lo ? lo : x > hi ? hi : x; }
+  function pct(x) { return (x * 100).toFixed(4) + "%"; }
   function engineById(id) {
     for (var i = 0; i < ENGINES.length; i++) if (ENGINES[i].id === id) return ENGINES[i];
     return ENGINES[0] || { id: "kick", label: "Kick", params: [], flavours: [] };
@@ -60,17 +74,13 @@
     var s = Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 1 ? v.toFixed(2) : v.toFixed(4);
     return unit ? s + " " + unit : s;
   }
-  function bindingForSlot(flav, slot) {
-    for (var i = 0; i < flav.bindings.length; i++) if (flav.bindings[i].slot === slot) return flav.bindings[i];
-    return null;
-  }
 
   // Fill indicator: set each range's `--pct` (thumb position) so the CSS track shows
   // the green→orange→red gradient up to the thumb and grey beyond.
   function paintRange(inp) {
     var min = parseFloat(inp.min), max = parseFloat(inp.max), val = parseFloat(inp.value);
-    var pct = max > min ? ((val - min) / (max - min)) * 100 : 0;
-    inp.style.setProperty("--pct", pct.toFixed(2) + "%");
+    var p = max > min ? ((val - min) / (max - min)) * 100 : 0;
+    inp.style.setProperty("--pct", p.toFixed(2) + "%");
   }
   function paintAllRanges() {
     Array.prototype.forEach.call(document.querySelectorAll('input[type="range"]'), paintRange);
@@ -78,6 +88,214 @@
   document.addEventListener("input", function (e) {
     if (e.target && e.target.type === "range") paintRange(e.target);
   });
+
+  // ── lane geometry: a port of the engine's grid.rs ────────────────────────────
+  // The strip has to place a marker, and there is no wasm build to ask, so the
+  // geometry is ported rather than approximated. Every X below comes from
+  // `subPos`; **none** comes from a step width times an index. That is not
+  // fastidiousness — 0365 applies the swing warp per *pair*, so one beat at swing
+  // runs long-short-long-short and any pixels-per-step assumption is simply wrong.
+  //
+  // The port is exact, not merely close: the page and the engine agree on a hit's
+  // resolved time bit for bit (`Math.fround` where the engine stores an `f32`),
+  // which is what lets the page mirror the engine's fire-order indices instead of
+  // reading them back over a channel that does not exist.
+
+  var MPC_MAX_RATIO = 0.75;   // Swing's knee ceiling
+  var MIN_SLOT = 1 / 64;      // grid.rs MIN_SLOT
+  var F_MAX = Math.fround(1 - 1.1920928955078125e-7); // 1 - f32::EPSILON
+  var f32 = Math.fround;      // one `f32` rounding, where the engine stores one
+  // Rust's `f32::round` breaks ties away from zero; `Math.round` breaks them
+  // toward +∞. Only `nudge` is ever rounded, and only in the quantise path, but a
+  // half-tick disagreement there is a fire-order disagreement.
+  function roundTiesAway(x) { return x < 0 ? -Math.round(-x) : Math.round(x); }
+
+  // Swing::w — one knee on [0, 1], monotonic with fixed endpoints.
+  function warp(sw, u) {
+    if (!(u > 0)) return 0; // <= 0 and NaN
+    if (u >= 1) return 1;
+    if (sw.shape !== 1 || !isFinite(sw.amount)) return u; // Straight
+    var a = clamp(sw.amount, -1, 1);
+    var s = 0.5 + a * (MPC_MAX_RATIO - 0.5);
+    return u <= 0.5 ? (u + u) * s : s + (u + u - 1) * (1 - s);
+  }
+  // SwingPeriod::subs — the interval the warp spans, in subdivisions. Tag 0 is the
+  // whole beat; any other tag is that many subdivisions (2 = the classic pair).
+  function periodSubs(sw, n) {
+    var c = sw.period === 0 ? n : sw.period;
+    return clamp(c, 1, Math.max(n, 1));
+  }
+  function subsAt(g, beat) { return g.subs[clamp(beat, 0, g.n_beats - 1)]; }
+
+  // Grid::sub_pos — position in beats of subdivision marker `k` of `beat`.
+  function subPos(g, beat, k) {
+    var b = Math.min(beat, g.n_beats - 1);
+    var n = subsAt(g, b);
+    if (k === 0) return g.markers[b];          // the beat marker itself, exactly
+    if (k >= n) return g.markers[b + 1];       // the next one, exactly
+    var lo = g.markers[b], hi = g.markers[b + 1];
+    var c = periodSubs(g.swing, n);
+    var g0 = Math.floor(k / c) * c;            // first subdivision of k's period
+    var width = Math.min(c, n - g0);           // a trailing period can be short
+    return lo + ((g0 + width * warp(g.swing, (k - g0) / width)) / n) * (hi - lo);
+  }
+  function totalSubs(g) {
+    var n = 0;
+    for (var b = 0; b < g.n_beats; b++) n += g.subs[b];
+    return n;
+  }
+  function subOfIndex(g, index) {
+    var rem = index;
+    for (var b = 0; b < g.n_beats; b++) {
+      if (rem < g.subs[b]) return { beat: b, sub: rem };
+      rem -= g.subs[b];
+    }
+    var last = g.n_beats - 1;
+    return { beat: last, sub: g.subs[last] - 1 };
+  }
+  // Grid::locate — resolve a beat position to its owning (beat, sub, frac).
+  function locate(g, t) {
+    var last = g.n_beats - 1;
+    if (!(t > g.markers[0])) return { beat: 0, sub: 0, frac: 0 };
+    if (t >= g.markers[g.n_beats]) return { beat: last, sub: subsAt(g, last) - 1, frac: 1 };
+    var beat = last;
+    for (var i = 0; i < g.n_beats; i++) {
+      if (t < g.markers[i + 1]) { beat = i; break; }
+    }
+    var sub = 0;
+    for (var k = subsAt(g, beat) - 1; k >= 0; k--) {
+      if (subPos(g, beat, k) <= t) { sub = k; break; }
+    }
+    var p0 = subPos(g, beat, sub), span = subPos(g, beat, sub + 1) - p0;
+    return { beat: beat, sub: sub, frac: span > 0 ? clamp((t - p0) / span, 0, 1) : 0 };
+  }
+  // The snap-target set is exactly the subdivision markers (ADR 0007 §2), beat
+  // markers included. The pattern *end* is not among them: a hit there would have
+  // no owning slot, which is also why `quantise_x` never moves one off the end.
+  function nearestMarker(g, t) {
+    var best = { beat: 0, sub: 0 }, bd = Infinity;
+    for (var b = 0; b < g.n_beats; b++) {
+      for (var k = 0; k < g.subs[b]; k++) {
+        var d = Math.abs(subPos(g, b, k) - t);
+        if (d < bd) { bd = d; best = { beat: b, sub: k }; }
+      }
+    }
+    return best;
+  }
+
+  function saneLen(len, n) {
+    var floor = n * MIN_SLOT;
+    return (isFinite(len) && len > floor) ? len : floor;
+  }
+  // Pattern::set_grid_beats — `set_n_beats` (uniform over the current length) then
+  // `set_len_beats(n)`. Ported step for step, rather than shortcut to `m[i] = i`,
+  // so the page's markers are the engine's markers and not a rounding away.
+  function relayoutBeats(g, nBeats) {
+    var n = clamp(Math.round(nBeats), 1, MAX_BEATS);
+    var len0 = saneLen(g.markers[g.n_beats], n);
+    var step = len0 / n, m = [];
+    for (var i = 0; i < n; i++) m.push(i * step);
+    m.push(len0);
+    var len = saneLen(n, n);
+    if (len0 > 0) {
+      var k = len / len0;
+      for (var j = 1; j < n; j++) m[j] *= k;
+    }
+    m[n] = len;
+    g.markers = m;
+    g.n_beats = n;
+    g.len_beats = len;
+    // Overrides past the new end are dropped, not parked: a shrink must not leave
+    // a value that springs back on a later grow.
+    var ov = [], subs = [];
+    for (var b = 0; b < n; b++) {
+      var o = g.sub_override[b] || 0;
+      ov.push(o);
+      subs.push(o || g.default_subs);
+    }
+    g.sub_override = ov;
+    g.subs = subs;
+  }
+  function setDefaultSubs(g, subs) {
+    g.default_subs = clamp(Math.round(subs), 1, MAX_SUBS);
+    for (var b = 0; b < g.n_beats; b++) g.subs[b] = g.sub_override[b] || g.default_subs;
+  }
+
+  // ── the hit list, in fire order ─────────────────────────────────────────────
+  // The page mirrors the engine's ordering exactly, because every hit-keyed edit
+  // names a hit by its fire-order index and there is no readback. Both sides sort
+  // on the same key, computed by the same arithmetic, with the same insertion
+  // rule — see the note on the geometry port above.
+
+  function canonicalHit(g, h) {
+    var b = clamp(h.beat | 0, 0, g.n_beats - 1);
+    var k = clamp(h.sub | 0, 0, subsAt(g, b) - 1);
+    h.beat = b;
+    h.sub = k;
+    // Narrow to `f32` **before** clamping, in that order: the engine receives an
+    // already-narrowed value and clamps that, and `fround` of a hair under 1 is 1,
+    // which the clamp would then have to catch rather than let through.
+    var f = Math.fround(h.f);
+    h.f = isFinite(f) ? clamp(f, 0, F_MAX) : 0;
+    h.nudge = clamp(roundTiesAway(h.nudge || 0), -MAX_NUDGE_TICKS, MAX_NUDGE_TICKS);
+    return h;
+  }
+  // Pattern::fire_beat — the resolved position, which is also where the diamond
+  // is drawn. One mapping for both, so a drag across a marker cannot make the hit
+  // jump: the picture is the model.
+  function fireBeat(g, h) {
+    var p0 = subPos(g, h.beat, h.sub);
+    var span = subPos(g, h.beat, h.sub + 1) - p0;
+    var half = 0.5 * span;
+    var nudge = clamp(h.nudge / TICKS_PER_BEAT, -half, half);
+    var t = h.f <= 0 ? p0 + nudge : p0 + h.f * span + nudge;
+    return clamp(t, 0, g.len_beats);
+  }
+  // Insert in fire order, returning the index — or -1 at the ceiling, which the
+  // caller turns into visible feedback rather than a silent drop.
+  function insertHit(lane, h) {
+    if (lane.hits.length >= MAX_HITS) return -1;
+    canonicalHit(lane.g, h);
+    var t = fireBeat(lane.g, h), j = lane.hits.length;
+    while (j > 0 && fireBeat(lane.g, lane.hits[j - 1]) > t) {
+      lane.hits[j] = lane.hits[j - 1];
+      j--;
+    }
+    lane.hits[j] = h;
+    return j;
+  }
+  // Pattern::canonicalise — clamp every hit into the current geometry and
+  // re-establish fire order. Run after a geometry edit, which moves all of them.
+  function canonicaliseLane(lane) {
+    var g = lane.g, hits = lane.hits, key = [];
+    for (var i = 0; i < hits.length; i++) key[i] = fireBeat(g, canonicalHit(g, hits[i]));
+    for (var a = 1; a < hits.length; a++) {
+      var kk = key[a], hh = hits[a], j = a;
+      while (j > 0 && key[j - 1] > kk) {
+        key[j] = key[j - 1];
+        hits[j] = hits[j - 1];
+        j--;
+      }
+      key[j] = kk;
+      hits[j] = hh;
+    }
+  }
+  // Pattern::set_position — remove and re-insert, so the new index falls out of
+  // the same code that keeps the order.
+  function moveHit(lane, index, beat, sub, f, nudge) {
+    var h = lane.hits[index];
+    if (!h) return -1;
+    h.beat = beat; h.sub = sub; h.f = f; h.nudge = nudge;
+    lane.hits.splice(index, 1);
+    return insertHit(lane, h);
+  }
+  // Pattern::next_marker — the marker after (beat, sub), or itself at the end.
+  function nextMarker(g, beat, sub) {
+    var b = Math.min(beat, g.n_beats - 1), k = Math.min(sub, subsAt(g, b) - 1);
+    if (k + 1 < subsAt(g, b)) return { beat: b, sub: k + 1 };
+    if (b + 1 < g.n_beats) return { beat: b + 1, sub: 0 };
+    return { beat: b, sub: k };
+  }
 
   // ── voice library ───────────────────────────────────────────────────────────
   // voice = { id, name, engine, flavour, note }. Seeded from the factory flavours (one
@@ -118,17 +336,36 @@
     return null;
   }
 
-  // ── lanes (reference a voice) ────────────────────────────────────────────────
+  // ── lanes (geometry + hits + a voice reference) ──────────────────────────────
   var DEFAULT_LANE = ["Kick", "Closed Hat", "Snare", "Tom", "Clap", "Open Hat", "Ride", "Crash"];
   // Choke groups (0 = none). Closed + Open Hat share group 1 → a closed hit cuts the open
   // ring, the 808 relationship, as a cross-track routing link (not a per-hit note change).
   var DEFAULT_CHOKE = [0, 1, 0, 0, 0, 1, 0, 0];
+  var FALLBACK_GRID = {
+    n_beats: 4, len_beats: 4, markers: [0, 1, 2, 3, 4], subs: [4, 4, 4, 4],
+    sub_override: [0, 0, 0, 0], default_subs: 4, swing: { shape: 0, amount: 0, period: 2 },
+  };
+  function laneGeometry(t) {
+    var src = (CFG.lanes && CFG.lanes[t]) || FALLBACK_GRID;
+    return {
+      n_beats: src.n_beats,
+      len_beats: src.len_beats,
+      markers: src.markers.slice(),
+      subs: src.subs.slice(),
+      sub_override: (src.sub_override || []).slice(),
+      default_subs: src.default_subs,
+      swing: { shape: src.swing.shape, amount: src.swing.amount, period: src.swing.period },
+    };
+  }
   var lanes = [];
   for (var t = 0; t < NT; t++) {
-    var steps = [];
-    for (var s = 0; s < NS; s++) steps.push({ on: false, prob: 1.0, retrig: false });
-    var v = voiceByName(DEFAULT_LANE[t]) || voices[t % voices.length] || voices[0];
-    lanes.push({ voiceId: v ? v.id : 0, beats: NS / NSUB, len: NS, steps: steps, choke: DEFAULT_CHOKE[t] || 0 });
+    var v0 = voiceByName(DEFAULT_LANE[t]) || voices[t % voices.length] || voices[0];
+    lanes.push({
+      voiceId: v0 ? v0.id : 0,
+      g: laneGeometry(t),
+      hits: [],
+      choke: DEFAULT_CHOKE[t] || 0,
+    });
   }
 
   // Assign a voice to a lane: update the reference, tell the backend (engine + the
@@ -136,11 +373,12 @@
   function assignVoice(track, voiceId) {
     lanes[track].voiceId = voiceId;
     var v = voiceById(voiceId);
-    // Re-pitch any already-lit steps to the new voice's note (a hat's open/closed identity
-    // lives in the note, so reassigning must re-note or the drum plays at the old pitch).
-    var st = lanes[track].steps;
-    for (var s = 0; s < st.length; s++) {
-      if (st[s].on) send("set_hit", { track: track, slot: s, note: v.note, velocity: 1.0 });
+    // Re-pitch every hit to the new voice's note (a hat's open/closed identity lives
+    // in the note, so reassigning must re-note or the drum plays at the old pitch).
+    var hits = lanes[track].hits;
+    for (var i = 0; i < hits.length; i++) {
+      hits[i].note = v.note;
+      send("set_hit_note", { track: track, hit: i, note: v.note, velocity: hits[i].velocity });
     }
     send("assign_voice", {
       track: track, engine: v.engine,
@@ -165,18 +403,65 @@
 
   // ── Pattern tab: the rack ────────────────────────────────────────────────────
   var rack = document.getElementById("rack");
-  var cellEls = [];       // cellEls[t][s]
+  var stripEls = [];      // stripEls[t] — the lane strip
+  var markerEls = [];     // markerEls[t] — its marker layer
+  var hitLayerEls = [];   // hitLayerEls[t] — its diamond layer
+  var playEls = [];       // playEls[t] — its playhead line
   var voiceBoxEls = [];   // voiceBoxEls[t]
   var macroLabelEls = []; // macroLabelEls[t][slot]
   var macroKnobEls = [];  // macroKnobEls[t][slot] — the 3 performance-macro knob handles
 
-  function renderCell(t, s) {
-    var el2 = cellEls[t][s], st = lanes[t].steps[s];
-    el2.className = "cell" + (s % NSUB === 0 ? " beat" : "")
-      + (s >= lanes[t].len ? " off" : "")
-      + (st.on ? " on" : "")
-      + (st.retrig ? " retrig" : "");
-    el2.style.opacity = st.on ? String(st.prob) : "";
+  // Selection holds hit **objects**, not indices: every position edit re-sorts the
+  // lane, so an index is only valid until the next drag.
+  var selection = [];
+  var snapOn = true;
+  var quantAmount = 1.0;
+  var statusEl = null;
+
+  function isSelected(h) { return selection.indexOf(h) >= 0; }
+  function setStatus(msg) { if (statusEl) statusEl.textContent = msg || ""; }
+
+  function renderHits(t) {
+    var lane = lanes[t], layer = hitLayerEls[t];
+    layer.innerHTML = "";
+    for (var i = 0; i < lane.hits.length; i++) {
+      var h = lane.hits[i];
+      var d = el("div", "hit" + (h.retrig ? " retrig" : "") + (isSelected(h) ? " sel" : ""));
+      d.style.left = pct(fireBeat(lane.g, h) / lane.g.len_beats);
+      d.style.top = pct(1 - clamp(h.y, 0, 1));
+      d.style.opacity = String(h.prob);
+      // Welded hits read differently from placed ones — `f = 0` is the stored form
+      // that survives a groove edit, and it is worth being able to see which is which.
+      if (h.f === 0 && h.nudge === 0) d.classList.add("welded");
+      layer.appendChild(d);
+    }
+  }
+  function renderMarkers(t) {
+    var lane = lanes[t], g = lane.g, layer = markerEls[t];
+    layer.innerHTML = "";
+    for (var b = 0; b < g.n_beats; b++) {
+      for (var k = 0; k < g.subs[b]; k++) {
+        var m = el("div", "marker " + (k === 0 ? "beat" : "sub"));
+        m.style.left = pct(subPos(g, b, k) / g.len_beats);
+        layer.appendChild(m);
+      }
+    }
+    var end = el("div", "marker beat end");
+    end.style.left = "100%";
+    layer.appendChild(end);
+  }
+  function renderLaneStrip(t) {
+    renderMarkers(t);
+    renderHits(t);
+  }
+
+  // The ceiling, shown rather than swallowed: the engine's insert drops an
+  // over-capacity hit, so the editor refuses first and says so.
+  function laneFull(t) {
+    stripEls[t].classList.add("full");
+    setStatus("Track " + (t + 1) + " is full — " + MAX_HITS + " hits is the lane ceiling.");
+    var s = stripEls[t];
+    window.setTimeout(function () { s.classList.remove("full"); }, 700);
   }
 
   // A macro slot's lane label = the assigned voice's macro name (override / first bound
@@ -206,6 +491,211 @@
     // snap its performance macros to the shipped defaults).
     return { wrap: wrap, label: lab, input: inp, set: function (x) { inp.value = x; oninput(parseFloat(inp.value)); } };
   }
+  function makeNumber(label, title, min, max, value, onchange) {
+    var wrap = el("div", "len");
+    wrap.appendChild(el("label", null, label));
+    var inp = document.createElement("input");
+    inp.type = "number"; inp.min = min; inp.max = max; inp.value = value; inp.title = title;
+    inp.addEventListener("change", function () {
+      var n = clamp(parseInt(inp.value, 10) || min, min, max);
+      inp.value = n;
+      onchange(n);
+    });
+    wrap.appendChild(inp);
+    return wrap;
+  }
+
+  // ── strip interaction: place, drag, delete ──────────────────────────────────
+  // A pointer position, resolved through the lane's geometry rather than through
+  // any notion of a cell: `x` is a beat position, `y` is the lane's modulation axis.
+  function pointerAt(t, ev) {
+    var r = stripEls[t].getBoundingClientRect();
+    var u = clamp((ev.clientX - r.left) / Math.max(r.width, 1), 0, 1);
+    var y = clamp((ev.clientY - r.top) / Math.max(r.height, 1), 0, 1);
+    return { t: u * lanes[t].g.len_beats, y: f32(1 - y) };
+  }
+  // Where a drag or a placement lands, as the stored form. With snap on the hit is
+  // **welded** to the nearest marker (`f = 0`, no nudge), which is the form that
+  // survives a later groove edit; with snap off the position is expressed as a
+  // fraction of the slot the pointer is over, so crossing a beat marker changes
+  // `(beat, sub)` and recomputes `f` in one step and the diamond does not jump.
+  function positionFor(g, beatPos) {
+    if (snapOn) {
+      var m = nearestMarker(g, beatPos);
+      return { beat: m.beat, sub: m.sub, f: 0, nudge: 0 };
+    }
+    var at = locate(g, beatPos);
+    return { beat: at.beat, sub: at.sub, f: at.frac, nudge: 0 };
+  }
+
+  var drag = null; // { track, hit, moved }
+
+  function onStripDown(t, ev) {
+    var lane = lanes[t];
+    var idx = -1;
+    if (ev.target && ev.target.classList.contains("hit")) {
+      idx = Array.prototype.indexOf.call(hitLayerEls[t].children, ev.target);
+    }
+    ev.preventDefault();
+    if (idx < 0) {
+      // Empty strip: place a hit where the pointer is.
+      var p = pointerAt(t, ev);
+      var pos = positionFor(lane.g, p.t);
+      var v = voiceById(lane.voiceId);
+      var h = {
+        beat: pos.beat, sub: pos.sub, f: pos.f, nudge: pos.nudge, y: p.y,
+        note: v.note, velocity: 1.0, prob: 1.0, retrig: false,
+      };
+      var at = insertHit(lane, h);
+      if (at < 0) { laneFull(t); return; }
+      send("add_hit", {
+        track: t, beat: h.beat, sub: h.sub, f: h.f, nudge: h.nudge,
+        y: h.y, note: h.note, velocity: h.velocity,
+      });
+      selection = [h];
+      renderAllHits();
+      setStatus("");
+      return;
+    }
+    var hit = lane.hits[idx];
+    if (ev.altKey) {
+      send("remove_hit", { track: t, hit: idx });
+      lane.hits.splice(idx, 1);
+      selection = selection.filter(function (x) { return x !== hit; });
+      renderHits(t);
+      return;
+    }
+    if (ev.ctrlKey || ev.metaKey) {
+      hit.prob = PROBS[(PROBS.indexOf(hit.prob) + 1) % PROBS.length];
+      send("set_hit_probability", { track: t, hit: idx, probability: hit.prob });
+      renderHits(t);
+      return;
+    }
+    if (ev.shiftKey) {
+      if (isSelected(hit)) selection = selection.filter(function (x) { return x !== hit; });
+      else selection.push(hit);
+    } else if (!isSelected(hit)) {
+      selection = [hit];
+    }
+    drag = { track: t, hit: hit };
+    renderAllHits();
+  }
+
+  function onDragMove(ev) {
+    if (!drag) return;
+    var t = drag.track, lane = lanes[t];
+    var idx = lane.hits.indexOf(drag.hit);
+    if (idx < 0) { drag = null; return; }
+    var p = pointerAt(t, ev);
+    var pos = positionFor(lane.g, p.t);
+    var y = p.y;
+    var moved = pos.beat !== drag.hit.beat || pos.sub !== drag.hit.sub
+      || f32(pos.f) !== drag.hit.f || y !== drag.hit.y;
+    if (!moved) return;
+    // Y first: it cannot reorder the lane, so it is keyed by the index the X edit
+    // is about to invalidate.
+    if (y !== drag.hit.y) {
+      drag.hit.y = y;
+      send("set_hit_y", { track: t, hit: idx, y: y });
+    }
+    if (pos.beat !== drag.hit.beat || pos.sub !== drag.hit.sub || f32(pos.f) !== drag.hit.f) {
+      send("set_hit_position", {
+        track: t, hit: idx, beat: pos.beat, sub: pos.sub, f: pos.f, nudge: pos.nudge,
+      });
+      moveHit(lane, idx, pos.beat, pos.sub, pos.f, pos.nudge);
+    }
+    renderHits(t);
+  }
+  function onDragUp() { drag = null; }
+
+  function renderAllHits() {
+    for (var t = 0; t < NT; t++) renderHits(t);
+  }
+
+  // ── quantise: two independent verbs, applied to the selection ───────────────
+  // Editor verbs, not storage constraints (ADR 0007 §1). The page applies the same
+  // arithmetic the engine does so the two lists stay in step; a full quantise-X
+  // lands the hit **on** its marker (`f = 0`, no nudge) rather than at `f ≈ 1`
+  // against the marker before it, because only the former welds.
+  // `f32` at every step, because the engine's arithmetic is `f32` at every step
+  // and the two lists have to agree on a fire time to agree on an index.
+  function quantiseSelectionX(amount) {
+    var a = f32(clamp(amount, 0, 1));
+    for (var t = 0; t < NT; t++) {
+      var lane = lanes[t];
+      for (var s = 0; s < selection.length; s++) {
+        var h = selection[s];
+        var idx = lane.hits.indexOf(h);
+        if (idx < 0) continue;
+        send("quantise_hit_x", { track: t, hit: idx, amount: a });
+        var towardNext = h.f > 0.5;
+        if (a >= 1) {
+          var m = towardNext ? nextMarker(lane.g, h.beat, h.sub) : { beat: h.beat, sub: h.sub };
+          moveHit(lane, idx, m.beat, m.sub, 0, 0);
+        } else {
+          var f = towardNext
+            ? f32(h.f + f32(f32(1 - h.f) * a))
+            : f32(h.f * f32(1 - a));
+          moveHit(lane, idx, h.beat, h.sub, f, roundTiesAway(f32(h.nudge * f32(1 - a))));
+        }
+      }
+      renderHits(t);
+    }
+  }
+  function quantiseSelectionY(amount) {
+    var a = f32(clamp(amount, 0, 1));
+    for (var t = 0; t < NT; t++) {
+      var lane = lanes[t];
+      for (var s = 0; s < selection.length; s++) {
+        var h = selection[s];
+        var idx = lane.hits.indexOf(h);
+        if (idx < 0) continue;
+        send("quantise_hit_y", { track: t, hit: idx, amount: a });
+        h.y = f32(h.y + f32(f32(Y_CENTRE - h.y) * a)); // the curve is flat until 0350
+      }
+      renderHits(t);
+    }
+  }
+
+  function buildRackBar() {
+    var bar = el("div", "rackbar");
+    var snapWrap = el("label", "rb-toggle");
+    var snapBox = document.createElement("input");
+    snapBox.type = "checkbox";
+    snapBox.checked = snapOn;
+    snapBox.addEventListener("change", function () { snapOn = snapBox.checked; });
+    snapWrap.appendChild(snapBox);
+    snapWrap.appendChild(el("span", null, "Snap"));
+    snapWrap.title = "drop a diamond welded to the nearest subdivision marker";
+    bar.appendChild(snapWrap);
+
+    var amt = el("div", "rb-amount");
+    amt.appendChild(el("label", null, "Amt"));
+    var slider = document.createElement("input");
+    slider.type = "range"; slider.min = 0; slider.max = 1; slider.step = 0.01; slider.value = quantAmount;
+    slider.title = "quantise strength — a partial amount lerps toward the marker";
+    slider.addEventListener("input", function () { quantAmount = parseFloat(slider.value); });
+    amt.appendChild(slider);
+    bar.appendChild(amt);
+
+    var qx = el("button", "rb-btn", "Quantise X");
+    qx.title = "pull the selection toward the nearest subdivision marker";
+    qx.addEventListener("click", function () { quantiseSelectionX(quantAmount); });
+    bar.appendChild(qx);
+
+    var qy = el("button", "rb-btn", "Quantise Y");
+    qy.title = "pull the selection toward the groove's centre curve";
+    qy.addEventListener("click", function () { quantiseSelectionY(quantAmount); });
+    bar.appendChild(qy);
+
+    statusEl = el("span", "rb-status", "");
+    bar.appendChild(statusEl);
+
+    var hint = el("span", "rb-hint",
+      "click places · drag moves · alt deletes · ctrl cycles probability · dbl toggles retrig · shift selects");
+    bar.appendChild(hint);
+    rack.parentNode.insertBefore(bar, rack);
+  }
 
   function buildTrack(t) {
     var row = el("div", "track");
@@ -216,38 +706,37 @@
     box.addEventListener("click", function () { openBrowser(t); });
     row.appendChild(box);
 
-    // Steps.
-    var stepsEl = el("div", "steps");
-    cellEls[t] = [];
-    for (var s = 0; s < NS; s++) {
-      (function (s) {
-        var c = document.createElement("div");
-        cellEls[t][s] = c;
-        c.addEventListener("mousedown", function (ev) {
-          // Cells past the lane's live length address no slot, and the engine
-          // ignores them (0348) — so must the click, or the two disagree.
-          if (s >= lanes[t].len) return;
-          var st = lanes[t].steps[s];
-          if (ev.shiftKey && st.on) {
-            st.prob = PROBS[(PROBS.indexOf(st.prob) + 1) % PROBS.length];
-            send("set_probability", { track: t, slot: s, probability: st.prob });
-          } else if (ev.altKey && st.on) {
-            st.retrig = !st.retrig;
-            if (st.retrig) send("set_retrig", { track: t, slot: s, n: 4, m: 2, curve: "even", vel_end: 0.4 });
-            else send("set_retrig", { track: t, slot: s, n: 1, m: 1, curve: "even", vel_end: 1.0 });
-          } else {
-            st.on = !st.on;
-            if (st.on) send("set_hit", { track: t, slot: s, note: voiceById(lanes[t].voiceId).note, velocity: 1.0 });
-            else send("toggle_hit", { track: t, slot: s });
-          }
-          renderCell(t, s);
-        });
-        stepsEl.appendChild(c);
-      })(s);
-    }
-    row.appendChild(stepsEl);
+    // The lane strip: X is time, Y is a modulation value.
+    var strip = el("div", "strip");
+    strip.title = "lane " + (t + 1) + " — X is time, Y is modulation";
+    stripEls[t] = strip;
+    markerEls[t] = el("div", "markers");
+    strip.appendChild(markerEls[t]);
+    var centre = el("div", "centre");
+    centre.style.top = pct(1 - Y_CENTRE);
+    strip.appendChild(centre);
+    playEls[t] = el("div", "playhead hidden");
+    strip.appendChild(playEls[t]);
+    hitLayerEls[t] = el("div", "hits");
+    strip.appendChild(hitLayerEls[t]);
+    (function (t) {
+      strip.addEventListener("mousedown", function (ev) { onStripDown(t, ev); });
+      strip.addEventListener("dblclick", function (ev) {
+        if (!ev.target || !ev.target.classList.contains("hit")) return;
+        var idx = Array.prototype.indexOf.call(hitLayerEls[t].children, ev.target);
+        var h = lanes[t].hits[idx];
+        if (!h) return;
+        h.retrig = !h.retrig;
+        send("set_hit_retrig", h.retrig
+          ? { track: t, hit: idx, n: 4, m: 2, curve: "even", vel_end: 0.4 }
+          : { track: t, hit: idx, n: 1, m: 1, curve: "even", vel_end: 1.0 });
+        renderHits(t);
+      });
+    })(t);
+    row.appendChild(strip);
 
-    // Knobs: 3 performance macros (labelled from the voice's bindings) + gain/pan/send/len.
+    // Knobs: 3 performance macros (labelled from the voice's bindings) + gain/pan/send,
+    // then the lane's own geometry (beats, subdivisions) and its choke group.
     var knobs = el("div", "knobs");
     macroLabelEls[t] = [];
     macroKnobEls[t] = [];
@@ -265,47 +754,39 @@
     knobs.appendChild(makeKnob("Pan", -1, 1, 0.01, 0.0, function (v) { send("set_pan", { track: t, pan: v }); }).wrap);
     knobs.appendChild(makeKnob("Send", 0, 1, 0.01, 0.0, function (v) { send("set_send", { track: t, amount: v }); }).wrap);
 
-    // Lane length is a beat count now, not a step count (0348): a lane of fewer
-    // beats loops sooner and phases against its neighbours — polymeter as geometry.
-    var maxBeats = Math.max(1, Math.floor(NS / NSUB));
-    var len = el("div", "len");
-    len.appendChild(el("label", null, "Bts"));
-    var li = document.createElement("input");
-    li.type = "number"; li.min = 1; li.max = maxBeats; li.value = lanes[t].beats;
-    li.title = "beats in this lane (its loop length)";
-    li.addEventListener("change", function () {
-      var n = Math.max(1, Math.min(maxBeats, parseInt(li.value, 10) || maxBeats));
-      lanes[t].beats = n; lanes[t].len = n * NSUB; li.value = n;
+    // Lane length is a beat count (0348): a lane of fewer beats loops sooner and
+    // phases against its neighbours — polymeter as geometry. Changing it re-lays
+    // the markers, which re-times every hit hanging off them.
+    knobs.appendChild(makeNumber("Bts", "beats in this lane (its loop length)", 1, MAX_BEATS, lanes[t].g.n_beats, function (n) {
       send("set_grid_beats", { track: t, beats: n });
-      // Shortening a lane re-snaps the hits whose slots it removed onto the last
-      // surviving one (0348), so the cells past the end no longer stand for
-      // anything — clear them rather than leave the page asserting a lie.
-      for (var s = lanes[t].len; s < NS; s++) lanes[t].steps[s].on = false;
-      for (var s = 0; s < NS; s++) renderCell(t, s);
-    });
-    len.appendChild(li);
-    knobs.appendChild(len);
-
+      relayoutBeats(lanes[t].g, n);
+      canonicaliseLane(lanes[t]);
+      renderLaneStrip(t);
+    }));
+    // Subdivisions per beat — the snap-target density, and what the sub markers
+    // draw. Three inside an otherwise-16ths lane is where a tuplet lives.
+    knobs.appendChild(makeNumber("Sub", "subdivisions per beat (the snap targets)", 1, MAX_SUBS, lanes[t].g.default_subs, function (n) {
+      send("set_grid_subs", { track: t, subs: n });
+      setDefaultSubs(lanes[t].g, n);
+      canonicaliseLane(lanes[t]);
+      renderLaneStrip(t);
+    }));
     // Choke group (0 = none). Tracks sharing a non-zero group cut each other.
-    var chk = el("div", "len");
-    chk.appendChild(el("label", null, "Chk"));
-    var ci = document.createElement("input");
-    ci.type = "number"; ci.min = 0; ci.max = 7; ci.value = lanes[t].choke;
-    ci.title = "choke group (0 = none; shared group = mutual cut)";
-    ci.addEventListener("change", function () {
-      var g = Math.max(0, Math.min(7, parseInt(ci.value, 10) || 0));
-      lanes[t].choke = g; ci.value = g;
+    knobs.appendChild(makeNumber("Chk", "choke group (0 = none; shared group = mutual cut)", 0, 7, lanes[t].choke, function (g) {
+      lanes[t].choke = g;
       send("set_choke_group", { track: t, group: g });
-    });
-    chk.appendChild(ci);
-    knobs.appendChild(chk);
+    }));
     row.appendChild(knobs);
 
     rack.appendChild(row);
     refreshLane(t);
-    for (var s2 = 0; s2 < NS; s2++) renderCell(t, s2);
+    renderLaneStrip(t);
   }
+
+  buildRackBar();
   for (var t2 = 0; t2 < NT; t2++) buildTrack(t2);
+  document.addEventListener("mousemove", onDragMove);
+  document.addEventListener("mouseup", onDragUp);
   // Push the seeded kit to the backend: each track's default engine is generic, so without
   // this the loaded pattern would play default voices, not the labelled ones. Sends engine +
   // flavour + snaps the macro knobs for every lane.
@@ -538,11 +1019,18 @@
   });
 
   // ── playhead + view-event sink ──────────────────────────────────────────────
-  var lastPlay = new Array(NT).fill(-1);
-  function setPlay(t, step) {
-    if (lastPlay[t] >= 0 && cellEls[t][lastPlay[t]]) cellEls[t][lastPlay[t]].classList.remove("play");
-    if (step >= 0 && step < NS && cellEls[t][step]) cellEls[t][step].classList.add("play");
-    lastPlay[t] = step;
+  // The engine publishes a subdivision-slot index per lane; the strip places it
+  // through the lane's own geometry, so the line tracks the **swung** grid rather
+  // than a nominal fraction of the bar.
+  function setPlay(t, slot) {
+    var line = playEls[t], g = lanes[t].g;
+    if (slot < 0 || slot >= totalSubs(g)) {
+      line.classList.add("hidden");
+      return;
+    }
+    var at = subOfIndex(g, slot);
+    line.style.left = pct(subPos(g, at.beat, at.sub) / g.len_beats);
+    line.classList.remove("hidden");
   }
   var transport = document.getElementById("transport");
   window.__vxn = window.__vxn || {};

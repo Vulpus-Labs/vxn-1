@@ -103,18 +103,63 @@ input[type="range"]:disabled::-webkit-slider-thumb { background: var(--dim); box
 .voice-box.noise  { background: var(--noise);  border-color: var(--noise); }
 .voice-box.struck { background: var(--struck); border-color: var(--struck); }
 
-.steps { display: flex; gap: 3px; flex-wrap: nowrap; }
-.cell {
-  width: 26px; height: 26px;
+/* ── The lane strip (0353): X is time, Y is a modulation value ──
+   The grid is drawn, never stored into — every marker's `left` is written by JS
+   from the lane's real geometry, so nothing here may assume even spacing (the
+   swung grid is unevenly spaced by construction). */
+.strip {
+  position: relative; width: 420px; height: 54px;
   background: var(--panel-hi);
-  border: 1px solid var(--line);
-  border-radius: 3px; cursor: pointer; position: relative;
+  border: 1px solid var(--line); border-radius: 4px;
+  overflow: hidden; cursor: crosshair;
 }
-.cell.beat { border-color: #44506a; }
-.cell.off  { opacity: 0.35; }
-.cell.on   { background: var(--accent); border-color: var(--accent); }
-.cell.retrig::after { content: ""; position: absolute; inset: 4px; border: 1px solid #1b1b1b; border-radius: 2px; }
-.cell.play { box-shadow: 0 0 0 2px #fff inset; }
+.strip.full { box-shadow: inset 0 0 0 2px #ff5c5c; }
+
+/* Marker / centre / playhead layers never take the pointer: a click on the strip
+   is a placement, and it must not depend on which piece of the grid it landed on. */
+.markers, .centre, .playhead, .hits { position: absolute; inset: 0; pointer-events: none; }
+.marker { position: absolute; top: 0; bottom: 0; transform: translateX(-50%); }
+.marker.sub  { width: 1px; background: #2b333f; }
+.marker.beat { width: 2px; background: #5b6884; }
+.marker.beat.end { background: #46516a; }
+
+/* The groove's Y-centre curve — flat until 0350 puts control points on the beat
+   markers, which is exactly why Y reads as absolute-in-lane for now. */
+.centre { inset: auto 0 auto 0; height: 1px; background: #303948; }
+
+.playhead { left: 0; width: 1px; right: auto; background: #fff; opacity: 0.7; }
+
+.hit {
+  position: absolute; width: 11px; height: 11px;
+  background: var(--accent); border: 1px solid #0e1015;
+  transform: translate(-50%, -50%) rotate(45deg);
+  pointer-events: auto; cursor: grab;
+}
+/* A welded hit (stored `f = 0`) is the form that survives a groove edit; a placed
+   one is hollow, so which is which is visible without reading a number. */
+.hit.welded { background: var(--accent); }
+.hit:not(.welded) { background: var(--panel); border-color: var(--accent); }
+.hit.sel { box-shadow: 0 0 0 2px #fff; z-index: 2; }
+.hit.retrig::after { content: ""; position: absolute; inset: 2px; border: 1px solid #0e1015; }
+
+/* ── Rack toolbar: snap, quantise amount, the two quantise verbs ── */
+.rackbar {
+  display: flex; align-items: center; gap: 14px;
+  margin: 8px 8px 0; padding: 6px 10px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+}
+.rb-toggle { display: flex; align-items: center; gap: 5px; color: var(--text); cursor: pointer; }
+.rb-amount { display: flex; align-items: center; gap: 6px; }
+.rb-amount label { color: var(--dim); font-size: 9px; text-transform: uppercase; }
+.rb-amount input { width: 90px; }
+.rb-btn {
+  background: var(--panel-hi); color: var(--text);
+  border: 1px solid var(--line); border-radius: 4px;
+  padding: 4px 12px; cursor: pointer; font-size: 11px;
+}
+.rb-btn:hover { border-color: var(--accent); color: var(--accent); }
+.rb-status { color: #ff8a8a; font-size: 11px; }
+.rb-hint { margin-left: auto; color: var(--dim); font-size: 10px; }
 
 .knobs { display: flex; gap: 8px; align-items: center; justify-content: flex-start; }
 .knob { display: flex; flex-direction: column; align-items: center; gap: 2px; width: 42px; }
