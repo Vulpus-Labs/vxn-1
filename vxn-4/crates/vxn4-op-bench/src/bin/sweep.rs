@@ -73,6 +73,9 @@ fn best_rate<F: FnMut()>(voices_per_bank: usize, mut render_block: F) -> f64 {
 fn measure_vm<const V: usize, L: Lookup>(fx: &Fixture) -> f64 {
     let mut bank: VoiceMajor<V> = VoiceMajor::new();
     bank.cook(&fx.bank, &fx.cfg, &keys::<V>(), fx.sr_os());
+    // Real coefficients, not the unity bypass a fresh bank starts at —
+    // the pass runs either way, but the bench should price what ships.
+    bank.set_damping(&fx.cfg, fx.sr_os());
     let (mut l, mut r) = ([0.0f32; BLOCK_1X], [0.0f32; BLOCK_1X]);
     best_rate(V, || {
         bank.render::<L>(&fx.bank, &fx.compiled, &fx.bus, fx.os, &mut l, &mut r);
@@ -83,6 +86,9 @@ fn measure_vm<const V: usize, L: Lookup>(fx: &Fixture) -> f64 {
 fn measure_om<const V: usize, L: Lookup>(fx: &Fixture) -> f64 {
     let mut bank: OpMajor<V> = OpMajor::new();
     bank.cook(&fx.bank, &fx.cfg, &keys::<V>(), fx.sr_os());
+    // Real coefficients, not the unity bypass a fresh bank starts at —
+    // the pass runs either way, but the bench should price what ships.
+    bank.set_damping(&fx.cfg, fx.sr_os());
     let (mut l, mut r) = ([0.0f32; BLOCK_1X], [0.0f32; BLOCK_1X]);
     best_rate(V, || {
         bank.render::<L>(&fx.bank, &fx.compiled, &fx.bus, fx.os, &mut l, &mut r);
@@ -93,6 +99,9 @@ fn measure_om<const V: usize, L: Lookup>(fx: &Fixture) -> f64 {
 fn measure_pvg<const V: usize, L: Lookup>(fx: &Fixture) -> f64 {
     let mut bank: VoiceMajorPerVoiceGain<V> = VoiceMajorPerVoiceGain::new(&fx.routing, 0.2);
     bank.cook(&fx.bank, &fx.cfg, &keys::<V>(), fx.sr_os());
+    // Real coefficients, not the unity bypass a fresh bank starts at —
+    // the pass runs either way, but the bench should price what ships.
+    bank.set_damping(&fx.cfg, fx.sr_os());
     let (mut l, mut r) = ([0.0f32; BLOCK_1X], [0.0f32; BLOCK_1X]);
     best_rate(V, || {
         bank.render::<L>(&fx.bank, &fx.compiled, &fx.bus, fx.os, &mut l, &mut r);
@@ -260,7 +269,10 @@ fn main() {
     // ---------------------------------------------------------------- table 4
     println!("\nLookup in the full block  (512-entry, 16x, dense, voice-major V=8)");
     rule(52);
-    println!("{:>26}  {:>10}  {:>12}", "lookup", "polyphony", "voice-samp/s");
+    println!(
+        "{:>26}  {:>10}  {:>12}",
+        "lookup", "polyphony", "voice-samp/s"
+    );
     rule(52);
     for (name, rate) in [
         ("value+slope, checked", measure_vm::<8, ValueSlope>(&fx)),

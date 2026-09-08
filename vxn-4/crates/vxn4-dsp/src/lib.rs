@@ -54,6 +54,6 @@ pub mod wavetable;
 
 pub use ops::{CompiledRouting, NOPS, OpConfig, OpMajor, Routing, VoiceMajor, note_to_freq};
 pub use wavetable::{
-    MIN_LEN, N_MIPS, Lookup, Plain, PlainUnchecked, Tap, ValueSlope, ValueSlopeUnchecked, WaveBank,
+    Lookup, MIN_LEN, N_MIPS, Plain, PlainUnchecked, Tap, ValueSlope, ValueSlopeUnchecked, WaveBank,
     WaveTable, Waveform,
 };

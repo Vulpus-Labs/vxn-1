@@ -22,6 +22,9 @@ use vxn4_op_bench::{BLOCK_1X, Fixture, dense_routing, keys, sparse_routing};
 fn run_vm<const V: usize, L: Lookup>(fx: &Fixture, b: &mut criterion::Bencher) {
     let mut bank: VoiceMajor<V> = VoiceMajor::new();
     bank.cook(&fx.bank, &fx.cfg, &keys::<V>(), fx.sr_os());
+    // Real coefficients, not the unity bypass a fresh bank starts at —
+    // the pass runs either way, but the bench should price what ships.
+    bank.set_damping(&fx.cfg, fx.sr_os());
     let (mut l, mut r) = ([0.0f32; BLOCK_1X], [0.0f32; BLOCK_1X]);
     b.iter(|| {
         bank.render::<L>(&fx.bank, &fx.compiled, &fx.bus, fx.os, &mut l, &mut r);
@@ -32,6 +35,9 @@ fn run_vm<const V: usize, L: Lookup>(fx: &Fixture, b: &mut criterion::Bencher) {
 fn run_om<const V: usize, L: Lookup>(fx: &Fixture, b: &mut criterion::Bencher) {
     let mut bank: OpMajor<V> = OpMajor::new();
     bank.cook(&fx.bank, &fx.cfg, &keys::<V>(), fx.sr_os());
+    // Real coefficients, not the unity bypass a fresh bank starts at —
+    // the pass runs either way, but the bench should price what ships.
+    bank.set_damping(&fx.cfg, fx.sr_os());
     let (mut l, mut r) = ([0.0f32; BLOCK_1X], [0.0f32; BLOCK_1X]);
     b.iter(|| {
         bank.render::<L>(&fx.bank, &fx.compiled, &fx.bus, fx.os, &mut l, &mut r);
@@ -42,6 +48,9 @@ fn run_om<const V: usize, L: Lookup>(fx: &Fixture, b: &mut criterion::Bencher) {
 fn run_pvg<const V: usize, L: Lookup>(fx: &Fixture, b: &mut criterion::Bencher) {
     let mut bank: VoiceMajorPerVoiceGain<V> = VoiceMajorPerVoiceGain::new(&fx.routing, 0.2);
     bank.cook(&fx.bank, &fx.cfg, &keys::<V>(), fx.sr_os());
+    // Real coefficients, not the unity bypass a fresh bank starts at —
+    // the pass runs either way, but the bench should price what ships.
+    bank.set_damping(&fx.cfg, fx.sr_os());
     let (mut l, mut r) = ([0.0f32; BLOCK_1X], [0.0f32; BLOCK_1X]);
     b.iter(|| {
         bank.render::<L>(&fx.bank, &fx.compiled, &fx.bus, fx.os, &mut l, &mut r);
@@ -114,7 +123,9 @@ fn routing(c: &mut Criterion) {
     g.bench_function("dense_per_voice_gain", |b| {
         run_pvg::<8, ValueSlope>(&dense, b)
     });
-    g.bench_function("sparse_shared_gain", |b| run_vm::<8, ValueSlope>(&sparse, b));
+    g.bench_function("sparse_shared_gain", |b| {
+        run_vm::<8, ValueSlope>(&sparse, b)
+    });
     g.bench_function("sparse_per_voice_gain", |b| {
         run_pvg::<8, ValueSlope>(&sparse, b)
     });

@@ -153,31 +153,60 @@ Two of those are load-bearing beyond the sound:
 cargo run --release -p vxn4-render --bin alias
 ```
 
-Renders a held note at both qualities and subtracts them. Everything but the
-operator rate is identical between the two, so the residue is what oversampling
-changed — and in-band that is essentially all aliasing, since the extra
-harmonics 16x retains live above 100 kHz and the decimator removes them either
-way. Reported as dB relative to signal: more negative means more alike.
+Renders a held note at both qualities and subtracts them. Reported as dB
+relative to signal: more negative means more alike.
+
+> **This metric no longer measures only aliasing.** Mip selection is dynamic
+> now, and at 16x there is twice the Nyquist headroom — so the selector
+> *correctly* picks a finer, brighter mip than it does at 8x. The two renders
+> then differ in table content, which the subtraction reads as divergence
+> indistinguishably from fold-back. The columns below are still useful as
+> "how different do 8x and 16x sound", which is the question a user asks; they
+> are no longer a clean aliasing figure. Pinning the mip across both arms would
+> restore that, and is a change to the measuring tool rather than the synth.
 
 | patch | note 48 | 72 | 84 | 96 | 102 | 108 |
 |---|---|---|---|---|---|---|
 | `sine` | -117 | -98 | -70 | -74 | -71 | -62 |
-| `epiano` | -65 | -53 | -47 | -41 | -38 | -35 |
-| `bell` | -35 | -27 | -24 | -22 | -21 | -21 |
-| `saws` | -36 | -33 | -31 | -35 | -32 | -26 |
-| `web` | -40 | -37 | -32 | -34 | -31 | -32 |
-| `grind` | -32 | -28 | -25 | **-19** | **-10** | **-18** |
+| `epiano` | -71 | -59 | -53 | -46 | -44 | -41 |
+| `bell` | -46 | -38 | -34 | -32 | -31 | -30 |
+| `saws` | **-24** | -34 | -32 | -32 | -33 | -25 |
+| `web` | -44 | -33 | -35 | -38 | -37 | -43 |
+| `grind` | **-11** | -35 | -33 | -27 | **-20** | -26 |
 
-`sine` is the control: no PM, no aliasing, -117 dB, which is what says the two
-chains are otherwise identical and the method is sound.
+`sine` is the control: no PM, so damping does nothing and its row is unchanged
+to the dB from the pre-damping table. That is what says the two chains are
+otherwise identical and the method is still sound.
 
-**The divergence grows steeply with pitch and with modulator brightness.** At
-the top, `grind` differs by -10 dB — the two renders are barely 10 dB apart, and
-~40% of that residue lands in 6–12 kHz where nothing masks it. That is not a
-subtle difference.
+### What damping bought, separated from what the mip selector cost
 
-Two reasons it is easy to miss, both of which describe the *rest* of the table
-rather than excusing it:
+The two changes landed together and pull in opposite directions on this metric,
+so they were measured apart by disabling the mip update:
+
+| | `saws` 48 | `saws` 102 | `grind` 48 | `grind` 102 |
+|---|---|---|---|---|
+| before either | -36 | -32 | -32 | **-10** |
+| damping only | -27 | **-37** | **-37** | **-25** |
+| damping + dynamic mips | -24 | -33 | **-11** | -20 |
+
+**The damping is a clear win**: `grind` at note 102 improves 15 dB, from -10.4
+to -25.3, and `bell` and `epiano` improve 6–11 dB across the board. That was the
+hypothesis — a pole on each operator's modulation input removes ultrasonic
+content that could only ever fold — and it held.
+
+**The dynamic mip selector is what moved `grind` 48 to -11 dB**, and it is not
+a defect: 85% of that residue sits below 2 kHz on a 131 Hz note, which is not
+what fold-back looks like. It is the two arms running different mips. The
+selector is doing exactly what it should; the metric is what stopped being able
+to tell the difference.
+
+**The divergence still grows with pitch and with modulator brightness**, but far
+less steeply than it did. `grind` at the top of the keyboard was -10 dB — two
+renders barely 10 dB apart, with ~40% of the residue in 6–12 kHz where nothing
+masks it. It is now -20 dB with the selector in play and -25 dB without.
+
+Two reasons it was easy to miss in the first place, both of which describe the
+*rest* of the table rather than excusing it:
 
 - Below note 84 almost everything sits at -30 dB or lower, and roughly half of
   that residue is above 12 kHz, where it may not survive the monitoring chain or
@@ -186,11 +215,11 @@ rather than excusing it:
   `vel` at 60; `scale` reaches 95 but holds each note for 81 ms, too short to
   judge timbre. That is why `high` exists.
 
-**Provisional read: 8x is fine for ordinary material and not fine for bright
-modulators at the top of the keyboard.** Which suggests the real answer is
-neither — it is that `Quality` should be the user-facing quality switch it was
-always planned as, defaulting to 8x. The machinery is already there and
-switching is now safe under a held note.
+**Provisional read: 8x is fine for ordinary material, and the case against it at
+the top of the keyboard is now much weaker than it was.** Damping closed most of
+the gap the original table found. `Quality` stays the user-facing switch it was
+always planned as, defaulting to 8x; the machinery is there and switching is
+safe under a held note.
 
 ## Voice allocation
 
@@ -287,21 +316,38 @@ The reason is that the working set that matters is not the table, it is the
 16x, so between gathers it moves within a line or two, and a 2048-entry mip is
 touched a few lines at a time like a 256-entry one.
 
-### Voice-major beats operator-major by 24%
+### The layout result **inverted** when damping landed, and is now open
 
 Dense routing on both sides, so this is layout and not sparsity. Both layouts
 are pinned bit-identical by `ops::tests::layouts_agree_bit_exactly`.
 
 | layout | V=4 | V=8 | V=16 |
 |---|---|---|---|
-| voice-major (SIMD across voices) | 54.1 | **54.8** | 51.4 |
-| op-major (SIMD across operators) | 47.0 | 44.4 | 42.4 |
+| voice-major, before damping | 54.1 | **54.8** | 51.4 |
+| op-major, before damping | 47.0 | 44.4 | 42.4 |
+| voice-major, now | 49.8 | 52.0 | 48.9 |
+| op-major, now | **60.8** | **58.7** | 56.0 |
 
-Voice-major wins at every width, by 15–24%. It also scales the right way: its
-SIMD width *is* the voice count, whereas op-major is stuck at the fixed operator
-count of 8 and degrades as the bank widens. V=8 is the sweet spot; V=16 costs
-6%, most likely because 16 distinct keys spread across more mips and more table
-regions than 8 do.
+Voice-major used to win at every width by 15–24%. It now **loses** by 13% at
+V=8 and 22% at V=4. Reproduced across two runs, agreeing to 0.5%.
+
+Voice-major lost ~5% to the damping pass, which is expected. Op-major gained
+~32%, which is not. The likely cause is the ring: op-major's feedback read was
+`hist[prev][v]` **and** `hist[prev2][v]`, two unconditional reads from ring
+slots a whole `V * NOPS` block apart, once per voice. Dropping the 2-tick
+average removed one of them from the layout that was already the more
+memory-bound of the two. That is a hypothesis, not a measurement.
+
+**The engine is still on voice-major, and should stay there until this is
+settled**, for a specific reason: the bench measures the **dense** case, and
+five of the six patches are sparse. Voice-major skips zero routes; op-major
+multiplies them through by design. At `epiano`'s 4 routes op-major would do 64
+multiplies where voice-major does 4, and the density section below shows
+sparsity is worth ~24% — comfortably enough to swing 13% back. That arm has
+never been measured for op-major.
+
+Switching the engine on a dense-only number is exactly the mistake the density
+section exists to prevent. **Measure op-major sparse first.**
 
 ### The lookup: layout is worth 26%, the bounds check is worth 4.6%
 

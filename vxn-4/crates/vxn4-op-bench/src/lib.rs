@@ -47,6 +47,10 @@ pub fn configs() -> [OpConfig; NOPS] {
             ratio: ratios[d],
             level: 0.7,
             pan: (d as f32 / 3.5) - 1.0,
+            // Uneven across operators, so the damping pass cannot be hoisted
+            // into a single broadcast coefficient — the bench must price the
+            // per-operator form that actually ships.
+            damp_hz: 8_000.0 + 2_000.0 * d as f32,
         };
     }
     cfg

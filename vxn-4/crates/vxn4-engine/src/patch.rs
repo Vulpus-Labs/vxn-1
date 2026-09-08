@@ -20,7 +20,7 @@
 
 use vxn_core_matrix::curve::{Polarity, Shape};
 use vxn_core_matrix::slot::MatrixSlot;
-use vxn4_dsp::ops::{NOPS, OpConfig, Routing};
+use vxn4_dsp::ops::{DEFAULT_DAMP_HZ, NOPS, OpConfig, Routing};
 use vxn4_dsp::wavetable::Waveform;
 
 use crate::eg::EgParams;
@@ -127,15 +127,31 @@ fn off() -> OpConfig {
         ratio: 1.0,
         level: 0.0,
         pan: 0.0,
+        damp_hz: DEFAULT_DAMP_HZ,
     }
 }
 
+/// An operator at the default damping corner — nearly transparent, and what
+/// every patch here uses until one is voiced deliberately against it.
 fn op(wave: Waveform, ratio: f32, level: f32, pan: f32) -> OpConfig {
     OpConfig {
         wave,
         ratio,
         level,
         pan,
+        damp_hz: DEFAULT_DAMP_HZ,
+    }
+}
+
+/// [`op`], with the modulation-input damping dialled down.
+///
+/// The bounded-chaos axis: lower corners bound harder what an operator can
+/// receive, which is what lets a route be pushed to a depth that would
+/// otherwise go straight to broadband noise.
+fn op_damped(wave: Waveform, ratio: f32, level: f32, pan: f32, damp_hz: f32) -> OpConfig {
+    OpConfig {
+        damp_hz,
+        ..op(wave, ratio, level, pan)
     }
 }
 
@@ -384,11 +400,22 @@ fn web() -> Patch {
 
     let mut ops = [off(); NOPS];
     for d in 0..NOPS {
-        ops[d] = op(
+        ops[d] = op_damped(
             waves[d],
             ratios[d],
             1.0,
             ((d as f32 / (NOPS - 1) as f32) - 0.5) * 1.6,
+            // This patch is the reason the damping exists. It has seven
+            // multi-operator cycles and every one of them was previously
+            // undamped — stable only because the depths below were kept tiny,
+            // which is gain staging standing in for design. A pole per operator
+            // puts one filter in every cycle at every hop, so depth becomes a
+            // usable axis instead of the thing holding the patch together.
+            //
+            // Spread across operators rather than uniform: identical corners
+            // make every cycle roll off identically, which is a duller and less
+            // interesting object than one where the loops differ.
+            5_000.0 + 1_500.0 * d as f32,
         );
     }
 

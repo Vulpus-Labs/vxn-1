@@ -46,6 +46,19 @@ pub const N_MIPS: usize = 12;
 /// octave of anything that will be used as a carrier.
 pub const MIN_LEN: usize = 16;
 
+/// Hysteresis on the downward (finer, brighter) mip transition, as a fraction
+/// of the boundary increment. Roughly 0.32 octaves of stickiness at 0.2.
+///
+/// Only the downward edge is sticky, and that asymmetry is the whole design.
+/// Too coarse a mip is dull; too fine a mip aliases. Those are not equally bad,
+/// so coarsening is taken immediately at any distance and only the return to a
+/// brighter mip waits for the band. The consequence is that a rate parked on a
+/// boundary settles on the *coarse* side — which converts a quality failure
+/// into a tone decision, and is why no crossfade is needed here. A crossfade
+/// would double the table lookup, which is the expensive part of the whole
+/// synth.
+pub const MIP_HYSTERESIS: f32 = 0.2;
+
 /// The four waveforms the brief names. Assignable per operator.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Waveform {
@@ -203,10 +216,7 @@ impl WaveTable {
         // Gibbs overshoot lands between mip 0's sample points and squarely on a
         // narrower mip's. Square at 256 overshoots by 5e-5 that way — inaudible,
         // but it makes the sum-bus headroom a claim rather than a fact.
-        let peak = raw
-            .iter()
-            .flatten()
-            .fold(0.0f32, |m, s| m.max(s.abs()));
+        let peak = raw.iter().flatten().fold(0.0f32, |m, s| m.max(s.abs()));
         let scale = if peak > 0.0 { 1.0 / peak } else { 1.0 };
 
         let mut taps: Vec<Tap> = Vec::new();
@@ -251,9 +261,15 @@ impl WaveTable {
     /// below Nyquist is `0.5 / f = 2^31 / inc`. A mip of length `L` carries
     /// `L / 2` harmonics, so the constraint is `L <= 2^32 / inc`.
     ///
-    /// Block rate, never per tick — and callers should apply hysteresis on top,
-    /// because pitch modulation that dithers across a boundary will otherwise
-    /// switch mips every block.
+    /// Block rate, never per tick, and never on its own — pair it with
+    /// [`Self::hysteresis_floor`]. Modulation that dithers across a boundary
+    /// will otherwise switch mips every block.
+    ///
+    /// `inc` must be the operator's **peak instantaneous** increment, not its
+    /// nominal one. A table band-limited for the nominal pitch is swept faster
+    /// than that under modulation, and its harmonics transpose above Nyquist
+    /// accordingly — which is the one thing this function cannot know from its
+    /// argument. See `ops::VoiceMajor::update_mips`.
     pub fn mip_for(&self, inc: u32) -> usize {
         if inc == 0 {
             return 0;
@@ -264,6 +280,33 @@ impl WaveTable {
             k += 1;
         }
         k
+    }
+
+    /// Highest increment mip `k` can carry without aliasing — the boundary
+    /// [`Self::mip_for`] selects on.
+    ///
+    /// Mips are `base_len >> k`, so these are exactly octave-spaced:
+    /// `ceiling(k - 1) == ceiling(k) / 2`.
+    #[inline]
+    pub fn mip_ceiling(&self, k: usize) -> u32 {
+        u32::MAX / mip_len(self.base_len, k).max(1) as u32
+    }
+
+    /// Increment below which mip `k` should give way to the finer mip `k - 1`.
+    ///
+    /// [`MIP_HYSTERESIS`] below the finer mip's own ceiling. The band is what
+    /// stops a rate sitting on a boundary from switching tables every block;
+    /// the octave that the mip naturally spans is *not* the band, it is the
+    /// mip's own range, and hysteresis measured in mip indices would therefore
+    /// be an octave wide before it did anything at all.
+    ///
+    /// Returns 0 for mip 0 — there is nothing finer to fall back to.
+    #[inline]
+    pub fn hysteresis_floor(&self, k: usize) -> u32 {
+        if k == 0 {
+            return 0;
+        }
+        (self.mip_ceiling(k - 1) as f32 * (1.0 - MIP_HYSTERESIS)) as u32
     }
 
     /// Value+slope read: one 8-byte load, one FMA.
@@ -577,5 +620,56 @@ mod tests {
         assert_eq!(t.mip_for(0), 0);
         assert_eq!(t.mip_for(1), 0);
         assert_eq!(t.mip_for(u32::MAX), N_MIPS - 1);
+    }
+
+    /// Mips halve, so their ceilings halve — which is what makes a hysteresis
+    /// band measured in mip *indices* an octave wide before it does anything,
+    /// and why [`WaveTable::hysteresis_floor`] works in increments instead.
+    #[test]
+    fn mip_ceilings_are_octave_spaced() {
+        let bank = WaveBank::new(2048);
+        let t = bank.table(Waveform::Saw);
+        for k in 1..7 {
+            let (hi, lo) = (t.mip_ceiling(k), t.mip_ceiling(k - 1));
+            assert_eq!(hi / 2, lo, "mip {k} ceiling is not double mip {}", k - 1);
+        }
+    }
+
+    /// The band sits strictly inside the finer mip's range: below its ceiling
+    /// (so there is real stickiness) and above the mip below that (so a single
+    /// step down cannot overshoot two boundaries at once).
+    #[test]
+    fn the_hysteresis_band_sits_inside_the_finer_mips_range() {
+        let bank = WaveBank::new(2048);
+        let t = bank.table(Waveform::Saw);
+        assert_eq!(
+            t.hysteresis_floor(0),
+            0,
+            "mip 0 has nothing finer to fall to"
+        );
+        for k in 1..7 {
+            let floor = t.hysteresis_floor(k);
+            assert!(floor < t.mip_ceiling(k - 1), "mip {k}: band is not sticky");
+            assert!(
+                floor > t.mip_ceiling(k - 1) / 2,
+                "mip {k}: band spans two boundaries"
+            );
+        }
+    }
+
+    /// A rate anywhere in the band must be a rate mip `k - 1` can legally
+    /// carry — otherwise stepping down on it would alias, which is the one
+    /// thing the asymmetry exists to prevent.
+    #[test]
+    fn stepping_down_at_the_band_edge_is_always_safe() {
+        let bank = WaveBank::new(2048);
+        let t = bank.table(Waveform::Saw);
+        for k in 1..7 {
+            let at = t.hysteresis_floor(k);
+            assert!(
+                t.mip_for(at) < k,
+                "mip {k}: stepping down at {at} lands on a mip that cannot carry it"
+            );
+        }
     }
 }

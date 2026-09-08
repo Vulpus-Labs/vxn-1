@@ -20,11 +20,19 @@
 //! ## Why banks rather than 20 independent voices
 //!
 //! The sizing bench found SIMD-across-voices to beat SIMD-across-operators by
-//! 15–24%, and the win comes from lanes sharing a waveform table and adjacent
+//! 15–24%, the win coming from lanes sharing a waveform table and adjacent
 //! mips. So the 20 slots are three [`VoiceMajor`] banks of 8 lanes (24 lanes,
 //! 4 unused), all running one patch — which is also why route gains can stay
 //! broadcast scalars, with only per-operator *level* varying per lane. That is
 //! exactly where the envelopes land.
+//!
+//! **That measurement has since inverted**: with the damping pass in and the
+//! output ring down to 2 deep, op-major wins the *dense* case by 13% at V=8.
+//! The engine stays on `VoiceMajor` anyway, because the bench measures dense
+//! routing and five of the six patches are sparse — op-major multiplies zero
+//! routes through where voice-major skips them, and sparsity is worth ~24%.
+//! The sparse arm has never been measured for op-major. See the README's
+//! layout section; do not act on the dense number alone.
 //!
 //! A bank is skipped wholesale when all 8 of its lanes are idle, so the common
 //! case of a few notes held costs one bank, not three.
@@ -42,8 +50,8 @@ use crate::matrix::{
 };
 use crate::patch::{Patch, patch};
 
-/// Lanes per bank. 8 is what the sizing sweep found best; 4 and 16 both measured
-/// worse (54.1 / 54.8 / 51.4 voices).
+/// Lanes per bank. 8 is what the sizing sweep found best for `VoiceMajor`; 4
+/// and 16 both measure worse (49.8 / 52.0 / 48.9 voices, dense at 16x).
 pub const LANES: usize = 8;
 
 /// Banks needed to cover [`N_SLOTS`].
@@ -371,6 +379,15 @@ impl Engine {
         // Switching quality under a held note is the whole point of it being a
         // runtime control, so this cannot wait for the next note-on.
         let sr_os = self.sr_os();
+
+        // The damping coefficient is per tick and the corner is in Hz, so it
+        // has to be re-derived at the new rate for the *response* to be
+        // unchanged. Missing this would make quality a tone control, which is
+        // the same class of bug as the increments above.
+        for b in self.banks.iter_mut() {
+            b.set_damping(&self.patch.ops, sr_os);
+        }
+
         for slot in 0..N_SLOTS {
             if self.alloc.voices[slot].is_idle() {
                 continue;
@@ -414,8 +431,10 @@ impl Engine {
         }
         self.bus = SumBus::new(&p.ops, &p.routing);
 
+        let sr_os = self.sr_os();
         for b in self.banks.iter_mut() {
             b.set_waves(&p.ops);
+            b.set_damping(&p.ops, sr_os);
         }
         self.patch = p;
         // Macro positions survive a patch change — they are host automation,
@@ -567,6 +586,14 @@ impl Engine {
             *w = self.bus.l[d].abs() + self.bus.r[d].abs();
         }
         let retired = self.alloc.control_tick(dt, &weight);
+
+        // Re-select every lane's mip from the peak instantaneous rate the last
+        // block actually saw. This is the 32-sample quantum the whole scheme is
+        // built around: fast enough to track an attack, slow enough that
+        // hysteresis is tractable and the selector is not in the tick loop.
+        for b in self.banks.iter_mut() {
+            b.update_mips(&self.waves, &self.patch.ops);
+        }
 
         for slot in 0..N_SLOTS {
             let (bank, lane) = (slot / LANES, slot % LANES);
