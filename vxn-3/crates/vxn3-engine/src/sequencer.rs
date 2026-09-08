@@ -670,6 +670,155 @@ impl Pattern {
 /// its own slot however it is dragged.
 const F_MAX: f32 = 1.0 - f32::EPSILON;
 
+// ── free-position edits (the continuous lane strip, ticket 0353) ──────────────
+//
+// Appended as its own block, clear of the slot-keyed verbs above: these are the
+// editor's **hit-keyed** vocabulary, and they are what the lane strip drags,
+// deletes and quantises. Position edits go through [`Pattern::remove`] +
+// [`Pattern::insert`] rather than writing the array in place, so the fire-order
+// invariant and the geometry clamp are re-established by exactly the code that
+// already owns them, and the hit's new index comes back to the caller.
+//
+// Snap and quantise are **editor verbs, not storage constraints** (ADR 0007 §1):
+// a quantised hit is one whose stored `f` happens to be zero, and nothing here
+// records that it got there by quantising rather than by being dropped on the
+// marker.
+
+/// The lane's Y-centre while the groove carries no control points.
+///
+/// ADR 0007 §6 puts Y-centre points on the beat markers and interpolates between
+/// them; 0350 stores them and 0356 edits them. Until then the curve is flat, so Y
+/// reads as absolute-in-lane and a quantise-Y pulls to the middle of the strip.
+pub const Y_CENTRE: f32 = 0.5;
+
+impl Pattern {
+    /// Move hit `index` to `(beat, sub)` with in-slot offset `(f, nudge)`,
+    /// returning its **new** fire-order index (the move can reorder the lane).
+    ///
+    /// This is the drag verb, and it sets the whole position at once because a
+    /// drag across a beat marker changes `(beat, sub)` and `f` together — setting
+    /// one and then the other would resolve, in between, to a time nobody asked
+    /// for.
+    pub fn set_position(
+        &mut self,
+        index: usize,
+        beat: u16,
+        sub: u8,
+        f: f32,
+        nudge: i16,
+    ) -> Option<usize> {
+        if index >= self.n_hits {
+            return None;
+        }
+        let mut h = self.hits[index];
+        h.beat = beat;
+        h.sub = sub;
+        h.f = f;
+        h.nudge = nudge;
+        // Remove first, so the re-insert cannot be the one that hits MAX_HITS.
+        self.remove(index);
+        self.insert(h)
+    }
+
+    /// Quantise hit `index` in X toward its nearest subdivision marker by
+    /// `amount ∈ [0, 1]`, returning its new fire-order index.
+    ///
+    /// A partial amount **lerps `f` toward 0 or 1** — whichever marker is nearer —
+    /// and decays `nudge` by the same fraction, so a half-quantise halves both the
+    /// proportional and the absolute part of a hit's lateness. At `amount = 1` the
+    /// hit is stored *on* the marker (`f = 0`, no nudge) rather than at `f ≈ 1`
+    /// against the marker before it: welding is what makes a snapped hit survive a
+    /// later groove edit (ADR 0007 §4), and `f ≈ 1` does not weld.
+    ///
+    /// The pattern end is not a storable position — a hit there would have no
+    /// owning slot (ADR 0007 §2) — so a hit in the final slot quantises back onto
+    /// its own marker rather than off the end.
+    pub fn quantise_x(&mut self, index: usize, amount: f32) -> Option<usize> {
+        if index >= self.n_hits {
+            return None;
+        }
+        let a = if amount.is_finite() { amount.clamp(0.0, 1.0) } else { 0.0 };
+        let h = self.hits[index];
+        let toward_next = h.f > 0.5;
+        if a >= 1.0 {
+            let (b, k) = if toward_next { self.next_marker(h.beat, h.sub) } else { (h.beat, h.sub) };
+            return self.set_position(index, b, k, 0.0, 0);
+        }
+        let f = if toward_next { h.f + (1.0 - h.f) * a } else { h.f * (1.0 - a) };
+        let nudge = (h.nudge as f32 * (1.0 - a)).round() as i16;
+        self.set_position(index, h.beat, h.sub, f, nudge)
+    }
+
+    /// Quantise hit `index` in Y toward the groove's centre curve by
+    /// `amount ∈ [0, 1]`.
+    ///
+    /// Independent of [`Pattern::quantise_x`], and deliberately so: X and Y are not
+    /// stored symmetrically (ADR 0007 §6), so they are not corrected together. No
+    /// re-sort — Y cannot move a hit in time.
+    pub fn quantise_y(&mut self, index: usize, amount: f32) {
+        if index >= self.n_hits {
+            return;
+        }
+        let a = if amount.is_finite() { amount.clamp(0.0, 1.0) } else { 0.0 };
+        let y = self.hits[index].y;
+        let c = self.y_centre(index);
+        self.hits[index].y = y + (c - y) * a;
+    }
+
+    /// The groove's Y-centre curve sampled at hit `index` (ADR 0007 §6). Flat at
+    /// [`Y_CENTRE`] until 0350 puts control points on the beat markers — every
+    /// reader goes through here so that lands as one change.
+    #[inline]
+    pub fn y_centre(&self, _index: usize) -> f32 {
+        Y_CENTRE
+    }
+
+    /// Set a hit's position on the lane's modulation axis, clamped to the strip.
+    pub fn set_hit_y(&mut self, index: usize, y: f32) {
+        if index < self.n_hits {
+            self.hits[index].y = if y.is_finite() { y.clamp(0.0, 1.0) } else { Y_CENTRE };
+        }
+    }
+
+    /// Set a hit's note + velocity. Hit-keyed, unlike [`Pattern::set`]: reassigning
+    /// a lane's voice has to re-pitch every hit it holds, and several hits can
+    /// share one slot.
+    pub fn set_hit_note(&mut self, index: usize, note: f32, velocity: f32) {
+        if index < self.n_hits {
+            self.hits[index].note = note;
+            self.hits[index].velocity = velocity;
+        }
+    }
+
+    /// Set a hit's fire probability, keyed by hit rather than by slot.
+    pub fn set_hit_probability(&mut self, index: usize, probability: f32) {
+        if index < self.n_hits {
+            self.hits[index].probability = probability;
+        }
+    }
+
+    /// Set a hit's retrig macro, keyed by hit rather than by slot.
+    pub fn set_hit_retrig(&mut self, index: usize, retrig: Retrig) {
+        if index < self.n_hits {
+            self.hits[index].retrig = retrig;
+        }
+    }
+
+    /// The subdivision marker after `(beat, sub)`, or `(beat, sub)` itself when
+    /// that is the lane's last one (the end marker owns no slot).
+    fn next_marker(&self, beat: u16, sub: u8) -> (u16, u8) {
+        let b = (beat as usize).min(self.grid.n_beats() - 1);
+        let k = (sub as u32).min(self.grid.subs(b) - 1);
+        if k + 1 < self.grid.subs(b) {
+            (b as u16, (k + 1) as u8)
+        } else if b + 1 < self.grid.n_beats() {
+            ((b + 1) as u16, 0)
+        } else {
+            (b as u16, k as u8)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -956,5 +1105,184 @@ mod tests {
         assert_eq!(p.retrig_span(0, 2), 0.5, "two straight 16ths");
         p.edit_grid(|g| g.set_beat_subs(0, Some(2)));
         assert_eq!(p.retrig_span(0, 2), 1.0, "two slots of a halved beat");
+    }
+}
+
+#[cfg(test)]
+mod position_tests {
+    use super::*;
+    use crate::grid::{GridPos, Swing};
+
+    /// The editor's drag: resolve a pointer position through the grid, store it as
+    /// `(beat, sub, f)`, and move the hit there. Exactly what `app.js` does.
+    fn drag(p: &mut Pattern, index: usize, t: f64) -> usize {
+        let at = p.grid().locate(t);
+        p.set_position(index, at.beat as u16, at.sub as u8, at.frac as f32, 0).unwrap()
+    }
+
+    /// AC: a drag across a beat marker updates `(beat, sub)` and recomputes `f`,
+    /// and the hit does not jump — the resolved time tracks the pointer to within
+    /// the `f32` the fraction is stored in.
+    #[test]
+    fn dragging_across_a_marker_recomputes_the_fraction_without_jumping() {
+        for amount in [0.0, 0.5, 1.0, -0.7] {
+            let mut p = Pattern::default();
+            p.edit_grid(|g| g.set_swing(Swing::mpc(amount)));
+            p.set(0, 36.0, 1.0);
+            let mut prev = p.fire_beat(0);
+            // Sweep the pointer clean across two beat markers, one small step at a
+            // time, and watch the resolved position follow it monotonically.
+            for i in 0..=400 {
+                let t = 0.5 + 2.0 * (i as f64 / 400.0);
+                let idx = drag(&mut p, 0, t);
+                let got = p.fire_beat(idx);
+                assert!(
+                    (got - t).abs() < 1e-6,
+                    "amount={amount} t={t}: resolved {got}, a jump of {}",
+                    got - t
+                );
+                assert!(got >= prev - 1e-6, "amount={amount} t={t}: went backwards");
+                prev = got;
+                // And the stored form really is the slot the pointer is over.
+                let h = p.hits()[idx];
+                let at = p.grid().locate(t);
+                assert_eq!((h.beat as usize, h.sub as u32), (at.beat, at.sub));
+            }
+        }
+    }
+
+    /// A position edit re-establishes fire order, like every other write path.
+    #[test]
+    fn a_position_edit_resorts_the_lane() {
+        let mut p = Pattern::default();
+        p.set(0, 36.0, 1.0);
+        p.set(8, 40.0, 1.0);
+        assert_eq!(p.hits()[0].note, 36.0);
+        // Drag the first hit past the second.
+        let i = drag(&mut p, 0, 3.0);
+        assert_eq!(i, 1, "it sorted behind the hit it passed");
+        assert_eq!(p.hits()[0].note, 40.0);
+        assert_eq!(p.hits()[1].note, 36.0);
+        // Out-of-range indices are a no-op, not a panic.
+        assert_eq!(p.set_position(9, 0, 0, 0.0, 0), None);
+    }
+
+    /// AC: full quantise-X stores the hit **on** the nearest marker — `f = 0`, no
+    /// nudge — so it welds and survives a later groove edit.
+    #[test]
+    fn full_quantise_x_welds_to_the_nearest_marker() {
+        let mut p = Pattern::default();
+        p.edit_grid(|g| g.set_swing(Swing::mpc(1.0))); // uneven slots
+        p.set(1, 36.0, 1.0);
+        // Just past the marker → back onto it.
+        p.set_offset(0, 0.2, 100);
+        let i = p.quantise_x(0, 1.0).unwrap();
+        assert_eq!((p.hits()[i].f, p.hits()[i].nudge), (0.0, 0));
+        assert_eq!((p.hits()[i].beat, p.hits()[i].sub), (0, 1));
+        assert_eq!(p.fire_beat(i), p.grid().sub_pos(0, 1), "welded, exactly");
+        // Most of the way to the next → forward onto that one.
+        p.set_offset(i, 0.8, -100);
+        let i = p.quantise_x(i, 1.0).unwrap();
+        assert_eq!((p.hits()[i].beat, p.hits()[i].sub), (0, 2));
+        assert_eq!(p.fire_beat(i), p.grid().sub_pos(0, 2));
+    }
+
+    /// AC: a partial quantise lerps `f` toward the nearer marker and decays
+    /// `nudge` by the same fraction.
+    #[test]
+    fn partial_quantise_x_lerps_the_fraction_and_decays_the_nudge() {
+        let mut p = Pattern::default();
+        p.set(2, 36.0, 1.0);
+        p.set_offset(0, 0.4, 200);
+        let i = p.quantise_x(0, 0.5).unwrap();
+        assert!((p.hits()[i].f - 0.2).abs() < 1e-6, "f lerped toward 0");
+        assert_eq!(p.hits()[i].nudge, 100, "nudge decayed by the same half");
+        // Past the midpoint it lerps the other way, toward the next marker.
+        p.set_offset(i, 0.6, -80);
+        let i = p.quantise_x(i, 0.5).unwrap();
+        assert!((p.hits()[i].f - 0.8).abs() < 1e-6, "f lerped toward 1");
+        assert_eq!(p.hits()[i].nudge, -40);
+        // Zero amount is a no-op, and a non-finite one reads as zero rather than
+        // poisoning the position.
+        let before = p.hits()[i];
+        let i = p.quantise_x(i, 0.0).unwrap();
+        assert_eq!(p.hits()[i], before);
+        let i = p.quantise_x(i, f32::NAN).unwrap();
+        assert_eq!(p.hits()[i], before);
+    }
+
+    /// The pattern end owns no slot, so the last slot quantises back onto its own
+    /// marker rather than off the end of the lane.
+    #[test]
+    fn the_last_slot_quantises_backwards_not_off_the_end() {
+        let mut p = Pattern::default();
+        let last = p.total_subs() - 1;
+        p.set(last as usize, 36.0, 1.0);
+        p.set_offset(0, 0.9, 0);
+        let i = p.quantise_x(0, 1.0).unwrap();
+        let h = p.hits()[i];
+        let (b, k) = p.grid().sub_of_index(last);
+        assert_eq!((h.beat as usize, h.sub as u32), (b, k));
+        assert_eq!(p.fire_beat(i), p.grid().sub_pos(b, k));
+    }
+
+    /// Quantise-Y is independent of quantise-X: it pulls Y to the centre curve and
+    /// leaves the hit's time — and the lane's order — alone.
+    #[test]
+    fn quantise_y_lerps_to_the_centre_curve_and_moves_nothing_in_time() {
+        let mut p = Pattern::default();
+        p.insert(Hit { y: 1.0, f: 0.3, ..Hit::at(0, 1) });
+        let t = p.fire_beat(0);
+        p.quantise_y(0, 0.5);
+        assert!((p.hits()[0].y - 0.75).abs() < 1e-6);
+        p.quantise_y(0, 1.0);
+        assert_eq!(p.hits()[0].y, Y_CENTRE);
+        assert_eq!(p.fire_beat(0), t, "Y is not a timing edit");
+        assert_eq!(p.hits()[0].f, 0.3);
+    }
+
+    #[test]
+    fn hit_keyed_attribute_edits_address_one_hit_of_a_shared_slot() {
+        let mut p = Pattern::default();
+        // Two hits in one slot — the slot-keyed verbs only ever reach the first.
+        p.insert(Hit::at(0, 1));
+        p.insert(Hit { f: 0.5, ..Hit::at(0, 1) });
+        assert_eq!(p.len(), 2);
+        p.set_hit_probability(1, 0.25);
+        p.set_hit_retrig(1, Retrig { n: 3, m: 2, curve: RetrigCurve::Even, vel_end: 0.5 });
+        p.set_hit_note(1, 48.0, 0.6);
+        p.set_hit_y(1, 0.9);
+        assert_eq!(p.hits()[0].probability, 1.0);
+        assert_eq!(p.hits()[1].probability, 0.25);
+        assert_eq!(p.hits()[1].retrig.n, 3);
+        assert_eq!((p.hits()[1].note, p.hits()[1].velocity), (48.0, 0.6));
+        assert_eq!(p.hits()[1].y, 0.9);
+        // Out of range is ignored, and a non-finite Y falls back to the centre.
+        p.set_hit_probability(9, 0.0);
+        p.set_hit_y(1, f32::NAN);
+        assert_eq!(p.hits()[1].y, Y_CENTRE);
+    }
+
+    /// The editor resolves a diamond's screen position through exactly the mapping
+    /// the engine fires it at — which is what makes "the hit does not jump" a
+    /// property of the model rather than of the drawing code.
+    #[test]
+    fn locate_and_pos_of_are_inverses_on_the_swung_grid() {
+        let mut p = Pattern::default();
+        p.edit_grid(|g| {
+            g.set_default_subs(4);
+            g.set_swing(Swing::mpc(1.0));
+            g.set_beat_subs(2, Some(3));
+        });
+        for i in 0..=200 {
+            let t = 4.0 * (i as f64 / 200.0);
+            let at = p.grid().locate(t);
+            assert!((p.grid().pos_of(at) - t).abs() < 1e-12, "t={t}");
+            assert_eq!(
+                p.grid().pos_of(GridPos { frac: 0.0, ..at }),
+                p.grid().sub_pos(at.beat, at.sub),
+                "frac = 0 is the marker itself"
+            );
+        }
     }
 }
