@@ -143,8 +143,9 @@ Two of those are load-bearing beyond the sound:
 - **`bell`, before and after the feedback fix.** The self-feedback diagonal
   still averages 2 *ticks* as the brief specifies, which at 8x puts its Nyquist
   zero at 192 kHz where it does nothing. `bell` is the patch that will change
-  character when that window moves to `os` ticks. Judge it both ways; the fix
-  costs one add and one subtract, so the sizing numbers hold either way.
+  character when the feedback path is damped properly. Judge it both ways —
+  and see *Open questions* for why the two candidate fixes do not cost the
+  same.
 
 ## Is 8x enough?
 
@@ -405,12 +406,23 @@ immediately after a compile reads low.
 
 ## Open questions this does not answer
 
-- **The 2-tick feedback average is wrong at 16x.** Averaging two consecutive
-  samples puts a zero at Nyquist, which at 48 kHz damps the feedback loop and at
-  768 kHz does nothing. The window should be `os` ticks, or the feedback path
-  should delay in 1x samples. It is implemented as the brief literally specifies
-  so the discrepancy is visible; the fix costs one add and one subtract, so
-  these numbers hold under it. **This is a tonal decision, not a perf one.**
+- **The 2-tick feedback average does nothing under oversampling.** Averaging two
+  consecutive samples puts a zero at Nyquist, which at 48 kHz damps the feedback
+  loop and at 768 kHz does not. Implemented as the brief literally specifies so
+  the discrepancy is visible. **Primarily a tonal decision** — but the two
+  candidate fixes have different costs, and one of them invalidates the table
+  above:
+  - a **boxcar over `os` ticks** needs an `os`-deep output ring instead of the
+    3-deep one, a 5x larger history working set in the hot loop at 16x. These
+    numbers would have to be re-measured under it.
+  - a **one-pole cornered in Hz** is rate-independent by construction, costs one
+    multiply-add and one `[f32; V]` of state per operator, and leaves the ring
+    at 3 — so the numbers hold. Different phase response, which is the part that
+    has to be judged by ear.
+
+  An earlier revision of this bullet said the fix costs "one add and one
+  subtract" either way, which is only true of a running-sum boxcar and silently
+  assumed the deeper ring it needs.
 - **Mip-selection hysteresis.** Selection is at block rate from the phase
   increment. Pitch modulation dithering across a boundary will switch mips every
   block; needs hysteresis, and a crossfade only if that proves audible (it

@@ -13,11 +13,23 @@
 //! exists to provide does not survive oversampling.
 //!
 //! It is implemented as literally specified here because the fix is a tonal
-//! decision, not a performance one: the window should be `os` ticks (a boxcar
-//! with its zero back at 48 kHz), or the whole feedback path should delay in 1x
-//! samples rather than ticks. Either costs one add and one subtract more than
-//! what is here, so this bench's numbers hold under the fix. Flagged so the
-//! placeholder is not mistaken for a decision.
+//! decision. There are two shapes it could take, and they do **not** cost the
+//! same:
+//!
+//! - **A boxcar over `os` ticks** — the literal translation, zero back at
+//!   48 kHz. It needs an `os`-deep output ring instead of the 3-deep one below,
+//!   which at 16x is a 5x larger history working set in the hot loop. The
+//!   sizing numbers would have to be re-measured under it; they are not
+//!   transferable.
+//! - **A one-pole on the feedback signal**, cornered in Hz so it is
+//!   rate-independent by construction. One multiply-add and one `[f32; V]` of
+//!   state per operator — the ring stays 3 deep and the sizing numbers hold.
+//!   Different phase response from a boxcar, which is exactly the tonal part.
+//!
+//! An earlier revision of this note claimed the fix "costs one add and one
+//! subtract" either way, which is only true of a running-sum boxcar and quietly
+//! assumed the deeper ring it needs. Flagged so the placeholder is not mistaken
+//! for a decision, and so the cost is not mistaken for free.
 //!
 //! ## Two layouts
 //!
