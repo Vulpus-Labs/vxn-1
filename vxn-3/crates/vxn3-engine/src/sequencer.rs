@@ -731,17 +731,28 @@ impl Pattern {
     /// later groove edit (ADR 0007 §4), and `f ≈ 1` does not weld.
     ///
     /// The pattern end is not a storable position — a hit there would have no
-    /// owning slot (ADR 0007 §2) — so a hit in the final slot quantises back onto
-    /// its own marker rather than off the end.
+    /// owning slot (ADR 0007 §2) — so **the lane's final slot has no forward
+    /// target** and a hit in it quantises backwards whatever its fraction. The
+    /// partial branch honours that too: lerping toward a marker the full quantise
+    /// will never land on would drag the hit later and later up the amount
+    /// control, then snap it a whole slot earlier at the top of it.
+    ///
+    /// The choice is made on `f` alone. `nudge` is the absolute part and decays on
+    /// its own; letting it flip which marker is "nearest" would make a flam decide
+    /// the slot, which is the opposite of what the split is for (ADR 0007 §4).
     pub fn quantise_x(&mut self, index: usize, amount: f32) -> Option<usize> {
         if index >= self.n_hits {
             return None;
         }
         let a = if amount.is_finite() { amount.clamp(0.0, 1.0) } else { 0.0 };
         let h = self.hits[index];
-        let toward_next = h.f > 0.5;
+        let next = self.next_marker(h.beat, h.sub);
+        let toward_next = h.f > 0.5 && next.is_some();
         if a >= 1.0 {
-            let (b, k) = if toward_next { self.next_marker(h.beat, h.sub) } else { (h.beat, h.sub) };
+            let (b, k) = match (toward_next, next) {
+                (true, Some(m)) => m,
+                _ => (h.beat, h.sub),
+            };
             return self.set_position(index, b, k, 0.0, 0);
         }
         let f = if toward_next { h.f + (1.0 - h.f) * a } else { h.f * (1.0 - a) };
@@ -804,17 +815,18 @@ impl Pattern {
         }
     }
 
-    /// The subdivision marker after `(beat, sub)`, or `(beat, sub)` itself when
-    /// that is the lane's last one (the end marker owns no slot).
-    fn next_marker(&self, beat: u16, sub: u8) -> (u16, u8) {
+    /// The subdivision marker after `(beat, sub)`, or `None` when that is the
+    /// lane's last one — the end marker is a bound, not a slot, so there is
+    /// nothing after it to quantise or snap to.
+    fn next_marker(&self, beat: u16, sub: u8) -> Option<(u16, u8)> {
         let b = (beat as usize).min(self.grid.n_beats() - 1);
         let k = (sub as u32).min(self.grid.subs(b) - 1);
         if k + 1 < self.grid.subs(b) {
-            (b as u16, (k + 1) as u8)
+            Some((b as u16, (k + 1) as u8))
         } else if b + 1 < self.grid.n_beats() {
-            ((b + 1) as u16, 0)
+            Some(((b + 1) as u16, 0))
         } else {
-            (b as u16, k as u8)
+            None
         }
     }
 }
@@ -1212,18 +1224,38 @@ mod position_tests {
     }
 
     /// The pattern end owns no slot, so the last slot quantises back onto its own
-    /// marker rather than off the end of the lane.
+    /// marker rather than off the end of the lane — and **partially** quantising
+    /// it moves it the same way, monotonically in the amount. Lerping toward a
+    /// marker the full quantise will never reach would drag the hit later and
+    /// later up the amount control, then snap it a whole slot earlier at the top.
     #[test]
     fn the_last_slot_quantises_backwards_not_off_the_end() {
         let mut p = Pattern::default();
         let last = p.total_subs() - 1;
+        let (b, k) = p.grid().sub_of_index(last);
+        let marker = p.grid().sub_pos(b, k);
+
+        let mut prev = f64::INFINITY;
+        for i in 0..=20 {
+            let a = i as f32 / 20.0;
+            let mut c = p;
+            c.set(last as usize, 36.0, 1.0);
+            c.set_offset(0, 0.9, 0);
+            let j = c.quantise_x(0, a).unwrap();
+            let t = c.fire_beat(j);
+            assert!(t <= prev, "amount={a}: {t} is later than {prev} — not monotonic");
+            assert!(t >= marker, "amount={a}: quantised behind its own marker");
+            prev = t;
+        }
+        assert_eq!(prev, marker, "the full quantise lands on the marker exactly");
+
         p.set(last as usize, 36.0, 1.0);
         p.set_offset(0, 0.9, 0);
         let i = p.quantise_x(0, 1.0).unwrap();
         let h = p.hits()[i];
-        let (b, k) = p.grid().sub_of_index(last);
         assert_eq!((h.beat as usize, h.sub as u32), (b, k));
-        assert_eq!(p.fire_beat(i), p.grid().sub_pos(b, k));
+        assert_eq!((h.f, h.nudge), (0.0, 0));
+        assert_eq!(p.fire_beat(i), marker);
     }
 
     /// Quantise-Y is independent of quantise-X: it pulls Y to the centre curve and

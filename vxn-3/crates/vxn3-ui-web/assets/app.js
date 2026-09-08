@@ -226,6 +226,16 @@
   // names a hit by its fire-order index and there is no readback. Both sides sort
   // on the same key, computed by the same arithmetic, with the same insertion
   // rule — see the note on the geometry port above.
+  //
+  // KNOWN GAP, and it is the mirror's one weak point: the page is seeded empty
+  // and from `build_html`'s default geometry, so it mirrors an engine that starts
+  // empty. Reopening the editor over a lane that already holds hits — a GUI
+  // close/reopen, or a `clap.state` restore — rebuilds this list from nothing
+  // while the engine keeps its own, and every index sent afterwards then names
+  // the wrong hit. The fix is a hit-list readback in `serialise_custom_view`,
+  // which needs its own ticket: the view channel carries only the playhead today,
+  // and the alternative (clearing the engine's lanes on load) would throw away a
+  // restored pattern to buy agreement.
 
   function canonicalHit(g, h) {
     var b = clamp(h.beat | 0, 0, g.n_beats - 1);
@@ -289,12 +299,14 @@
     lane.hits.splice(index, 1);
     return insertHit(lane, h);
   }
-  // Pattern::next_marker — the marker after (beat, sub), or itself at the end.
+  // Pattern::next_marker — the marker after (beat, sub), or null at the lane's
+  // last one: the end marker is a bound, not a slot, so there is nothing beyond
+  // it to quantise or snap to.
   function nextMarker(g, beat, sub) {
     var b = Math.min(beat, g.n_beats - 1), k = Math.min(sub, subsAt(g, b) - 1);
     if (k + 1 < subsAt(g, b)) return { beat: b, sub: k + 1 };
     if (b + 1 < g.n_beats) return { beat: b + 1, sub: 0 };
-    return { beat: b, sub: k };
+    return null;
   }
 
   // ── voice library ───────────────────────────────────────────────────────────
@@ -375,8 +387,12 @@
     var v = voiceById(voiceId);
     // Re-pitch every hit to the new voice's note (a hat's open/closed identity lives
     // in the note, so reassigning must re-note or the drum plays at the old pitch).
+    // Only the hits that actually change: this runs on every `input` of a voice
+    // editor slider, and a full lane's worth of no-op commands per slider sample
+    // would fill the edit ring and start dropping the edits that *do* matter.
     var hits = lanes[track].hits;
     for (var i = 0; i < hits.length; i++) {
+      if (hits[i].note === v.note) continue;
       hits[i].note = v.note;
       send("set_hit_note", { track: track, hit: i, note: v.note, velocity: hits[i].velocity });
     }
@@ -429,7 +445,10 @@
       var d = el("div", "hit" + (h.retrig ? " retrig" : "") + (isSelected(h) ? " sel" : ""));
       d.style.left = pct(fireBeat(lane.g, h) / lane.g.len_beats);
       d.style.top = pct(1 - clamp(h.y, 0, 1));
-      d.style.opacity = String(h.prob);
+      // Probability fades the diamond, but off a floor: opacity takes the
+      // selection ring with it, and a hollow low-probability hit at full fade is
+      // invisible against the strip.
+      d.style.opacity = (0.4 + 0.6 * clamp(h.prob, 0, 1)).toFixed(3);
       // Welded hits read differently from placed ones — `f = 0` is the stored form
       // that survives a groove edit, and it is worth being able to see which is which.
       if (h.f === 0 && h.nudge === 0) d.classList.add("welded");
@@ -457,11 +476,19 @@
 
   // The ceiling, shown rather than swallowed: the engine's insert drops an
   // over-capacity hit, so the editor refuses first and says so.
+  var fullTimers = [];
   function laneFull(t) {
-    stripEls[t].classList.add("full");
-    setStatus("Track " + (t + 1) + " is full — " + MAX_HITS + " hits is the lane ceiling.");
     var s = stripEls[t];
-    window.setTimeout(function () { s.classList.remove("full"); }, 700);
+    s.classList.add("full");
+    setStatus("Track " + (t + 1) + " is full — " + MAX_HITS + " hits is the lane ceiling.");
+    // One timer per lane, restarted: a second refusal inside the window must
+    // extend the flash, not cancel it and clear a message still being read.
+    if (fullTimers[t]) window.clearTimeout(fullTimers[t]);
+    fullTimers[t] = window.setTimeout(function () {
+      s.classList.remove("full");
+      fullTimers[t] = 0;
+      setStatus("");
+    }, 900);
   }
 
   // A macro slot's lane label = the assigned voice's macro name (override / first bound
@@ -509,9 +536,13 @@
   // A pointer position, resolved through the lane's geometry rather than through
   // any notion of a cell: `x` is a beat position, `y` is the lane's modulation axis.
   function pointerAt(t, ev) {
-    var r = stripEls[t].getBoundingClientRect();
-    var u = clamp((ev.clientX - r.left) / Math.max(r.width, 1), 0, 1);
-    var y = clamp((ev.clientY - r.top) / Math.max(r.height, 1), 0, 1);
+    var s = stripEls[t], r = s.getBoundingClientRect();
+    // The **padding** box, not the border box: the marker and diamond layers are
+    // `inset: 0` inside the strip's 1px border, so measuring the pointer against
+    // the outer box would offset placement from what is drawn by that border.
+    var w = s.clientWidth || r.width, h = s.clientHeight || r.height;
+    var u = clamp((ev.clientX - r.left - (s.clientLeft || 0)) / Math.max(w, 1), 0, 1);
+    var y = clamp((ev.clientY - r.top - (s.clientTop || 0)) / Math.max(h, 1), 0, 1);
     return { t: u * lanes[t].g.len_beats, y: f32(1 - y) };
   }
   // Where a drag or a placement lands, as the stored form. With snap on the hit is
@@ -628,9 +659,10 @@
         var idx = lane.hits.indexOf(h);
         if (idx < 0) continue;
         send("quantise_hit_x", { track: t, hit: idx, amount: a });
-        var towardNext = h.f > 0.5;
+        var next = nextMarker(lane.g, h.beat, h.sub);
+        var towardNext = h.f > 0.5 && next !== null;
         if (a >= 1) {
-          var m = towardNext ? nextMarker(lane.g, h.beat, h.sub) : { beat: h.beat, sub: h.sub };
+          var m = towardNext ? next : { beat: h.beat, sub: h.sub };
           moveHit(lane, idx, m.beat, m.sub, 0, 0);
         } else {
           var f = towardNext
@@ -893,7 +925,14 @@
 
     var dup = el("button", "ve-dup", "Duplicate");
     dup.addEventListener("click", function () {
-      var copy = { id: nextVoiceId++, name: v.name + " copy", engine: v.engine, flavour: cloneFlavour(v.flavour) };
+      // The note must be carried: a voice without one sends `note: undefined`,
+      // which drops out of the JSON and makes the engine reject the whole
+      // `add_hit` — a hit the page shows and the engine never received, after
+      // which every fire-order index the page sends for that lane is off by one.
+      var copy = {
+        id: nextVoiceId++, name: v.name + " copy", engine: v.engine,
+        flavour: cloneFlavour(v.flavour), note: v.note,
+      };
       voices.push(copy); editingVoiceId = copy.id; renderVoiceList(); renderVoiceEditor();
     });
     head.appendChild(dup);

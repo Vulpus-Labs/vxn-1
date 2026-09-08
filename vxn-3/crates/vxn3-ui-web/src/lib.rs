@@ -13,7 +13,15 @@
 //!
 //! The snapped-slot opcodes are kept: [`vxn3_engine::Pattern`] still has the
 //! slot-keyed verbs, and they remain the right vocabulary for a caller that has
-//! a slot index. The strip does not use them — it is hit-keyed throughout.
+//! a slot index. The strip does not use them — it is hit-keyed throughout, `hit`
+//! being a fire-order index into the lane.
+//!
+//! Which leaves one gap worth naming here rather than only in the page: the hit
+//! index is only meaningful while the page's list matches the engine's, and
+//! [`serialise_custom_view`] carries the playhead and nothing else. The page is
+//! therefore seeded empty, which is right for a fresh instance and wrong for an
+//! editor reopened over a lane that already holds hits. A hit-list readback is
+//! the fix and is its own ticket; see the matching note in `app.js`.
 
 use std::any::Any;
 use std::ffi::c_void;
@@ -35,6 +43,11 @@ use vxn3_engine::{
 
 pub const EDITOR_WIDTH: u32 = 900;
 pub const EDITOR_HEIGHT: u32 = 420;
+
+/// Pitch a hit takes when a payload carries none — C2, [`vxn3_engine::Hit`]'s own
+/// default. See the `add_hit` arm of [`parse_custom_ui`] for why this defaults
+/// rather than rejecting.
+const DEFAULT_NOTE: f32 = 36.0;
 
 const HTML_TEMPLATE: &str = include_str!("../assets/index.html");
 const APP_JS: &str = include_str!("../assets/app.js");
@@ -264,6 +277,11 @@ fn parse_custom_ui(op: &str, v: &Json) -> Option<UiEvent> {
     // which the page mirrors by resolving positions through the same geometry the
     // engine does.
     match op {
+        // Everything but the position defaults. An `add_hit` must never be
+        // *dropped* for a missing attribute: the page has already drawn the
+        // diamond and counted it, so a rejected add puts the two hit lists a
+        // whole index out of step for good, where a wrong note is one audibly
+        // wrong drum until the lane is reassigned.
         "add_hit" => {
             return Some(edit(EngineCommand::AddHit {
                 track,
@@ -272,7 +290,7 @@ fn parse_custom_ui(op: &str, v: &Json) -> Option<UiEvent> {
                 f: f32_at(v, "f").unwrap_or(0.0),
                 nudge: i16_at(v, "nudge").unwrap_or(0),
                 y: f32_at(v, "y").unwrap_or(Y_CENTRE),
-                note: f32_at(v, "note")?,
+                note: f32_at(v, "note").unwrap_or(DEFAULT_NOTE),
                 velocity: f32_at(v, "velocity").unwrap_or(1.0),
             }));
         }
