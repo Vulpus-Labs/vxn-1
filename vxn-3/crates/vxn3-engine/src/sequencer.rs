@@ -31,7 +31,7 @@
 //! vector, consumed at trig time by [`crate::lane`] (0351); `y` is stored and not yet
 //! consumed (0350).
 
-use crate::grid::{Grid, MIN_SLOT};
+use crate::grid::{Grid, GridPos, MIN_SLOT};
 
 /// A 16th note in quarter-note beats.
 pub const SIXTEENTH: f64 = 0.25;
@@ -278,6 +278,11 @@ impl Pattern {
 
     /// Edit the lane's geometry, then re-establish fire order. Every grid
     /// mutation must go through here — see the type's note.
+    ///
+    /// This is the **relative** door (ADR 0007 §5): the hits' `(beat, sub, f)` are
+    /// left alone and the geometry moves underneath them, so they rubber-band with
+    /// the slots they hang off. [`Pattern::edit_grid_preserving_times`] is the
+    /// absolute one, and marker insert/delete is the only gesture that takes it.
     pub fn edit_grid(&mut self, f: impl FnOnce(&mut Grid)) {
         f(&mut self.grid);
         self.canonicalise();
@@ -663,6 +668,180 @@ impl Pattern {
         h.f = if h.f.is_finite() { h.f.clamp(0.0, F_MAX) } else { 0.0 };
         h.nudge = h.nudge.clamp(-MAX_NUDGE_TICKS, MAX_NUDGE_TICKS);
         h
+    }
+
+    // ── marker edits: drag is relative, insert/delete absolute (0349) ─────────
+    //
+    // ADR 0007 §5's two rules are opposite on purpose, and the asymmetry is in the
+    // API rather than emergent from whichever path was written first. Both gestures
+    // read the same way to a user, and neither is a special case of the other:
+    //
+    //   drag   — a pure clamped write to `m[i]`, no hit record touched. Slot `i-1`
+    //            stretches and slot `i` squashes at once, so hits rubber-band in
+    //            *both* directions from one grab, free from the fractional storage.
+    //   insert — the slot splits and every hit stays where it is on screen, because
+    //   delete   its `(beat, sub, f)` is rebuilt from the absolute time it had before
+    //            the edit.
+
+    /// Drag beat marker `i` to `pos`, **preserving relative position**: the hits in
+    /// the two slots either side rubber-band with their slot, and not one hit record
+    /// is written. Returns the position actually taken.
+    ///
+    /// That is what makes undo cheap — one stored `f64` restores every apparent hit
+    /// position, however many hits appear to move. The clamp and the pinned outer
+    /// markers are [`Grid::set_beat_marker`]'s, which is the only path into the
+    /// marker array, so a drag can never produce a degenerate slot.
+    ///
+    /// The list is still re-sorted afterwards: `nudge` is absolute, so a hit near a
+    /// slot that just narrowed can genuinely overtake its neighbour. Re-sorting
+    /// permutes records; it does not change one.
+    pub fn drag_beat_marker(&mut self, i: usize, pos: f64) -> f64 {
+        let mut taken = self.grid.beat_marker(i);
+        self.edit_grid(|g| taken = g.set_beat_marker(i, pos));
+        taken
+    }
+
+    /// Insert a beat marker at `pos`, taking index `i` and splitting slot `i - 1` —
+    /// **preserving absolute time**, so the split moves nothing on screen. Returns
+    /// the index taken, or `None` if [`Grid::insert_beat_marker`] refused it.
+    ///
+    /// `pos` takes the same clamp a drag does, so it is not necessarily where the
+    /// marker ends up — an undo record wants `grid().beat_marker(i)` afterwards, not
+    /// the `pos` it asked for.
+    pub fn insert_beat_marker(&mut self, i: usize, pos: f64) -> Option<usize> {
+        let mut taken = None;
+        self.edit_grid_preserving_times(|g| taken = g.insert_beat_marker(i, pos));
+        taken
+    }
+
+    /// Delete beat marker `i`, merging slots `i - 1` and `i` — **preserving absolute
+    /// time**, so the merge moves nothing on screen. Returns whether it was deleted.
+    ///
+    /// A hit welded to the deleted marker (`f = 0`) lands at a non-zero `f` in the
+    /// merged slot, which is correct: what a delete preserves is where the hit *is*,
+    /// not that it happened to be snapped.
+    pub fn delete_beat_marker(&mut self, i: usize) -> bool {
+        let mut deleted = false;
+        self.edit_grid_preserving_times(|g| deleted = g.delete_beat_marker(i));
+        deleted
+    }
+
+    /// The **absolute**-time door into the geometry, and the counterpart to
+    /// [`Pattern::edit_grid`]'s relative one: resolve every hit's grid position,
+    /// apply the edit, rebuild `(beat, sub, f)` from those positions.
+    ///
+    /// The **nudge is deliberately held out of the sandwich**. It is an absolute tick
+    /// offset that by definition does not follow the geometry (ADR 0007 §4), so the
+    /// stored ticks ride through untouched and what is resolved and rebuilt is the
+    /// grid-relative part.
+    ///
+    /// But *resolving* a nudge is not geometry-free: [`Pattern::fire_beat`] clamps it
+    /// to ±½ of the hit's own slot (0348), so a slot that changes width changes how
+    /// much of a large nudge survives — by up to ½ [`MIN_SLOT`], which is 3.9 ms at
+    /// 120 bpm and nothing like an ulp. Rebuilding the grid part alone would preserve
+    /// where a hit *hangs* and still move where it *fires*. So each hit gets two
+    /// candidate placements — the grid part as it stood, and the same shifted by the
+    /// change in the resolved nudge — and takes whichever resolves closer to the fire
+    /// time being preserved. When nothing changed the first is exact and wins by
+    /// construction, so the common path is still one `locate` and no arithmetic.
+    ///
+    /// **The shifted candidate is not always available**, and this is the one place
+    /// the absolute rule is bounded rather than exact: a hit at the very start of the
+    /// pattern whose slot has just widened would need a *negative* grid position to
+    /// hold its fire time, and there is none. Its stored ticks then resolve further
+    /// than they used to, by at most ½ `MIN_SLOT`. The alternative is to rewrite the
+    /// stored nudge, which ADR 0007 §4 forbids outright — a nudge is absolute and
+    /// survives a geometry change unscaled — so the fire time yields and the bound is
+    /// what is asserted, in
+    /// `a_nudge_at_its_slot_clamp_is_re_expressed_within_half_a_min_slot`.
+    ///
+    /// Exactness, which is the whole claim of this door: a hit in a slot the edit
+    /// does not reshape keeps its triple **bit-for-bit** — the markers either side of
+    /// it are the same `f64` values, so [`Grid::locate`] returns the same slot, the
+    /// `f64` fraction it recomputes rounds back to the same `f32`, and its fire time
+    /// is `f64`-equal to what it was. Only the hits inside the split or merged span
+    /// are genuinely re-derived, and there the rebuild is exact whenever the new
+    /// geometry can name the position in an `f32` fraction and correct to half an
+    /// `f32` ulp of the slot (~8 ns at 120 bpm) when it cannot. `f` is `f32` storage;
+    /// that bound is the storage's, not the mapping's — and it is a bound **per
+    /// edit**, which does not cancel: repeated random marker edits random-walk a hit
+    /// by a few of them (~2.6e-7 beats over 400 edits, 0.13 µs at 120 bpm).
+    ///
+    /// An edit the grid **refuses** returns early instead of rebuilding against a
+    /// geometry that did not change. That rebuild is very nearly the identity, but
+    /// "very nearly" is not what a rejected gesture should do to a hit list.
+    ///
+    /// Not a bypass of [`Pattern::edit_grid`] but the second half of it: the base
+    /// times have to be captured before the edit and read back before the re-sort
+    /// permutes the list, so it ends in the same `canonicalise` rather than nesting.
+    fn edit_grid_preserving_times(&mut self, edit: impl FnOnce(&mut Grid)) {
+        let mut at = [0.0_f64; MAX_HITS];
+        let mut nudged = [0.0_f64; MAX_HITS];
+        for i in 0..self.n_hits {
+            at[i] = self.grid_pos(i);
+            nudged[i] = self.resolved_nudge(self.hit_pos(i), self.hits[i].nudge);
+        }
+        let before = self.grid;
+        edit(&mut self.grid);
+        if self.grid == before {
+            return;
+        }
+        for i in 0..self.n_hits {
+            let nudge = self.hits[i].nudge;
+            let p = self.grid.locate(at[i]);
+            let np = self.resolved_nudge(p, nudge);
+            let mut best = p;
+            if np != nudged[i] {
+                // The clamp moved. Shift the grid part the other way and see whether
+                // the slot that lands in gives back the fire time; a candidate is only
+                // taken if it is closer, so this can never be worse than not trying.
+                let q = self.grid.locate(at[i] + nudged[i] - np);
+                let nq = self.resolved_nudge(q, nudge);
+                let target = at[i] + nudged[i];
+                let ep = (self.stored_pos_of(p) + np - target).abs();
+                let eq = (self.stored_pos_of(q) + nq - target).abs();
+                if eq < ep {
+                    best = q;
+                }
+            }
+            self.hits[i].beat = best.beat as u16;
+            self.hits[i].sub = best.sub as u8;
+            self.hits[i].f = best.frac as f32;
+        }
+        self.canonicalise();
+    }
+
+    /// A hit's stored triple, clamped into the live geometry the way
+    /// [`Pattern::fire_beat`] clamps it.
+    fn hit_pos(&self, index: usize) -> GridPos {
+        let h = &self.hits[index];
+        let beat = (h.beat as usize).min(self.grid.n_beats() - 1);
+        let sub = (h.sub as u32).min(self.grid.subs(beat) - 1);
+        GridPos { beat, sub, frac: h.f as f64 }
+    }
+
+    /// Where hit `index` sits on the grid, **before** its nudge — the forward map
+    /// [`Pattern::edit_grid_preserving_times`] inverts with [`Grid::locate`].
+    /// [`Pattern::fire_beat`] is this plus the resolved nudge.
+    fn grid_pos(&self, index: usize) -> f64 {
+        if index >= self.n_hits {
+            return 0.0;
+        }
+        self.grid.pos_of(self.hit_pos(index))
+    }
+
+    /// Where a candidate placement would actually land once `f` has been through the
+    /// `f32` it is stored in — the rounding is part of the answer, so a candidate has
+    /// to be judged after it and not before.
+    fn stored_pos_of(&self, at: GridPos) -> f64 {
+        self.grid.pos_of(GridPos { frac: at.frac as f32 as f64, ..at })
+    }
+
+    /// `nudge` in beats, under [`Pattern::fire_beat`]'s ±½-slot clamp for the slot
+    /// `at` sits in — the term that does not survive a change of slot width.
+    fn resolved_nudge(&self, at: GridPos, nudge: i16) -> f64 {
+        let half = 0.5 * (self.grid.sub_pos(at.beat, at.sub + 1) - self.grid.sub_pos(at.beat, at.sub));
+        (nudge as f64 / TICKS_PER_BEAT).clamp(-half, half)
     }
 }
 
@@ -1117,6 +1296,457 @@ mod tests {
         assert_eq!(p.retrig_span(0, 2), 0.5, "two straight 16ths");
         p.edit_grid(|g| g.set_beat_subs(0, Some(2)));
         assert_eq!(p.retrig_span(0, 2), 1.0, "two slots of a halved beat");
+    }
+
+    // ── marker edit semantics (ADR 0007 §5, ticket 0349) ──────────────────────
+
+    /// Fire time of the hit tagged `note`.
+    ///
+    /// The list *is* the fire order, so any comparison across an edit has to follow
+    /// the tag rather than the index: indexing both sides is only sound while the
+    /// property under test holds, which is exactly the case where a test must not be
+    /// trusted. Every fixture below tags its hits with distinct notes for this.
+    fn fire_of(p: &Pattern, note: f32) -> f64 {
+        p.fire_beat(index_of(p, note))
+    }
+
+    /// Width of the slot the hit tagged `note` sits in.
+    fn span_of(p: &Pattern, note: f32) -> f64 {
+        p.slot_span(index_of(p, note))
+    }
+
+    fn index_of(p: &Pattern, note: f32) -> usize {
+        p.hits()
+            .iter()
+            .position(|h| h.note == note)
+            .unwrap_or_else(|| panic!("hit {note} lost"))
+    }
+
+    /// A lane of welded 16ths plus one deliberately off-grid hit in each of the two
+    /// slots either side of `m[1]`, tagged by note so a hit can be found again after
+    /// a re-sort.
+    fn lane_across_the_first_marker() -> Pattern {
+        let mut p = Pattern::default();
+        for slot in 0..8 {
+            p.set(slot, slot as f32, 1.0);
+        }
+        p.insert(Hit { f: 0.4, note: 90.0, ..Hit::at(0, 2) });
+        p.insert(Hit { f: 0.6, note: 91.0, ..Hit::at(1, 1) });
+        p
+    }
+
+    /// AC: dragging `m[i]` moves the hits in slot `i-1` **and** slot `i` at once, in
+    /// proportion to their slots, and writes no hit record. That last part is what
+    /// makes undo one stored value however many hits appear to move.
+    #[test]
+    fn a_marker_drag_rubber_bands_both_slots_and_writes_no_hit() {
+        let mut p = lane_across_the_first_marker();
+        let before = p;
+        assert_eq!(p.drag_beat_marker(1, 1.25), 1.25);
+
+        // Record-for-record, followed by tag: a drag may *permute* the list, since
+        // an absolute nudge can carry a hit past its neighbour when a slot narrows.
+        // What it must never do is rewrite one.
+        assert_eq!(p.len(), before.len());
+        let (mut moved_left, mut moved_right) = (false, false);
+        for h in before.hits() {
+            assert_eq!(&p.hits()[index_of(&p, h.note)], h, "a drag wrote a hit record");
+            let (was, now) = (fire_of(&before, h.note), fire_of(&p, h.note));
+            if was < 1.0 {
+                // Slot 0 stretched from [0, 1] to [0, 1.25]: everything in it scales.
+                assert!((now - was * 1.25).abs() < 1e-12, "hit {} at {was} -> {now}", h.note);
+                moved_left |= now != was;
+            } else {
+                // Slot 1 squashed from [1, 2] to [1.25, 2] at the same time.
+                let u = was - 1.0;
+                assert!((now - (1.25 + u * 0.75)).abs() < 1e-12, "hit {} at {was} -> {now}", h.note);
+                moved_right |= now != was;
+            }
+        }
+        assert!(moved_left && moved_right, "one grab must move hits on both sides");
+    }
+
+    /// AC: undo of a marker drag restores one value and every apparent hit position —
+    /// `f64` equality on the times, not an epsilon.
+    #[test]
+    fn undoing_a_marker_drag_restores_every_hit_position() {
+        let mut p = lane_across_the_first_marker();
+        p.edit_grid(|g| g.set_swing(Swing::mpc(0.6)));
+        let before = p;
+        let undo = p.grid().beat_marker(1); // the whole of the undo record
+
+        p.drag_beat_marker(1, 1.6);
+        assert!(
+            before.hits().iter().any(|h| fire_of(&p, h.note) != fire_of(&before, h.note)),
+            "the drag has to have moved something for the restore to mean anything"
+        );
+
+        assert_eq!(p.drag_beat_marker(1, undo), undo);
+        assert_eq!(p.grid(), before.grid());
+        for h in before.hits() {
+            assert_eq!(fire_of(&p, h.note), fire_of(&before, h.note), "hit {}", h.note);
+        }
+    }
+
+    /// AC: inserting a beat marker changes no hit's absolute fire time — `f64`
+    /// equality on the resolved times before and after.
+    #[test]
+    fn inserting_a_marker_preserves_every_absolute_fire_time() {
+        let mut p = Pattern::default();
+        for slot in 0..16 {
+            p.set(slot, slot as f32, 1.0);
+        }
+        p.insert(Hit { f: 0.5, note: 90.0, ..Hit::at(1, 1) });
+        let before = p;
+
+        assert_eq!(p.insert_beat_marker(2, 1.5), Some(2), "split beat slot 1 in two");
+        assert_eq!(p.grid().n_beats(), 5);
+        assert_eq!(p.len(), before.len(), "an insert neither adds nor drops a hit");
+        for h in before.hits() {
+            assert_eq!(fire_of(&p, h.note), fire_of(&before, h.note), "hit {}", h.note);
+        }
+        // The hits in the split slot really were re-derived — the ones above it rode
+        // up a beat index, and the ones inside it changed subdivision.
+        assert_ne!(p.hits(), before.hits());
+    }
+
+    /// AC: deleting a beat marker changes no hit's absolute fire time either.
+    #[test]
+    fn deleting_a_marker_preserves_every_absolute_fire_time() {
+        let mut p = Pattern::default();
+        for slot in 0..16 {
+            p.set(slot, slot as f32, 1.0);
+        }
+        p.insert(Hit { f: 0.5, note: 90.0, ..Hit::at(1, 1) });
+        let before = p;
+
+        assert!(p.delete_beat_marker(2), "merge beat slots 1 and 2");
+        assert_eq!(p.grid().n_beats(), 3);
+        assert_eq!(p.len(), before.len());
+        for h in before.hits() {
+            assert_eq!(fire_of(&p, h.note), fire_of(&before, h.note), "hit {}", h.note);
+        }
+        assert_ne!(p.hits(), before.hits());
+    }
+
+    /// A hit welded to the marker being deleted lands at a **non-zero `f`** in the
+    /// merged slot, which is correct: what a delete preserves is where the hit is,
+    /// not that it happened to be snapped.
+    #[test]
+    fn a_hit_welded_to_a_deleted_marker_keeps_its_time_not_its_snap() {
+        let mut p = Pattern::default();
+        p.set_grid_subs(1); // the beat markers are then the only markers there are
+        p.set(1, 36.0, 1.0);
+        assert_eq!(p.hits()[0].f, 0.0, "welded to m[1]");
+        assert_eq!(p.fire_beat(0), 1.0);
+
+        assert!(p.delete_beat_marker(1));
+        assert_eq!(p.fire_beat(0), 1.0, "the time is what survives");
+        assert_eq!(p.hits()[0].beat, 0);
+        assert_eq!(p.hits()[0].f, 0.5, "and it is no longer on a marker");
+    }
+
+    /// AC: delete-then-insert at the same position is a no-op **on fire times**. The
+    /// stored triples are not what is asserted — nothing requires them to round-trip,
+    /// and in the swung half below they do not.
+    #[test]
+    fn delete_then_insert_at_the_same_place_is_a_no_op_on_fire_times() {
+        let mut p = Pattern::default();
+        for slot in 0..16 {
+            p.set(slot, slot as f32, 1.0);
+        }
+        p.insert(Hit { f: 0.5, note: 90.0, ..Hit::at(2, 3) });
+        let before = p;
+        let pos = p.grid().beat_marker(2);
+
+        assert!(p.delete_beat_marker(2));
+        assert_eq!(p.insert_beat_marker(2, pos), Some(2));
+        assert_eq!(p.grid(), before.grid(), "the geometry came back exactly");
+        for h in before.hits() {
+            assert_eq!(fire_of(&p, h.note), fire_of(&before, h.note), "hit {}", h.note);
+        }
+
+        // The same round trip on geometry that is not dyadic, where the rebuilt `f32`
+        // fraction cannot always name the position exactly. The time is still held to
+        // the resolution of that fraction, which is ~10 ns at 120 bpm.
+        let mut p = Pattern::default();
+        p.edit_grid(|g| {
+            g.set_swing(Swing::mpc(0.45));
+            g.set_beat_marker(1, 0.7);
+            g.set_beat_marker(2, 1.9);
+            g.set_beat_subs(3, Some(3)); // a tuplet clear of the merge, which rides the shift
+        });
+        for slot in 0..p.total_subs() {
+            p.set(slot as usize, slot as f32, 1.0);
+        }
+        p.insert(Hit { f: 0.37, note: 90.0, ..Hit::at(1, 1) });
+        let before = p;
+        let pos = p.grid().beat_marker(2);
+
+        assert!(p.delete_beat_marker(2));
+        let merged = p;
+        assert_eq!(p.insert_beat_marker(2, pos), Some(2));
+        assert_eq!(p.grid(), before.grid());
+        for h in before.hits() {
+            let (was, now) = (fire_of(&before, h.note), fire_of(&p, h.note));
+            // Half an `f32` ulp of the slot each rebuild lands in — the merged slot
+            // the first one lands in, then the restored slot the second returns to.
+            // That sum is the whole budget for the round trip.
+            let tol =
+                0.5 * f32::EPSILON as f64 * (span_of(&merged, h.note) + span_of(&p, h.note));
+            assert!((now - was).abs() <= tol, "hit {}: {was} -> {now} (tol {tol})", h.note);
+        }
+    }
+
+    /// AC: the outer markers reject drag, delete and insert-outside — at the pattern
+    /// level too, where a refused edit must also leave every hit alone.
+    #[test]
+    fn outer_markers_reject_every_marker_edit() {
+        let mut p = lane_across_the_first_marker();
+        p.edit_grid(|g| g.set_swing(Swing::mpc(0.3)));
+        let before = p;
+
+        assert_eq!(p.drag_beat_marker(0, 0.5), 0.0);
+        assert_eq!(p.drag_beat_marker(4, 9.0), 4.0);
+        assert_eq!(p.insert_beat_marker(0, 0.5), None);
+        assert_eq!(p.insert_beat_marker(1, 0.0), None, "on the pinned start");
+        assert_eq!(p.insert_beat_marker(5, 4.5), None, "past the pinned end");
+        assert!(!p.delete_beat_marker(0));
+        assert!(!p.delete_beat_marker(4));
+
+        assert_eq!(p.grid(), before.grid());
+        // A refused edit does not reach the rebuild at all — the sandwich returns
+        // early on unchanged geometry — so this is record-for-record, not near-miss.
+        assert_eq!(p.hits(), before.hits());
+        for h in before.hits() {
+            assert_eq!(fire_of(&p, h.note), fire_of(&before, h.note), "hit {}", h.note);
+        }
+    }
+
+    /// AC: an insert or a delete changes no hit's absolute fire time, over randomised
+    /// geometry rather than the hand-picked dyadic cases above.
+    ///
+    /// Two standards, and the split is the storage's rather than the mapping's. A hit
+    /// in a slot the edit does not reshape is held to **`f64` equality** — its markers
+    /// are the same values, so its triple survives bit-for-bit, and so does its nudge
+    /// clamp. A hit inside the split or merged span is rebuilt through an `f32`
+    /// fraction and so is held to one `f32` ulp of its slot (about 8 ns at a 16th of
+    /// 120 bpm), plus whatever of its stored nudge the new slot width releases.
+    ///
+    /// Nudges are deliberately in the mix and deliberately over-range: the `f32`
+    /// bound alone would be a weaker claim than it looks if the nudge were held at
+    /// zero, since it is the nudge's ±½-slot resolve clamp that can move a hit by
+    /// milliseconds rather than nanoseconds.
+    #[test]
+    fn marker_edits_preserve_fire_times_over_random_geometry() {
+        let mut rng = Rng(0x0349_0002);
+        let mut inserts = 0;
+        let mut deletes = 0;
+        for trial in 0..200 {
+            let mut p = Pattern::default();
+            p.set_grid_beats(2 + rng.below(6) as usize);
+            p.set_grid_subs(1 + rng.below(MAX_SUBS));
+            p.edit_grid(|g| {
+                g.set_swing(Swing::mpc(rng.bipolar()));
+                g.set_beat_marker(1, rng.unit() * 2.0);
+                g.set_beat_subs(0, Some(1 + rng.below(MAX_SUBS)));
+            });
+            let total = p.total_subs();
+            for tag in 0..12 {
+                let (b, k) = p.grid().sub_of_index(rng.below(total));
+                p.insert(Hit {
+                    f: rng.unit() as f32,
+                    nudge: (rng.bipolar() * 2.0 * MAX_NUDGE_TICKS as f64) as i16,
+                    note: tag as f32,
+                    ..Hit::at(b as u16, k as u8)
+                });
+            }
+            let before = p;
+
+            let n = p.grid().n_beats() as u32;
+            let i = 1 + rng.below(n - 1) as usize;
+            // The beats whose shape actually changes: the split one, or the two that
+            // merge. Every other hit is held to the stronger standard.
+            let (lo, hi) = if trial % 2 == 0 {
+                let (a, b) = (p.grid().beat_marker(i - 1), p.grid().beat_marker(i));
+                if p.insert_beat_marker(i, a + rng.unit() * (b - a)).is_none() {
+                    continue;
+                }
+                inserts += 1;
+                (i - 1, i - 1)
+            } else {
+                if !p.delete_beat_marker(i) {
+                    continue;
+                }
+                deletes += 1;
+                (i - 1, i)
+            };
+
+            assert_eq!(p.len(), before.len());
+            for h in before.hits() {
+                let (was, now) = (fire_of(&before, h.note), fire_of(&p, h.note));
+                let beat = h.beat as usize;
+                if beat < lo || beat > hi {
+                    assert_eq!(now, was, "trial {trial}: untouched beat {beat} moved");
+                } else {
+                    // Half an f32 ulp of the rebuilt fraction, plus however much of
+                    // the stored nudge the new slot width lets through that the old
+                    // one did not — the residual the sandwich cannot always place.
+                    let ticks = h.nudge as f64 / TICKS_PER_BEAT;
+                    let (sb, sa) = (span_of(&before, h.note), span_of(&p, h.note));
+                    let nb = ticks.clamp(-0.5 * sb, 0.5 * sb);
+                    let na = ticks.clamp(-0.5 * sa, 0.5 * sa);
+                    let tol = f32::EPSILON as f64 * sa + (na - nb).abs();
+                    assert!((now - was).abs() <= tol, "trial {trial}: {was} -> {now}");
+                }
+            }
+        }
+        assert!(inserts > 50 && deletes > 50, "{inserts} inserts, {deletes} deletes");
+    }
+
+    /// A large nudge is re-expressed against the slot it lands in, and the sandwich
+    /// compensates for that wherever there is room to — which is everywhere except a
+    /// hit whose compensating position would fall outside the pattern.
+    ///
+    /// The residual is bounded by ½ `MIN_SLOT` (3.9 ms at 120 bpm), reachable only by
+    /// a hit whose stored nudge exceeds half its own slot, and it is the *resolve*
+    /// clamp of 0348 releasing rather than a position being lost: the alternative is
+    /// to rewrite the stored ticks, which ADR 0007 §4 forbids — a nudge is absolute
+    /// and survives a geometry change unscaled. Swept rather than asserted at one
+    /// point, because the bound is the claim.
+    #[test]
+    fn a_nudge_at_its_slot_clamp_is_re_expressed_within_half_a_min_slot() {
+        let mut worst = 0.0_f64;
+        let mut compensated = 0;
+        for subs in 1..=MAX_SUBS {
+            for w in [0.02, 0.05, 0.1, 0.2, 0.5, 1.0] {
+                for k in 0..subs.min(4) {
+                    let mut p = Pattern::default();
+                    p.set_grid_subs(subs);
+                    p.edit_grid(|g| {
+                        g.set_beat_marker(1, w);
+                    });
+                    p.insert(Hit { nudge: MAX_NUDGE_TICKS, ..Hit::at(0, k as u8) });
+                    let was = p.fire_beat(0);
+                    for mut q in [p, p] {
+                        let moved = if q.delete_beat_marker(1) {
+                            true
+                        } else {
+                            q.insert_beat_marker(1, w * 0.5).is_some()
+                        };
+                        if !moved {
+                            continue;
+                        }
+                        let d = (q.fire_beat(0) - was).abs();
+                        compensated += usize::from(d < 1e-9);
+                        worst = worst.max(d);
+                    }
+                }
+            }
+        }
+        assert!(worst <= 0.5 * MIN_SLOT, "residual {worst} exceeds half a MIN_SLOT");
+        assert!(compensated > 100, "only {compensated} placements came out exact");
+    }
+
+    /// Merging two slots can leave two hits sharing one `(beat, sub)` — they keep
+    /// their distinct absolute times, which is the whole point, but the *slot-keyed*
+    /// verbs then only reach the first of them.
+    ///
+    /// Not new and not a defect: `Pattern::canonical` already says a re-snap can stack
+    /// hits on one slot (0348). Recorded here because a delete is the gesture that
+    /// makes it easy to do on purpose, and because the continuous editor addresses
+    /// hits by index, where they are two perfectly distinct diamonds.
+    #[test]
+    fn merging_slots_can_stack_hits_that_the_slot_keyed_verbs_cannot_separate() {
+        let mut p = Pattern::default();
+        p.set_grid_subs(1);
+        p.set(0, 36.0, 1.0);
+        p.set(1, 38.0, 1.0);
+        assert!(p.delete_beat_marker(1));
+        assert_eq!(p.len(), 2, "both hits survive the merge");
+        assert_eq!(p.fire_beat(0), 0.0);
+        assert_eq!(p.fire_beat(1), 1.0, "and both keep their absolute time");
+        assert_eq!((p.hits()[0].beat, p.hits()[0].sub), (0, 0));
+        assert_eq!((p.hits()[1].beat, p.hits()[1].sub), (0, 0), "same slot now");
+        // The slot-keyed path reaches the first only; index-keyed reaches both.
+        p.clear(0);
+        assert_eq!(p.len(), 1);
+        p.remove(0);
+        assert!(p.is_empty());
+    }
+
+    /// AC (the one that guards hardest): randomised marker edits interleaved with
+    /// randomised hit placements never produce out-of-order fire times, a degenerate
+    /// slot, or a NaN.
+    ///
+    /// A bypassed clamp gives a zero-width slot, which divides by ~0 in the inverse
+    /// mapping and poisons every hit in that slot silently — nothing else here fails
+    /// on it, so this looks for it explicitly.
+    #[test]
+    fn random_marker_edits_never_produce_a_degenerate_lane() {
+        let mut rng = Rng(0x0349_0003);
+        for trial in 0..300 {
+            let mut p = Pattern::default();
+            p.set_grid_beats(1 + rng.below(8) as usize);
+            p.set_grid_subs(1 + rng.below(MAX_SUBS));
+            p.edit_grid(|g| g.set_swing(Swing::mpc(rng.bipolar())));
+            for _ in 0..40 {
+                let n = p.grid().n_beats() as u32;
+                let i = rng.below(n + 2) as usize;
+                let len = p.grid().len_beats();
+                // Wild positions on purpose: outside the pattern, and non-finite.
+                let pos = match rng.below(8) {
+                    0 => f64::NAN,
+                    1 => f64::NEG_INFINITY,
+                    2 => rng.bipolar() * 50.0,
+                    _ => rng.unit() * len,
+                };
+                match rng.below(6) {
+                    0 => {
+                        let total = p.total_subs();
+                        let (b, k) = p.grid().sub_of_index(rng.below(total));
+                        p.insert(Hit {
+                            f: rng.unit() as f32,
+                            nudge: (rng.bipolar() * 2.0 * MAX_NUDGE_TICKS as f64) as i16,
+                            ..Hit::at(b as u16, k as u8)
+                        });
+                    }
+                    1 => {
+                        p.drag_beat_marker(i, pos);
+                    }
+                    2 => {
+                        p.insert_beat_marker(i, pos);
+                    }
+                    3 => {
+                        p.delete_beat_marker(i);
+                    }
+                    4 => p.edit_grid(|g| g.set_beat_subs(i, Some(1 + rng.below(MAX_SUBS)))),
+                    _ => p.edit_grid(|g| g.set_swing(Swing::mpc(rng.bipolar()))),
+                }
+
+                let g = p.grid();
+                let len = g.len_beats();
+                assert_eq!(g.beat_marker(0), 0.0, "trial {trial}: the start marker moved");
+                for b in 0..g.n_beats() {
+                    let (lo, hi) = (g.beat_marker(b), g.beat_marker(b + 1));
+                    assert!(lo.is_finite() && hi.is_finite());
+                    assert!(hi - lo > 0.0, "trial {trial}: degenerate beat slot {b}");
+                }
+                let mut prev = f64::NEG_INFINITY;
+                for j in 0..p.len() {
+                    let h = p.hits()[j];
+                    assert!((h.beat as usize) < p.grid().n_beats(), "dead beat index");
+                    assert!((h.sub as u32) < p.grid().subs(h.beat as usize), "dead sub");
+                    assert!(h.f.is_finite() && (0.0..1.0).contains(&h.f), "f = {}", h.f);
+                    assert!(p.slot_span(j) > 0.0, "trial {trial}: degenerate slot");
+                    let t = p.fire_beat(j);
+                    assert!(t.is_finite(), "trial {trial}: hit {j} fires at {t}");
+                    assert!((0.0..=len).contains(&t), "trial {trial}: hit {j} at {t}");
+                    assert!(t >= prev, "trial {trial}: hit {j} at {t}, behind {prev}");
+                    prev = t;
+                }
+            }
+        }
     }
 }
 

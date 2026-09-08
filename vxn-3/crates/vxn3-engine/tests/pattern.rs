@@ -451,3 +451,32 @@ fn colour_changes_what_the_lane_sounds_like() {
         .sum();
     assert!(diff > 1e-3, "painting the hits changed nothing audible, diff={diff}");
 }
+
+/// A marker edit re-times every hit in the lane (0349), so it does the most work of
+/// any geometry edit — and it has to do it without a heap. The resolve-and-rebuild
+/// sandwich of `insert_beat_marker` / `delete_beat_marker` keeps its base times in a
+/// `[f64; MAX_HITS]` on the stack; this is what fails if that ever becomes a `Vec`.
+///
+/// Driven on a bare `Pattern` rather than through the engine because marker edits do
+/// not have an `EngineCommand` yet — the editor gestures that send them are 0354.
+#[test]
+fn marker_edits_are_allocation_free() {
+    let mut p = vxn3_engine::sequencer::Pattern::default();
+    p.set_grid_beats(8);
+    p.set_grid_subs(4);
+    for s in 0..p.total_subs() {
+        p.set(s as usize, 36.0, 1.0);
+    }
+    let mut taken = 0.0_f64;
+    let allocs = alloc_trap::count_allocs(|| {
+        for b in 0..200 {
+            let i = 1 + b % 4;
+            taken += p.drag_beat_marker(i, 0.5 + (b % 7) as f64);
+            if p.insert_beat_marker(i, p.grid().beat_marker(i - 1) + 0.1).is_some() {
+                assert!(p.delete_beat_marker(i));
+            }
+        }
+    });
+    assert_eq!(allocs, 0, "a marker edit allocated");
+    assert!(taken.is_finite() && !p.is_empty());
+}
