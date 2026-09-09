@@ -192,7 +192,13 @@ fn sine() -> Patch {
         // feedback in its own `fb` array, which always has a slot per operator.
         // The force mask matters for *off*-diagonal routes, which `saws`
         // exercises.
-        matrix: matrix(&[route(SourceId::Macro1, DestId::Pm00, 0.70)]),
+        // M1 opens the feedback, M2 damps it: amount and brightness of the
+        // same buzz on two knobs. The clearest pair in the set for hearing what
+        // damping does, because nothing else is happening.
+        matrix: matrix(&[
+            route(SourceId::Macro1, DestId::Pm00, 0.70),
+            route(SourceId::Macro2, DestId::Damp0, -0.85),
+        ]),
         eg,
         gain: 0.349,
     }
@@ -246,6 +252,13 @@ fn epiano() -> Patch {
             route(SourceId::Macro1, DestId::Pm01, 0.63),
             route(SourceId::Macro1, DestId::Pm23, 0.63),
             scaled_route(SourceId::Macro2, SourceId::Macro3, DestId::Pm03, 0.55),
+            // M4 damps both carriers. These are the operators receiving the
+            // 14:1 strike, so this is the knob for the effect heard at the top
+            // of the keyboard: the strike loses ~10 dB of index by C8 at the
+            // default corner, and this makes that a dial rather than a fixed
+            // property of the patch.
+            route(SourceId::Macro4, DestId::Damp0, -0.55),
+            route(SourceId::Macro4, DestId::Damp2, -0.55),
         ]),
         eg,
         gain: 0.373,
@@ -297,6 +310,11 @@ fn bell() -> Patch {
             route(SourceId::Macro1, DestId::Pm11, 0.72),
             route(SourceId::Macro2, DestId::Pm01, 0.60),
             route(SourceId::Macro2, DestId::Pm23, 0.60),
+            // M3 damps the carriers; M4 damps the self-feedback modulator,
+            // which is where the inharmonic character comes from.
+            route(SourceId::Macro3, DestId::Damp0, -0.60),
+            route(SourceId::Macro3, DestId::Damp2, -0.60),
+            route(SourceId::Macro4, DestId::Damp1, -0.75),
         ]),
         eg,
         gain: 0.340,
@@ -368,6 +386,11 @@ fn saws() -> Patch {
             route(SourceId::Macro2, DestId::Out2, 0.35),
             route(SourceId::Macro3, DestId::Pm34, 0.70),
             route(SourceId::Macro4, DestId::Pm24, 0.65),
+            // M5 damps the two saw carriers together. This is the patch where
+            // the modulators have real harmonic content, so damping bites
+            // harder here than on the all-sine patches.
+            route(SourceId::Macro5, DestId::Damp0, -0.70),
+            route(SourceId::Macro5, DestId::Damp1, -0.70),
         ]),
         eg,
         gain: 0.448,
@@ -423,8 +446,16 @@ fn web() -> Patch {
     for d in 0..NOPS {
         for s in 0..NOPS {
             // Deterministic but uneven, so it is not a flat matrix.
+            //
+            // These were 0.012..0.032 — small enough that 64 simultaneous
+            // routes stayed short of broadband noise on their own, which is
+            // gain staging standing in for design. With a pole in every cycle
+            // at every hop the depths can be what the patch actually wants,
+            // and M3's master damping has something to work on: at the old
+            // depths the knob moved the render by only 18 dB because there was
+            // barely any modulation to damp.
             let k = ((d * 7 + s * 13) % 11) as f32 / 11.0;
-            routing.pm[d][s] = 0.012 + 0.020 * k;
+            routing.pm[d][s] = 0.045 + 0.070 * k;
         }
         routing.out[d] = 0.125;
     }
@@ -452,6 +483,18 @@ fn web() -> Patch {
             route(SourceId::Macro1, DestId::Pm33, 0.55),
             route(SourceId::Macro2, DestId::Pm07, 0.50),
             route(SourceId::Macro2, DestId::Pm70, 0.50),
+            // M3 damps all eight operators at once — the master bounded-chaos
+            // control, and the reason the slot table is 16 wide. Every one of
+            // the seven cycles in this patch passes through several of these,
+            // so one knob changes how fast the whole thing fills its spectrum.
+            route(SourceId::Macro3, DestId::Damp0, -0.50),
+            route(SourceId::Macro3, DestId::Damp1, -0.50),
+            route(SourceId::Macro3, DestId::Damp2, -0.50),
+            route(SourceId::Macro3, DestId::Damp3, -0.50),
+            route(SourceId::Macro3, DestId::Damp4, -0.50),
+            route(SourceId::Macro3, DestId::Damp5, -0.50),
+            route(SourceId::Macro3, DestId::Damp6, -0.50),
+            route(SourceId::Macro3, DestId::Damp7, -0.50),
         ]),
         eg,
         gain: 0.635,
@@ -511,6 +554,12 @@ fn grind() -> Patch {
         matrix: matrix(&[
             route(SourceId::Macro1, DestId::Pm01, 0.79),
             scaled_route(SourceId::Macro2, SourceId::Macro3, DestId::Pm11, 0.63),
+            // M4 damps both saw carriers — the fizz control. Down is tame, up
+            // (knob at zero) is the SID-ish grit the patch has by default.
+            // Deliberately the widest span in the set: this is the patch where
+            // bounded chaos is most audible as a range rather than a setting.
+            route(SourceId::Macro4, DestId::Damp0, -0.90),
+            route(SourceId::Macro4, DestId::Damp3, -0.90),
         ]),
         eg,
         gain: 0.432,

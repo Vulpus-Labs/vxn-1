@@ -2,7 +2,7 @@
 //!
 //! ## What the host does not see
 //!
-//! The synth has 72 modulatable destinations, each taking two sources. Exposing
+//! The synth has 80 modulatable destinations, each taking two sources. Exposing
 //! that would be several hundred automation lanes, and would bake the patch's
 //! routing topology into every saved project — rewire a patch and every lane
 //! that named a route is pointing at something else.

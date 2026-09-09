@@ -406,8 +406,18 @@ impl<const V: usize> VoiceMajor<V> {
     /// Set the per-operator damping coefficients. Call whenever the patch or
     /// the oversampled rate changes — the coefficient depends on both.
     pub fn set_damping(&mut self, cfg: &[OpConfig; NOPS], sr_os: f32) {
+        let hz = core::array::from_fn(|d| cfg[d].damp_hz);
+        self.set_damping_hz(&hz, sr_os);
+    }
+
+    /// [`Self::set_damping`] from explicit corners rather than the patch's.
+    ///
+    /// The modulated path: a macro on a `Damp` destination shifts each corner in
+    /// octaves, so the engine resolves live values and pushes them here rather
+    /// than synthesising a whole `OpConfig` array per control tick.
+    pub fn set_damping_hz(&mut self, hz: &[f32; NOPS], sr_os: f32) {
         for d in 0..NOPS {
-            self.damp[d] = damp_coeff(cfg[d].damp_hz, sr_os);
+            self.damp[d] = damp_coeff(hz[d], sr_os);
         }
     }
 
@@ -889,6 +899,11 @@ impl<const V: usize> VoiceMajorPerVoiceGain<V> {
     /// See [`VoiceMajor::set_damping`].
     pub fn set_damping(&mut self, cfg: &[OpConfig; NOPS], sr_os: f32) {
         self.inner.set_damping(cfg, sr_os);
+    }
+
+    /// See [`VoiceMajor::set_damping_hz`].
+    pub fn set_damping_hz(&mut self, hz: &[f32; NOPS], sr_os: f32) {
+        self.inner.set_damping_hz(hz, sr_os);
     }
 
     /// See [`VoiceMajor::update_mips`].

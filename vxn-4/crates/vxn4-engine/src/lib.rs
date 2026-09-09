@@ -23,7 +23,7 @@
 //!   stealing. The behavioural port from vxn-2.
 //! - [`eg`] — 4-rate/4-level envelopes, one per operator per voice.
 //! - [`patch`] — the six hardwired patches, graded by routing density.
-//! - [`matrix`] — the modulation roster: 8 macro sources, 72 destinations.
+//! - [`matrix`] — the modulation roster: 8 macro sources, 80 destinations.
 //! - [`engine`] — banks, rate plan, limiter.
 //!
 //! ## Modulation

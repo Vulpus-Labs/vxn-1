@@ -55,12 +55,13 @@ Eleven parameters, and the count is the design:
 | 3–10 | Macro 1–8 | 0 … 1 |
 
 **Modulation reaches the host as eight knobs and nothing else.** The synth has
-72 modulatable destinations, each taking two sources; exposing that would be
-several hundred automation lanes, and it would bake the patch's routing
-topology into every saved project — rewire a patch and every lane that named a
-route points somewhere else. The knobs are matrix *sources*; which routes each
-one drives, and how far, is patch state. A lane that says "macro 3" survives
-the patch behind it being rewired.
+80 modulatable destinations — 64 PM depths, 8 sum-bus sends and 8 damping
+corners — each taking two sources; exposing that would be several hundred
+automation lanes, and it would bake the patch's routing topology into every
+saved project, so rewiring a patch would leave every lane that named a route
+pointing somewhere else. The knobs are matrix *sources*; which routes each one
+drives, and how far, is patch state. A lane that says "macro 3" survives the
+patch behind it being rewired.
 
 The brief's "two sources per destination, additive and scaling" needed no vxn-4
 code at all: it is `MatrixSlot`'s `source` plus `scale_src` in
@@ -115,14 +116,31 @@ Each patch wires a few. All macros at zero **is** the patch as its table writes
 it, which is what keeps the patch source readable on its own — a default of 0.5
 would mean no patch ever sounded as authored without pulling eight knobs down.
 
-| patch | M1 | M2 | M3 | M4 |
-|---|---|---|---|---|
-| `sine` | self-feedback on op0 — a sine to a buzz | | | |
-| `epiano` | brightness on both stacks | cross-feed | **gates M2** | |
-| `bell` | feedback on the inharmonic modulator | brightness | | |
-| `saws` | triangle modulator into both saws | sub level (a sum-bus send) | op4 → op3 | **op4 → op2**, a route the patch does not author |
-| `web` | four feedback diagonals at once | the two corner routes | | |
-| `grind` | index past 1.7 turns | self-feedback | **gates M2** | |
+Two kinds of destination are under the knobs: **PM depths** (how much
+modulation) and **damping corners** (how much of it survives to the phase
+accumulator). Damping routes are in *octaves* against the patch's authored
+corner, at negative depth — so knob up is always darker.
+
+| patch | M1 | M2 | M3 | M4 | M5 |
+|---|---|---|---|---|---|
+| `sine` | self-feedback on op0 — a sine to a buzz | **damp op0** | | | |
+| `epiano` | brightness on both stacks | cross-feed | *gates M2* | **damp both carriers** | |
+| `bell` | feedback on the inharmonic modulator | brightness | **damp carriers** | **damp the feedback modulator** | |
+| `saws` | triangle modulator into both saws | sub level (a sum-bus send) | op4 → op3 | op4 → op2, a route the patch does not author | **damp both saw carriers** |
+| `web` | four feedback diagonals at once | the two corner routes | **damp all eight — the master control** | | |
+| `grind` | index past 1.7 turns | self-feedback | *gates M2* | **the fizz control** | |
+
+Measured range, as the render's difference from the knob-at-zero case (higher
+is a bigger change; `+` means the difference exceeds the original signal):
+
+| patch | knob | 0 → 1 |
+|---|---|---|
+| `grind` | M4 | **+4.7 dB** — a different instrument |
+| `sine` | M2 | -2.7 dB |
+| `web` | M3 | -9.5 dB |
+
+`sine` M1+M2 is the clearest pair for hearing what damping *is*: one operator,
+one feedback route, nothing else moving. `grind` M4 is the widest.
 
 Two of those are load-bearing beyond the sound:
 

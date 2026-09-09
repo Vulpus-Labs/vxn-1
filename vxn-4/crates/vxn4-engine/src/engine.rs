@@ -46,7 +46,8 @@ use vxn4_dsp::wavetable::{ValueSlope, WaveBank};
 
 use crate::alloc::{Action, Alloc, N_SLOTS, Phase};
 use crate::matrix::{
-    DestId, Matrix, N_DESTS, N_MACROS, Roster, SourceId, out_dest_index, pm_dest_index,
+    DestId, Matrix, N_DESTS, N_MACROS, Roster, SourceId, damp_dest_index, out_dest_index,
+    pm_dest_index,
 };
 use crate::patch::{Patch, patch};
 
@@ -100,6 +101,20 @@ pub const CONTROL_PERIOD: usize = 32;
 /// vxn-1b and vxn-2 do — or it gains true-peak detection. The brief wants FX at
 /// 4x with the limiter after them, so this is a live design question.
 const CEILING: f32 = 0.80;
+
+/// Bounds on a **modulated** damping corner, in Hz.
+///
+/// The floor is the load-bearing one. A one-pole at DC has a coefficient of
+/// zero, which freezes `pm` at whatever it last held — every route into that
+/// operator silently stops working while still costing what it costs. 20 Hz is
+/// below anything musical and safely above that cliff.
+///
+/// The ceiling is above any oversampled Nyquist in play (768 kHz at 16x), so a
+/// knob at the bright end reads as bypass rather than as a filter with an
+/// arbitrary limit.
+pub const MIN_DAMP_HZ: f32 = 20.0;
+/// See [`MIN_DAMP_HZ`].
+pub const MAX_DAMP_HZ: f32 = 1_000_000.0;
 
 /// Upper bound on [`Engine::set_master_gain`].
 ///
@@ -278,6 +293,12 @@ pub struct Engine {
     /// Whether the patch has any active slot at all. False for a patch with an
     /// empty table, and the whole modulation path is then skipped.
     modulated: bool,
+    /// Whether any active slot targets a `Damp` destination.
+    ///
+    /// Separate from [`Self::modulated`] because resolving damping costs eight
+    /// `exp` calls per bank, and a patch whose macros only touch PM depths
+    /// should not pay them on every knob move.
+    damp_routed: bool,
 
     alloc: Alloc,
 
@@ -323,6 +344,7 @@ impl Engine {
             pan_s: [1.0; NOPS],
             mod_dirty: true,
             modulated: false,
+            damp_routed: false,
             alloc: Alloc::new(),
             left: Chain::new(),
             right: Chain::new(),
@@ -418,11 +440,15 @@ impl Engine {
         // diagonal; without the mask that knob would compile away to nothing.
         let force = force_mask(&p.matrix);
         self.routing = CompiledRouting::compile_with(&p.routing, &force);
-        self.modulated = p
+        let live = |s: &vxn_core_matrix::slot::MatrixSlot<SourceId, DestId>| {
+            s.is_active() && s.depth != 0.0
+        };
+        self.modulated = p.matrix.slots.iter().any(live);
+        self.damp_routed = p
             .matrix
             .slots
             .iter()
-            .any(|s| s.is_active() && s.depth != 0.0);
+            .any(|s| live(s) && DestId::idx(s.dest).is_some_and(|i| i >= damp_dest_index(0)));
 
         for d in 0..NOPS {
             let theta = (p.ops[d].pan.clamp(-1.0, 1.0) + 1.0) * 0.25 * std::f32::consts::PI;
@@ -517,6 +543,27 @@ impl Engine {
             let g = (base.out[d] + self.dests[out_dest_index(d)]).clamp(0.0, 1.0);
             self.bus.l[d] = g * self.pan_c[d];
             self.bus.r[d] = g * self.pan_s[d];
+        }
+
+        if self.damp_routed {
+            // Damping totals are in **octaves**, so they shift the corner
+            // multiplicatively rather than adding Hz to it — a corner is a
+            // log-frequency control and an additive Hz total would put the
+            // whole usable range in the last few percent of the knob.
+            //
+            // Clamped to a musically reachable span. The floor stops a knob at
+            // full travel resolving to DC, which would freeze `pm` at its
+            // current value and silently disconnect every route into the
+            // operator; the ceiling is well above any oversampled Nyquist in
+            // play, so it reads as bypass.
+            let sr_os = self.sr_os();
+            let hz: [f32; NOPS] = std::array::from_fn(|d| {
+                let shift = self.dests[damp_dest_index(d)];
+                (self.patch.ops[d].damp_hz * shift.exp2()).clamp(MIN_DAMP_HZ, MAX_DAMP_HZ)
+            });
+            for b in self.banks.iter_mut() {
+                b.set_damping_hz(&hz, sr_os);
+            }
         }
     }
 
@@ -1015,6 +1062,97 @@ mod tests {
             l
         };
         assert_ne!(run(1.0), run(0.0), "macro 4 had no lane to write into");
+    }
+
+    /// A macro on a `Damp` destination must change the sound, and in the right
+    /// direction: knob up is darker.
+    ///
+    /// Measured as the RMS of the output's first difference — a crude
+    /// high-pass, which is the direct reading of "how bright is this". `sine`
+    /// with macro 1 open is the cleanest case in the set: one operator, one
+    /// feedback route, and macro 2 on its damping, so nothing else can move.
+    #[test]
+    fn a_macro_on_damping_changes_brightness() {
+        let brightness = |m2: f32| {
+            let mut e = Engine::new(SR);
+            e.set_patch(0);
+            e.set_macro(0, 1.0); // open the feedback so there is something to damp
+            e.set_macro(1, m2); // damping
+            e.note_on(69, 100);
+            render(&mut e, 8192);
+            let (l, _) = render(&mut e, 8192);
+            let hf: f32 = l.windows(2).map(|w| (w[1] - w[0]).powi(2)).sum();
+            (hf / l.len() as f32).sqrt()
+        };
+
+        let open = brightness(0.0);
+        let mid = brightness(0.5);
+        let dark = brightness(1.0);
+
+        assert!(
+            open > 0.0,
+            "the undamped case had no high-frequency content"
+        );
+        assert!(
+            mid < open,
+            "half damping ({mid}) was not darker than none ({open})"
+        );
+        assert!(
+            dark < mid,
+            "full damping ({dark}) was not darker than half ({mid})"
+        );
+    }
+
+    /// Every patch must stay well-behaved with the damping knobs at both ends —
+    /// including fully closed, which is the setting that could freeze `pm` if
+    /// the corner were allowed to reach DC.
+    #[test]
+    fn damping_at_both_extremes_stays_finite_and_audible() {
+        for p in 0..crate::patch::N_PATCHES {
+            for m in [0.0f32, 1.0] {
+                let mut e = Engine::new(SR);
+                e.set_patch(p);
+                for k in 0..N_MACROS {
+                    e.set_macro(k, m);
+                }
+                for n in [48u8, 60, 67, 72] {
+                    e.note_on(n, 100);
+                }
+                let (l, r) = render(&mut e, 16_384);
+                assert!(
+                    l.iter().chain(r.iter()).all(|s| s.is_finite()),
+                    "patch {p} went non-finite with every macro at {m}"
+                );
+                let pk = peak(&l).max(peak(&r));
+                assert!(pk <= 1.0, "patch {p} at macro {m} reached {pk}");
+                assert!(pk > 0.001, "patch {p} at macro {m} went silent ({pk})");
+            }
+        }
+    }
+
+    /// The corner is in Hz and the coefficient is per tick, so a quality switch
+    /// has to re-derive it. Missing that would make Quality a tone control —
+    /// the same class of bug as the increments, which did ship once.
+    #[test]
+    fn damping_survives_a_quality_switch() {
+        let brightness_at = |q: Quality| {
+            let mut e = Engine::new(SR);
+            e.set_patch(0);
+            e.set_quality(q);
+            e.set_macro(0, 1.0);
+            e.set_macro(1, 0.7);
+            e.note_on(69, 100);
+            render(&mut e, 8192);
+            let (l, _) = render(&mut e, 8192);
+            let hf: f32 = l.windows(2).map(|w| (w[1] - w[0]).powi(2)).sum();
+            (hf / l.len() as f32).sqrt()
+        };
+        let a = brightness_at(Quality::X8);
+        let b = brightness_at(Quality::X16);
+        assert!(
+            (a / b - 1.0).abs() < 0.20,
+            "damping is rate-dependent: {a} at 8x vs {b} at 16x"
+        );
     }
 
     /// The scale VCA gates its route: `grind`'s macro 2 does nothing until

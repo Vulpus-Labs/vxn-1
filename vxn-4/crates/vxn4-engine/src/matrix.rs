@@ -9,7 +9,7 @@
 //!
 //! ## Sources: 8 macros, and only 8
 //!
-//! The synth has 72 modulatable outs and the brief allows two sources on each.
+//! The synth has 80 modulatable outs and the brief allows two sources on each.
 //! Exposing that to a host would mean hundreds of automation lanes, and would
 //! bake the routing topology into every saved project.
 //!
@@ -29,11 +29,26 @@
 //! own polarity and shape axes on the VCA. It came with the shared crate; there
 //! is nothing for vxn-4 to implement.
 //!
-//! ## Destinations: the brief's 72
+//! ## Destinations: 80
 //!
-//! 64 inter-operator PM depths (the diagonal is self-feedback) plus 8 sum-bus
-//! sends. Generated rather than hand-written, because 72 near-identical rows is
-//! exactly the duplication `matrix_enum!` exists to absorb.
+//! 64 inter-operator PM depths (the diagonal is self-feedback), 8 sum-bus
+//! sends, and 8 damping corners. Generated rather than hand-written, because 80
+//! near-identical rows is exactly the duplication `matrix_enum!` exists to
+//! absorb.
+//!
+//! The brief named the first 72. The damping rows are the bounded-chaos axis:
+//! `damp_hz` is what bounds the product bandwidth an operator can receive (see
+//! `vxn4_dsp::ops`), and it is the parameter that decides how fast the spectrum
+//! fills, so it belongs under a knob rather than baked into a patch.
+//!
+//! Their unit is **octaves**, not Hz — `gain = 6.0`, so a route at full depth
+//! sweeps six octaves and the engine applies the total as
+//! `live_hz = base_hz * 2^total`. A corner is a log-frequency control, so
+//! octaves is the linear-feeling unit and the taper stays `linear`; a Hz-valued
+//! total added to a base would put the entire usable range in the last few
+//! percent of the fader, which is the same mistake the PM rows use a cubic to
+//! avoid. Negative depth darkens, so a unipolar macro at depth `-1.0` reads as
+//! "knob up, more damping".
 //!
 //! Every row is `tier = patch_global`, which is the truth today and not a
 //! convenience: vxn-4's route depths are patch-wide, shared across every voice
@@ -68,8 +83,8 @@ pub const N_MACROS: usize = 8;
 /// crate is a bug waiting to happen.
 pub const N_MATRIX_SLOTS: usize = 16;
 
-/// Routable destinations: 64 PM depths + 8 sum-bus sends.
-pub const N_DESTS: usize = NOPS * NOPS + NOPS;
+/// Routable destinations: 64 PM depths + 8 sum-bus sends + 8 damping corners.
+pub const N_DESTS: usize = NOPS * NOPS + NOPS + NOPS;
 
 /// A patch's modulation table: [`N_MATRIX_SLOTS`] slots over vxn-4's roster.
 pub type Matrix = MatrixTable<SourceId, DestId, N_MATRIX_SLOTS>;
@@ -175,10 +190,18 @@ matrix_enum! {
     Out5 = 70, "out-5", "Op5 Out", gain = 1.0, taper = linear, tier = patch_global, smooth = block;
     Out6 = 71, "out-6", "Op6 Out", gain = 1.0, taper = linear, tier = patch_global, smooth = block;
     Out7 = 72, "out-7", "Op7 Out", gain = 1.0, taper = linear, tier = patch_global, smooth = block;
+    Damp0 = 73, "damp-0", "Op0 Damp", gain = 6.0, taper = linear, tier = patch_global, smooth = block;
+    Damp1 = 74, "damp-1", "Op1 Damp", gain = 6.0, taper = linear, tier = patch_global, smooth = block;
+    Damp2 = 75, "damp-2", "Op2 Damp", gain = 6.0, taper = linear, tier = patch_global, smooth = block;
+    Damp3 = 76, "damp-3", "Op3 Damp", gain = 6.0, taper = linear, tier = patch_global, smooth = block;
+    Damp4 = 77, "damp-4", "Op4 Damp", gain = 6.0, taper = linear, tier = patch_global, smooth = block;
+    Damp5 = 78, "damp-5", "Op5 Damp", gain = 6.0, taper = linear, tier = patch_global, smooth = block;
+    Damp6 = 79, "damp-6", "Op6 Damp", gain = 6.0, taper = linear, tier = patch_global, smooth = block;
+    Damp7 = 80, "damp-7", "Op7 Damp", gain = 6.0, taper = linear, tier = patch_global, smooth = block;
 }
 
 matrix_roster! {
-    /// VXN4's roster: 8 macro sources, 72 destinations, 16 slots.
+    /// VXN4's roster: 8 macro sources, 80 destinations, 16 slots.
     ///
     /// Pure forwarding to the generated enums, as in vxn-1b and vxn-2. It exists
     /// so the shared evaluator can size its accumulators through the `const`
@@ -259,6 +282,12 @@ pub const fn out_dest_index(op: usize) -> usize {
     NOPS * NOPS + op
 }
 
+/// Storage index of operator `op`'s damping destination.
+#[inline]
+pub const fn damp_dest_index(op: usize) -> usize {
+    NOPS * NOPS + NOPS + op
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,7 +297,10 @@ mod tests {
     fn the_roster_is_the_size_the_brief_asks_for() {
         assert_eq!(Roster::N_SOURCES, N_MACROS);
         assert_eq!(Roster::N_DESTS, N_DESTS);
-        assert_eq!(N_DESTS, 72, "64 inter-op routes + 8 sum-bus sends");
+        assert_eq!(
+            N_DESTS, 80,
+            "64 inter-op routes + 8 sum-bus sends + 8 damping corners"
+        );
         assert_eq!(Roster::N_SLOTS, N_MATRIX_SLOTS);
     }
 
@@ -285,6 +317,31 @@ mod tests {
         assert_eq!(DestId::Pm77.idx(), Some(pm_dest_index(7, 7)));
         assert_eq!(DestId::Out0.idx(), Some(out_dest_index(0)));
         assert_eq!(DestId::Out7.idx(), Some(out_dest_index(7)));
+        assert_eq!(DestId::Damp0.idx(), Some(damp_dest_index(0)));
+        assert_eq!(DestId::Damp7.idx(), Some(damp_dest_index(7)));
+        // The three families must not overlap: the engine tests
+        // `i >= damp_dest_index(0)` to decide whether a slot is a damping
+        // route, which is only sound while damping is the final block.
+        assert!(damp_dest_index(0) > out_dest_index(NOPS - 1));
+        assert_eq!(damp_dest_index(NOPS - 1), N_DESTS - 1);
+    }
+
+    /// Damping totals are in octaves and shift a corner multiplicatively, so
+    /// the taper has to stay linear — a cubic here would make the knob unusable
+    /// in the opposite direction from the PM rows, where the cubic is what
+    /// makes it usable.
+    #[test]
+    fn damping_is_linear_in_octaves() {
+        assert_eq!(DestId::Damp0.cook_depth(0.5), 0.5, "taper should be linear");
+        assert_eq!(
+            DestId::Damp0.gain(),
+            6.0,
+            "full depth should span 6 octaves"
+        );
+        // A unipolar macro at depth -1.0 is "knob up, six octaves darker".
+        let total = DestId::Damp0.cook_depth(-1.0) * DestId::Damp0.gain();
+        assert_eq!(total, -6.0);
+        assert_eq!(20_000.0 * f32::exp2(total), 312.5);
     }
 
     /// Every source is coarser-or-equal to every dest, so no route is a tier
