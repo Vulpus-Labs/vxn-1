@@ -87,3 +87,42 @@ absolute time) are 0349; this ticket owns the geometry and its invariants only.
 [`Pattern`](../../vxn-3/crates/vxn3-engine/src/sequencer.rs#L151) is superseded by
 this module but stays until 0348 removes it — the polymeter behaviour it provides
 (ADR 0001 §2) is preserved by per-lane marker sets, not lost.
+
+## Close-out (2026-09-09)
+
+Landed 2026-09-04 as `9cd28e6` and `89272d9`. Closed retrospectively.
+
+The `grid` module owns the lane's timing geometry:
+
+- `Grid::sub_pos(beat, k)`, `pos_of(GridPos)`, `locate(t) -> GridPos` give the
+  forward and inverse mapping; `subs(beat)`, `default_subs()`,
+  `sub_override(beat)`, `total_subs()` give the sub-marker counts. Sub markers
+  are derived and never stored.
+- Beat markers are strictly increasing by construction. Every mutation path goes
+  through `enforce_min_slot`, which clamps rather than rejecting or accepting.
+- `Swing::w` is monotonic with fixed endpoints —
+  `warp_is_monotonic_with_fixed_endpoints`, plus
+  `straight_warp_is_the_identity_exactly`.
+- Sub positions are correct for `n ∈ {1,2,3,4,6,8}` at zero swing and stay
+  strictly increasing at every swing amount —
+  `zero_swing_reproduces_the_uniform_grid_exactly` (f64 equality, dyadic `n`),
+  `non_dyadic_sub_counts_match_the_old_grid_to_one_ulp` (`n ∈ {3,6,12}`),
+  `subs_strictly_increase_at_every_swing_amount`.
+- The per-beat override places a tuplet with no separate concept —
+  `per_beat_sub_override_places_a_triplet`.
+- Forward/inverse round-trips over randomised positions —
+  `mapping_round_trips_for_random_positions`.
+- No allocation in any query path.
+
+**The swing half shipped wrong and was corrected**, exactly as this ticket's own
+Notes warned. `w` was applied across the whole beat — the literal reading of ADR
+0007 §3 — which is exact shuffle at `n = 2` and long-long-short-short at `n = 4`.
+[0365](0365-vxn3-swing-warp-per-pair.md) amended the ADR and moved the warp to
+the pair interval, adding `SwingPeriod { Beat, Pair, Custom(u8) }`. The geometry
+and its invariants are this ticket's; the swing feel is 0365's.
+
+Also amended later: [0349](0349-vxn3-marker-edit-semantics.md) found that
+`MIN_SLOT` being absolute means `m ± MIN_SLOT` collapses to `m` past ~2⁴⁸ beats,
+so the clamp could seat a marker on its neighbour and produce the zero-width slot
+this ticket names as the thing to prevent. Bounded by `MAX_LEN_BEATS = 2^16`.
+Marker *editing* semantics are 0349's, as scoped.

@@ -88,3 +88,41 @@ to revisit this file.
 
 Out of scope: the hit list, markers, Y, colour. All of E050's later tickets
 depend on this one but none of them are started by it.
+
+## Close-out (2026-09-09)
+
+Landed 2026-09-04 as `ea1b4c6`. Closed retrospectively — the code shipped and the
+epic has since built four more tickets on top of it.
+
+- `LaneState::schedule` resolves fire times on a continuous per-lane beat
+  timeline. The step-boundary walk is gone: no `(beat0 / sb).ceil()` remains in
+  [lane.rs](../../vxn-3/crates/vxn3-engine/src/lane.rs), and the block loop
+  advances a bounded window rather than whole-step boundaries.
+- The window is a const-sized preallocated `[Pending; WINDOW_CAPACITY]` with
+  `Window::{push, clear, drop_retrig_tail, emit_due}`; an over-capacity push
+  drops rather than allocating.
+- `LOOKAHEAD_POSITIONS` is derived from the offset bounds rather than hard-coded,
+  behind `const _: () = assert!(LOOKAHEAD_POSITIONS >= MAX_EARLY_SLOTS +
+  MAX_LATE_SLOTS + 1.0)` — which is what let 0348 raise the real bound by editing
+  one constant instead of revisiting the file, exactly as this ticket's Notes
+  asked.
+- The seven `rt_*` in-flight retrig fields are gone; `expand_retrig` writes `n`
+  fire times into the window at resolve time.
+- Probability is drawn once per primary trig across a block split —
+  `probability_is_drawn_once_per_trig_across_block_splits`.
+- Transport-jump resync drops the window and its in-flight state —
+  `transport_jump_drops_the_lookahead_window`, alongside the unchanged
+  `transport_jump_clears_holds`.
+- The allocation trap in `tests/groove.rs` stayed armed and green.
+
+**Two acceptance criteria were point-in-time and cannot be re-verified now.**
+"Every existing test passes unchanged" and "render output is bit-identical to
+the pre-ticket build for the E021 demo pattern" were both checked against the
+`[Step; 16]` data model at the time of landing. 0348 replaced that model outright
+and rewrote those tests, as it was scoped to do. The behaviour-preserving claim
+stands as of `ea1b4c6`; it is not re-checkable against the current tree, and
+nothing after 0348 depends on it being so.
+
+Superseded in part by 0348, which set `EARLY_SLOTS` to its real value and made
+`WINDOW_CAPACITY` a function of `MAX_HITS`, and which added cursor re-anchoring
+so a live grid edit cannot strand the lane.
