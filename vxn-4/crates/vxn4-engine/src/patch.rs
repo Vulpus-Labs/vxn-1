@@ -604,9 +604,19 @@ fn supersaw() -> Patch {
         ops[d] = op(Waveform::Saw, 1.0, 1.0, 0.0);
         let _ = k;
     }
-    // The modulator. A sine at unison keeps the result harmonic, so M4 reads as
-    // a timbre control rather than as a detune of its own.
-    ops[7] = op(Waveform::Sine, 1.0, 1.0, 0.0);
+    // The modulator. Ratio 7 rather than unison, and that is the whole
+    // difference between M4 being a control and M4 being inaudible.
+    //
+    // At 1:1 every sideband lands on a harmonic the saw already has, so the
+    // pitch, the harmonic positions and the 1/k envelope all stay put and only
+    // the amplitudes shuffle — a large change in the *waveform* and almost none
+    // in what you hear. Measured, it moved the spectral centroid from 4302 Hz
+    // to 3447 Hz: it made the patch marginally *darker*. At ratio 7 the same
+    // depth takes it to 5498 Hz, and at full depth to 8212 Hz.
+    //
+    // Still harmonic, so this stays a supersaw rather than becoming a bell —
+    // an inharmonic ratio here is louder still but a different instrument.
+    ops[7] = op(Waveform::Sine, 7.0, 1.0, 0.0);
 
     let mut routing = Routing::default();
     for d in 0..7 {
@@ -692,9 +702,11 @@ fn supersaw() -> Patch {
             // so the edges thin first and the centre never moves.
             slots.push(route(SourceId::Macro3, SENDS[d], -0.06 * k.abs()));
         }
-        // M4 — how much op7 modulates this saw. Cubic taper, so the usable low
-        // end of the index is dialable.
-        slots.push(route(SourceId::Macro4, PM[d], 0.70));
+        // M4 — how much op7 modulates this saw. Full depth: the cubic taper
+        // means 0.70 cooks to 0.34 turns, and against a carrier that is
+        // already broadband that was not enough to hear. 1.0 cooks to a full
+        // turn and takes the centroid from 4302 Hz to 8212 Hz.
+        slots.push(route(SourceId::Macro4, PM[d], 1.00));
         // M5 — rolloff on what arrives, in octaves against the 20 kHz default.
         // This is the knob for how much of op7's contribution survives, which
         // is a different question from how much is sent.

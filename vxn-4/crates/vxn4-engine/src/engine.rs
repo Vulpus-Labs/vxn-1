@@ -1272,6 +1272,47 @@ mod tests {
         );
     }
 
+    /// `supersaw`'s M4 must **brighten** audibly, and M5 must pull it back.
+    ///
+    /// Pinned because the first version of this patch failed it silently in the
+    /// worst way: M4 measured a +5 dB waveform difference and was inaudible.
+    /// The modulator was at 1:1, so every sideband landed on a harmonic the saw
+    /// already had — the waveform changed completely and the spectrum barely
+    /// moved. A difference metric cannot see that; a brightness metric can.
+    #[test]
+    fn the_supersaw_modulator_brightens_and_rolls_off() {
+        let brightness = |m4: f32, m5: f32| {
+            let mut e = Engine::new(SR);
+            e.set_patch(6);
+            e.set_macro(3, m4);
+            e.set_macro(4, m5);
+            for n in [48u8, 55, 60] {
+                e.note_on(n, 100);
+            }
+            let (l, _) = render(&mut e, 16_384);
+            let tail = &l[l.len() / 3..];
+            let hf: f32 = tail.windows(2).map(|w| (w[1] - w[0]).powi(2)).sum();
+            let tot: f32 = tail.iter().map(|s| s * s).sum();
+            if tot > 0.0 { hf / tot } else { 0.0 }
+        };
+
+        let plain = brightness(0.0, 0.0);
+        let bright = brightness(1.0, 0.0);
+        let rolled = brightness(1.0, 1.0);
+
+        assert!(plain > 0.0, "the authored patch was silent");
+        assert!(
+            bright > plain * 1.3,
+            "M4 did not brighten: {plain} -> {bright}. A modulator whose \
+             sidebands land on harmonics the carrier already has changes the \
+             waveform without changing what you hear."
+        );
+        assert!(
+            rolled < bright,
+            "M5 did not roll the modulation off: {bright} -> {rolled}"
+        );
+    }
+
     /// A note started **after** a detune knob has moved must be detuned too.
     ///
     /// `cook_lane` derives the increment from the patch's nominal ratio, and by
