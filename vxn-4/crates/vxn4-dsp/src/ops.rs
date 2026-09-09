@@ -144,6 +144,25 @@ pub struct OpConfig {
     /// In Hz rather than normalised so the response is identical at 8x and 16x.
     /// Zero or negative is a bypass.
     pub damp_hz: f32,
+    /// Phase this operator starts at on a fresh note, in **turns**, or `None`
+    /// to decorrelate it by hash as every operator used to be.
+    ///
+    /// The hash is fine when operators are at different ratios and the phase
+    /// relationship between them is arbitrary anyway. It is actively wrong for
+    /// a unison stack: seven saws at one pitch and seven pseudo-random phases
+    /// partially cancel, and the sum is quiet and comb-filtered rather than
+    /// seven times one saw. `supersaw` is that case, and it sounded thin until
+    /// this existed.
+    ///
+    /// Lane decorrelation is applied *on top* either way, so two voices on the
+    /// same note still never phase-lock — what this fixes is the relationship
+    /// **within** a voice, which is the one that sums.
+    ///
+    /// Beware the obvious-looking choice of an even spread: seven saws at
+    /// `d/7` turns cancel every harmonic that is not a multiple of seven, which
+    /// leaves a thin tone a nineteenth too high. Coherent (`Some(0.0)`) is the
+    /// full-sounding setting; detune is what should break the coherence.
+    pub phase: Option<f32>,
 }
 
 /// Default damping corner: above the audio band, so it is nearly transparent
@@ -163,8 +182,20 @@ impl Default for OpConfig {
             level: 1.0,
             pan: 0.0,
             damp_hz: DEFAULT_DAMP_HZ,
+            phase: None,
         }
     }
+}
+
+/// Turns to a Q32 phase, wrapping into `[0, 1)` first.
+///
+/// `as u32` on a value at or past 1.0 saturates rather than wrapping, so the
+/// fold has to happen before the cast — the same hazard `phase_offset` avoids
+/// with a `round`, for the same reason.
+#[inline]
+pub fn phase_from_turns(turns: f32) -> u32 {
+    let w = turns - turns.floor();
+    (w * PHASE_SCALE) as u32
 }
 
 /// The routing matrix as authored.
@@ -352,6 +383,8 @@ pub struct VoiceMajor<const V: usize> {
     pmz: [[f32; V]; NOPS],
     /// Per-operator damping coefficient, from [`damp_coeff`].
     damp: [f32; NOPS],
+    /// Per-operator note-onset phase, or `None` to decorrelate by hash.
+    init_phase: [Option<u32>; NOPS],
     /// Peak `|pm - pmz|` since the last [`Self::update_mips`]. The filter's own
     /// residue, which is proportional to `d(pm)/dt` — so the mip selector gets
     /// its rate estimate as a by-product of a pass that has to happen anyway.
@@ -400,6 +433,14 @@ impl<const V: usize> VoiceMajor<V> {
             // through rather than silently damping it at some default.
             damp: [1.0; NOPS],
             peak: [[0.0; V]; NOPS],
+            init_phase: [None; NOPS],
+        }
+    }
+
+    /// Install the patch's per-operator onset phases. See [`OpConfig::phase`].
+    pub fn set_phases(&mut self, cfg: &[OpConfig; NOPS]) {
+        for d in 0..NOPS {
+            self.init_phase[d] = cfg[d].phase.map(phase_from_turns);
         }
     }
 
@@ -542,10 +583,18 @@ impl<const V: usize> VoiceMajor<V> {
     /// that two lanes sounding the same note do not produce a doubled, phase-
     /// locked copy — and so the optimiser cannot collapse lanes.
     pub fn reset_lane(&mut self, lane: usize, seed: u32) {
+        // Lane decorrelation, applied whichever way the operator phase is
+        // decided — two voices on the same note must never phase-lock into a
+        // doubled copy, and the optimiser must not be able to collapse lanes.
+        let lane_offset = seed.wrapping_mul(0x9E37_79B9);
         for d in 0..NOPS {
-            self.phase[d][lane] = seed
-                .wrapping_mul(0x9E37_79B9)
-                .wrapping_add((d as u32).wrapping_mul(0x85EB_CA6B));
+            self.phase[d][lane] = match self.init_phase[d] {
+                Some(p) => lane_offset.wrapping_add(p),
+                // The historical hash. Bit-identical to what every patch got
+                // before `OpConfig::phase` existed, so the six patches voiced
+                // against it are unchanged.
+                None => lane_offset.wrapping_add((d as u32).wrapping_mul(0x85EB_CA6B)),
+            };
             self.lvl[d][lane] = 0.0;
             // `self.hist.len()`, not a literal — this was a hardcoded 3 and
             // went out of bounds the moment the ring shrank to 2.
@@ -1052,6 +1101,10 @@ mod tests {
                 // would let a layout that mixed up the per-operator damping
                 // still agree bit-for-bit with one that did not.
                 damp_hz: 8_000.0 + 2_000.0 * d as f32,
+                // `None`, so both layouts keep the historical decorrelating hash
+                // and stay bit-identical — the phase config is an engine-path
+                // feature and `cook` is the bench path.
+                phase: None,
             };
         }
         cfg
@@ -1238,6 +1291,7 @@ mod tests {
                 level: 1.0,
                 pan: 0.0,
                 damp_hz: hz,
+                phase: None,
             };
             let bus = SumBus::new(&cfg, &routing);
             let mut b = VoiceMajor::<8>::new();

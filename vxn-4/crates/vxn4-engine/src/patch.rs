@@ -131,6 +131,7 @@ fn off() -> OpConfig {
         level: 0.0,
         pan: 0.0,
         damp_hz: DEFAULT_DAMP_HZ,
+        phase: None,
     }
 }
 
@@ -143,6 +144,17 @@ fn op(wave: Waveform, ratio: f32, level: f32, pan: f32) -> OpConfig {
         level,
         pan,
         damp_hz: DEFAULT_DAMP_HZ,
+        phase: None,
+    }
+}
+
+/// [`op`], starting from an explicit phase at every note onset rather than a
+/// decorrelating hash. See [`OpConfig::phase`] — this is what a unison stack
+/// needs and what nothing else in the set does.
+fn op_phased(wave: Waveform, ratio: f32, level: f32, pan: f32, phase: f32) -> OpConfig {
+    OpConfig {
+        phase: Some(phase),
+        ..op(wave, ratio, level, pan)
     }
 }
 
@@ -601,7 +613,14 @@ fn supersaw() -> Patch {
         // Ratio, pan and level are all authored *neutral*; the macros supply
         // the spread. `level` is the operator's own gain, distinct from
         // `routing.out` below, which is the sum-bus send the taper moves.
-        ops[d] = op(Waveform::Saw, 1.0, 1.0, 0.0);
+        // Every saw starts at the *same* phase. Coherent, so the seven sum to
+        // seven times one saw rather than to a comb — the hash they used to get
+        // made them cancel, which is what made this patch quiet and thin.
+        //
+        // Not an even `d/7` spread, which is the intuitive choice and is much
+        // worse: it cancels every harmonic that is not a multiple of seven.
+        // Detune is what should break the coherence, and M1 is the knob for it.
+        ops[d] = op_phased(Waveform::Saw, 1.0, 1.0, 0.0, 0.0);
         let _ = k;
     }
     // The modulator. Ratio 7 rather than unison, and that is the whole
@@ -616,7 +635,11 @@ fn supersaw() -> Patch {
     //
     // Still harmonic, so this stays a supersaw rather than becoming a bell —
     // an inharmonic ratio here is louder still but a different instrument.
-    ops[7] = op(Waveform::Sine, 7.0, 1.0, 0.0);
+    // The modulator starts coherent with the stack too. As M1 detunes the
+    // saws apart, it goes progressively in and out of phase with each of them
+    // at a different rate — so the modulation is not one uniform effect across
+    // the spread, which is most of what makes it sound like seven voices.
+    ops[7] = op_phased(Waveform::Sine, 7.0, 1.0, 0.0, 0.0);
 
     let mut routing = Routing::default();
     for d in 0..7 {
@@ -720,10 +743,15 @@ fn supersaw() -> Patch {
         matrix: matrix(&slots),
         eg,
         // Measured like the rest: a six-note chord at velocity 100 near
-        // -6 dBFS in the authored (all-macros-zero) state. The spread state
-        // sits ~3 dB below that, because detuning decorrelates the seven saws
-        // so they stop summing coherently — which is the sound, not a fault.
-        gain: 0.386,
+        // -6 dBFS in the **authored** state, which for this patch is the
+        // loudest state it has.
+        //
+        // Seven phase-coherent saws sum to seven times one saw; detuning them
+        // decorrelates the sum toward root-seven, so M1 at full travel is about
+        // 6 dB quieter than M1 at zero. That is the physics of the spread and
+        // not something to compensate for — but it does mean the trim has to be
+        // set from the coherent end or ordinary playing rides the limiter.
+        gain: 0.140,
     }
 }
 

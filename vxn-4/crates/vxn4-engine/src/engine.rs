@@ -488,6 +488,7 @@ impl Engine {
         let sr_os = self.sr_os();
         for b in self.banks.iter_mut() {
             b.set_waves(&p.ops);
+            b.set_phases(&p.ops);
             b.set_damping(&p.ops, sr_os);
         }
         self.live_ratios = std::array::from_fn(|d| p.ops[d].ratio);
@@ -1259,16 +1260,39 @@ mod tests {
         };
 
         let base = render_macro(0);
-        for (m, what) in [(1, "detune"), (2, "pan"), (3, "taper")] {
+        for (m, what) in [(1, "detune"), (3, "taper")] {
             let out = render_macro(m);
             assert_ne!(out.0, base.0, "macro {m} ({what}) changed nothing");
             assert!(out.0.iter().chain(out.1.iter()).all(|s| s.is_finite()));
         }
 
-        assert_eq!(width(&base), 0.0, "the authored patch should be mono");
+        // **Width requires detune**, and that is physics rather than a defect.
+        // The saws start phase-coherent (see `OpConfig::phase`), so with M1 at
+        // zero all seven carry the identical signal — and panning identical
+        // signals symmetrically sums to dead centre no matter how far apart you
+        // put them. M2 has nothing to separate until M1 makes the seven saws
+        // different from each other.
+        // A tolerance, not an exact zero: the constant-power gains differ per
+        // operator, so the two channels sum through different arithmetic and
+        // land ~1e-15 apart rather than bit-identical.
+        const MONO: f32 = 1e-9;
+        assert!(width(&base) < MONO, "the authored patch should be mono");
         assert!(
-            width(&render_macro(2)) > 0.01,
-            "macro 2 produced no stereo width"
+            width(&render_macro(2)) < MONO,
+            "pan alone should still be mono — identical signals cannot be widened"
+        );
+
+        let mut e = Engine::new(SR);
+        e.set_patch(6);
+        e.set_macro(0, 1.0); // detune, so the saws stop being identical
+        e.set_macro(1, 1.0); // width
+        for n in [48u8, 55, 60] {
+            e.note_on(n, 100);
+        }
+        let spread = render(&mut e, 16_384);
+        assert!(
+            width(&spread) > 0.01,
+            "pan produced no width even with the saws detuned apart"
         );
     }
 

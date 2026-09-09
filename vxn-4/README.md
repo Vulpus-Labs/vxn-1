@@ -143,8 +143,29 @@ is a bigger change; `+` means the difference exceeds the original signal):
 | `sine` | M2 | -2.7 dB |
 | `web` | M3 | -9.5 dB |
 | `supersaw` | M1 detune | -5.6 dB |
-| `supersaw` | M2 width | -7.9 dB, and mono → -7.3 dB side/mid |
+| `supersaw` | M2 width | mono → -7.3 dB side/mid, **but only with M1 up** |
 | `supersaw` | M3 taper | -8.9 dB |
+| `supersaw` | M4 modulation | centroid 4302 → 8212 Hz (1.91x) |
+
+Two things about `supersaw` that follow from its operators starting
+**phase-coherent** (`OpConfig::phase`), rather than at the decorrelating hash
+every other patch uses:
+
+- **M2 does nothing until M1 is up.** With no detune the seven saws carry an
+  identical signal, and panning identical signals symmetrically sums to dead
+  centre however far apart you put them. Detune is what makes them seven
+  different signals; only then is there anything to widen. This is physics, not
+  a dead knob.
+- **M1 costs about 6 dB.** Seven coherent saws sum to 7x one saw; detuning
+  decorrelates that toward root-seven. The trim is set from the coherent end,
+  so the authored state is the loudest the patch gets.
+
+The hash was the original behaviour for every operator, and it is right when
+operators sit at different ratios — but for a unison stack it made the seven
+saws cancel, which is why this patch was quiet and thin until phase became
+configurable. Beware the intuitive fix of an even `d/7` spread: it cancels every
+harmonic that is not a multiple of seven and leaves a thin tone a nineteenth too
+high.
 
 `sine` M1+M2 is the clearest pair for hearing what damping *is*: one operator,
 one feedback route, nothing else moving. `grind` M4 is the widest.

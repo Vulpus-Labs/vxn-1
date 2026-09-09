@@ -51,6 +51,10 @@ pub fn configs() -> [OpConfig; NOPS] {
             // into a single broadcast coefficient — the bench must price the
             // per-operator form that actually ships.
             damp_hz: 8_000.0 + 2_000.0 * d as f32,
+            // `None`, so both layouts keep the historical decorrelating hash
+            // and stay bit-identical — the phase config is an engine-path
+            // feature and `cook` is the bench path.
+            phase: None,
         };
     }
     cfg
