@@ -29,12 +29,13 @@
 //! own polarity and shape axes on the VCA. It came with the shared crate; there
 //! is nothing for vxn-4 to implement.
 //!
-//! ## Destinations: 96
+//! ## Destinations: 104
 //!
-//! 64 inter-operator PM depths (the diagonal is self-feedback), then four
-//! per-operator families of eight: sum-bus sends, damping corners, detune and
-//! pan. Generated rather than hand-written, because 96 near-identical rows is
-//! exactly the duplication `matrix_enum!` exists to absorb.
+//! 64 inter-operator PM depths (the diagonal is self-feedback), then five
+//! per-operator families of eight: sum-bus sends, damping corners, detune, pan
+//! and phase spread. Generated rather than hand-written, because 104
+//! near-identical rows is exactly the duplication `matrix_enum!` exists to
+//! absorb.
 //!
 //! **Detune and pan are not modulation in the brief's sense** — they are voice
 //! architecture, and putting them under a knob is what makes a patch like
@@ -88,8 +89,9 @@ pub const N_MACROS: usize = 8;
 /// 40, where vxn-1b and vxn-2 use 16. Not gratuitous: those synths have 16 and
 /// 51 destinations, vxn-4 has 96, and one patch routing a handful of macros
 /// across eight operators spends slots eight at a time. `supersaw` alone uses
-/// 32 — detune, pan and level taper across six operators, plus modulation and
-/// rolloff across seven. At 16 it could not have been written at all.
+/// 39 — detune, pan and level taper across six operators, plus modulation,
+/// rolloff and phase spread across seven. At 16 it could not have been written
+/// at all.
 ///
 /// The cost is a longer `RouteList` walked once per control block when a knob
 /// has moved. Every route is `patch_global`, so it is not per voice and not per
@@ -98,11 +100,11 @@ pub const N_MACROS: usize = 8;
 /// Named `N_MATRIX_SLOTS` rather than `N_SLOTS` because `alloc::N_SLOTS` is the
 /// *voice* slot count. Two different 16-ish numbers with the same name in one
 /// crate is a bug waiting to happen.
-pub const N_MATRIX_SLOTS: usize = 40;
+pub const N_MATRIX_SLOTS: usize = 48;
 
-/// Routable destinations: 64 PM depths, then four per-operator families of 8 —
-/// sum-bus sends, damping corners, detune and pan.
-pub const N_DESTS: usize = NOPS * NOPS + 4 * NOPS;
+/// Routable destinations: 64 PM depths, then five per-operator families of 8 —
+/// sum-bus sends, damping corners, detune, pan and phase spread.
+pub const N_DESTS: usize = NOPS * NOPS + 5 * NOPS;
 
 /// A patch's modulation table: [`N_MATRIX_SLOTS`] slots over vxn-4's roster.
 pub type Matrix = MatrixTable<SourceId, DestId, N_MATRIX_SLOTS>;
@@ -232,6 +234,14 @@ matrix_enum! {
     Pan5 = 94, "pan-5", "Op5 Pan", gain = 1.0, taper = linear, tier = patch_global, smooth = block;
     Pan6 = 95, "pan-6", "Op6 Pan", gain = 1.0, taper = linear, tier = patch_global, smooth = block;
     Pan7 = 96, "pan-7", "Op7 Pan", gain = 1.0, taper = linear, tier = patch_global, smooth = block;
+    Spread0 = 97, "spread-0", "Op0 Phase Spread", gain = 1.0, taper = linear, tier = patch_global, smooth = block;
+    Spread1 = 98, "spread-1", "Op1 Phase Spread", gain = 1.0, taper = linear, tier = patch_global, smooth = block;
+    Spread2 = 99, "spread-2", "Op2 Phase Spread", gain = 1.0, taper = linear, tier = patch_global, smooth = block;
+    Spread3 = 100, "spread-3", "Op3 Phase Spread", gain = 1.0, taper = linear, tier = patch_global, smooth = block;
+    Spread4 = 101, "spread-4", "Op4 Phase Spread", gain = 1.0, taper = linear, tier = patch_global, smooth = block;
+    Spread5 = 102, "spread-5", "Op5 Phase Spread", gain = 1.0, taper = linear, tier = patch_global, smooth = block;
+    Spread6 = 103, "spread-6", "Op6 Phase Spread", gain = 1.0, taper = linear, tier = patch_global, smooth = block;
+    Spread7 = 104, "spread-7", "Op7 Phase Spread", gain = 1.0, taper = linear, tier = patch_global, smooth = block;
 }
 
 matrix_roster! {
@@ -241,7 +251,7 @@ matrix_roster! {
     /// so the shared evaluator can size its accumulators through the `const`
     /// guards in [`vxn_core_matrix::storage`], which turn a wrong-width buffer
     /// into a compile error rather than a silent overrun.
-    Roster, source = SourceId, dest = DestId, slots = 40,
+    Roster, source = SourceId, dest = DestId, slots = 48,
     source_names = ROSTER_SOURCE_NAMES, source_labels = ROSTER_SOURCE_LABELS,
     dest_names = ROSTER_DEST_NAMES, dest_labels = ROSTER_DEST_LABELS,
 }
@@ -340,6 +350,16 @@ pub const fn pan_dest_index(op: usize) -> usize {
     NOPS * NOPS + 3 * NOPS + op
 }
 
+/// Storage index of operator `op`'s phase-spread destination.
+///
+/// Unit is the `[0, 1]` decorrelation amount, added to the operator's authored
+/// [`vxn4_dsp::ops::OpConfig::phase_spread`] and clamped. Read at **note
+/// onset** only — a note already sounding has no start phase left to change.
+#[inline]
+pub const fn spread_dest_index(op: usize) -> usize {
+    NOPS * NOPS + 4 * NOPS + op
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,8 +370,8 @@ mod tests {
         assert_eq!(Roster::N_SOURCES, N_MACROS);
         assert_eq!(Roster::N_DESTS, N_DESTS);
         assert_eq!(
-            N_DESTS, 96,
-            "64 inter-op routes + four per-operator families of 8"
+            N_DESTS, 104,
+            "64 inter-op routes + five per-operator families of 8"
         );
         assert_eq!(Roster::N_SLOTS, N_MATRIX_SLOTS);
     }
@@ -378,6 +398,8 @@ mod tests {
         assert_eq!(DestId::Ratio7.idx(), Some(ratio_dest_index(7)));
         assert_eq!(DestId::Pan0.idx(), Some(pan_dest_index(0)));
         assert_eq!(DestId::Pan7.idx(), Some(pan_dest_index(7)));
+        assert_eq!(DestId::Spread0.idx(), Some(spread_dest_index(0)));
+        assert_eq!(DestId::Spread7.idx(), Some(spread_dest_index(7)));
         // The four families must tile the space after the PM block, in order
         // and without gaps. The engine classifies a slot by half-open range, so
         // a helper shifted by one family silently reclassifies every route in
@@ -388,6 +410,7 @@ mod tests {
             damp_dest_index(0),
             ratio_dest_index(0),
             pan_dest_index(0),
+            spread_dest_index(0),
             N_DESTS,
         ];
         assert_eq!(bounds[0], NOPS * NOPS, "families start after the PM block");

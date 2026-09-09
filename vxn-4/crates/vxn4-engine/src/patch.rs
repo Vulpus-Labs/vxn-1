@@ -131,7 +131,10 @@ fn off() -> OpConfig {
         level: 0.0,
         pan: 0.0,
         damp_hz: DEFAULT_DAMP_HZ,
-        phase: None,
+        // 1.0 is the historical decorrelating hash, bit-exactly. Every patch
+        // but `supersaw` was voiced against it.
+        phase: 0.0,
+        phase_spread: 1.0,
     }
 }
 
@@ -144,16 +147,23 @@ fn op(wave: Waveform, ratio: f32, level: f32, pan: f32) -> OpConfig {
         level,
         pan,
         damp_hz: DEFAULT_DAMP_HZ,
-        phase: None,
+        // 1.0 is the historical decorrelating hash, bit-exactly. Every patch
+        // but `supersaw` was voiced against it.
+        phase: 0.0,
+        phase_spread: 1.0,
     }
 }
 
-/// [`op`], starting from an explicit phase at every note onset rather than a
-/// decorrelating hash. See [`OpConfig::phase`] — this is what a unison stack
-/// needs and what nothing else in the set does.
-fn op_phased(wave: Waveform, ratio: f32, level: f32, pan: f32, phase: f32) -> OpConfig {
+/// [`op`], phase-**coherent** at note onset instead of decorrelated by hash.
+///
+/// `phase_spread: 0.0` is what a unison stack needs and what nothing else in
+/// the set does; `phase` places the operator within the cycle. See
+/// [`OpConfig::phase_spread`] for why the two are separate axes, and why a
+/// patch wants to be able to travel between them rather than pick one.
+fn op_coherent(wave: Waveform, ratio: f32, level: f32, pan: f32, phase: f32) -> OpConfig {
     OpConfig {
-        phase: Some(phase),
+        phase,
+        phase_spread: 0.0,
         ..op(wave, ratio, level, pan)
     }
 }
@@ -620,7 +630,7 @@ fn supersaw() -> Patch {
         // Not an even `d/7` spread, which is the intuitive choice and is much
         // worse: it cancels every harmonic that is not a multiple of seven.
         // Detune is what should break the coherence, and M1 is the knob for it.
-        ops[d] = op_phased(Waveform::Saw, 1.0, 1.0, 0.0, 0.0);
+        ops[d] = op_coherent(Waveform::Saw, 1.0, 1.0, 0.0, 0.0);
         let _ = k;
     }
     // The modulator. Ratio 7 rather than unison, and that is the whole
@@ -639,7 +649,7 @@ fn supersaw() -> Patch {
     // saws apart, it goes progressively in and out of phase with each of them
     // at a different rate — so the modulation is not one uniform effect across
     // the spread, which is most of what makes it sound like seven voices.
-    ops[7] = op_phased(Waveform::Sine, 7.0, 1.0, 0.0, 0.0);
+    ops[7] = op_coherent(Waveform::Sine, 7.0, 1.0, 0.0, 0.0);
 
     let mut routing = Routing::default();
     for d in 0..7 {
@@ -657,10 +667,10 @@ fn supersaw() -> Patch {
     }
     eg[7] = EgParams::adsr(0.004, 0.45, 0.70, 0.30);
 
-    // 32 slots: six each for detune, pan and taper, then seven each for the
-    // modulation and its rolloff. This is the patch `N_MATRIX_SLOTS` was
-    // raised to 40 for.
-    let mut slots = Vec::with_capacity(32);
+    // 39 slots: six each for detune, pan and taper, then seven each for the
+    // modulation, its rolloff and the phase spread. This is the patch
+    // `N_MATRIX_SLOTS` was raised for.
+    let mut slots = Vec::with_capacity(39);
 
     const DETUNE: [DestId; 7] = [
         DestId::Ratio0,
@@ -698,6 +708,15 @@ fn supersaw() -> Patch {
         DestId::Pm57,
         DestId::Pm67,
     ];
+    const SPREAD: [DestId; 7] = [
+        DestId::Spread0,
+        DestId::Spread1,
+        DestId::Spread2,
+        DestId::Spread3,
+        DestId::Spread4,
+        DestId::Spread5,
+        DestId::Spread6,
+    ];
     const DAMP: [DestId; 7] = [
         DestId::Damp0,
         DestId::Damp1,
@@ -734,6 +753,17 @@ fn supersaw() -> Patch {
         // This is the knob for how much of op7's contribution survives, which
         // is a different question from how much is sent.
         slots.push(route(SourceId::Macro5, DAMP[d], -0.70));
+        // M6 — phase decorrelation, from coherent (0) back out to the hash (1).
+        //
+        // The axis this patch was pinned to one end of. Coherent is loud and
+        // full but cannot be widened, because M2 has seven identical signals to
+        // pan and identical signals stay centred. Decorrelated is wide but
+        // comb-filtered and ~5 dB quieter. Neither end is right for every
+        // sound, which is exactly vxn-2's argument for `StackParams::phase`
+        // being a continuous knob rather than a mode.
+        //
+        // Takes effect on the **next** note, not on notes already sounding.
+        slots.push(route(SourceId::Macro6, SPREAD[d], 1.00));
     }
 
     Patch {

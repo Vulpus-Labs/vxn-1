@@ -47,7 +47,7 @@ use vxn4_dsp::wavetable::{ValueSlope, WaveBank};
 use crate::alloc::{Action, Alloc, N_SLOTS, Phase};
 use crate::matrix::{
     DestId, Matrix, N_DESTS, N_MACROS, Roster, SourceId, damp_dest_index, out_dest_index,
-    pan_dest_index, pm_dest_index, ratio_dest_index,
+    pan_dest_index, pm_dest_index, ratio_dest_index, spread_dest_index,
 };
 use crate::patch::{Patch, patch};
 
@@ -306,6 +306,8 @@ pub struct Engine {
     detuned: bool,
     /// Whether any active slot targets a `Pan` destination.
     panned: bool,
+    /// Whether any active slot targets a `Spread` destination.
+    spread_routed: bool,
     /// Per-operator ratios with the detune total already folded in.
     ///
     /// Cached because `cook_lane` derives an increment from the patch's
@@ -362,6 +364,7 @@ impl Engine {
             damp_routed: false,
             detuned: false,
             panned: false,
+            spread_routed: false,
             live_ratios: [1.0; NOPS],
             alloc: Alloc::new(),
             left: Chain::new(),
@@ -476,7 +479,8 @@ impl Engine {
         };
         self.damp_routed = targets(damp_dest_index(0), ratio_dest_index(0));
         self.detuned = targets(ratio_dest_index(0), pan_dest_index(0));
-        self.panned = targets(pan_dest_index(0), N_DESTS);
+        self.panned = targets(pan_dest_index(0), spread_dest_index(0));
+        self.spread_routed = targets(spread_dest_index(0), N_DESTS);
 
         for d in 0..NOPS {
             let theta = (p.ops[d].pan.clamp(-1.0, 1.0) + 1.0) * 0.25 * std::f32::consts::PI;
@@ -616,6 +620,19 @@ impl Engine {
                 let hz0 = vxn4_dsp::ops::pitch_to_freq(self.alloc.voices[slot].pitch);
                 let (bank, lane) = (slot / LANES, slot % LANES);
                 self.banks[bank].set_lane_incs(lane, hz0, &ratios, sr_os);
+            }
+        }
+
+        if self.spread_routed {
+            // Pushed into the banks so it is in place for the *next* note-on —
+            // `reset_lane` is where a start phase exists at all. Nothing about
+            // a sounding note changes, which is why this needs no re-cook the
+            // way detune does.
+            let spread: [f32; NOPS] = std::array::from_fn(|d| {
+                (self.patch.ops[d].phase_spread + self.dests[spread_dest_index(d)]).clamp(0.0, 1.0)
+            });
+            for b in self.banks.iter_mut() {
+                b.set_phase_spread(&spread);
             }
         }
 
@@ -1334,6 +1351,91 @@ mod tests {
         assert!(
             rolled < bright,
             "M5 did not roll the modulation off: {bright} -> {rolled}"
+        );
+    }
+
+    /// `phase_spread == 1.0` must be **bit-identical** to the unconditional
+    /// hash it replaced, or making phase configurable silently re-voiced the
+    /// onset of all six patches that were written against it.
+    ///
+    /// Guarded by fixed point: the Q16 scale is exactly `1 << 16`, so
+    /// `(hash * 65536) >> 16` is `hash`. Scaling through an `f32` would drop
+    /// eight bits of a `u32` and this would fail.
+    #[test]
+    fn full_spread_reproduces_the_historical_onset() {
+        for p in 0..crate::patch::N_PATCHES {
+            // `supersaw` is the one patch deliberately voiced away from it.
+            if crate::patch::patch(p).name == "supersaw" {
+                continue;
+            }
+            let mut e = Engine::new(SR);
+            e.set_patch(p);
+            for d in 0..NOPS {
+                assert_eq!(
+                    e.patch.ops[d].phase_spread, 1.0,
+                    "patch {p} op {d} drifted off the historical onset"
+                );
+                assert_eq!(e.patch.ops[d].phase, 0.0);
+            }
+        }
+        // And the arithmetic itself, at the boundary.
+        use vxn4_dsp::ops::{phase_hash, spread_scale_q16};
+        for d in 0..NOPS {
+            let scaled = ((phase_hash(d) as u64 * spread_scale_q16(1.0)) >> 16) as u32;
+            assert_eq!(scaled, phase_hash(d), "op {d} lost bits at full spread");
+            assert_eq!((phase_hash(d) as u64 * spread_scale_q16(0.0)) >> 16, 0);
+        }
+    }
+
+    /// The phase-spread knob must travel between the two ends it exists to
+    /// join: coherent (loud, mono) and decorrelated (wide, quieter).
+    ///
+    /// Read at note onset, so the notes have to be played **after** the knob
+    /// moves — which is the property this also pins.
+    #[test]
+    fn the_phase_spread_knob_travels_between_coherent_and_scattered() {
+        // M2 stays open throughout. Phase spread makes the seven saws
+        // *different*; pan is what places them apart. Neither produces width
+        // alone, and asserting spread-without-pan would be the same mistake as
+        // asserting pan-without-detune.
+        let run = |m6: f32| {
+            let mut e = Engine::new(SR);
+            e.set_patch(6);
+            e.set_macro(1, 1.0); // width
+            e.set_macro(5, m6); // phase spread
+            render(&mut e, 2048); // let the control tick land the spread first
+            for n in [48u8, 55, 60] {
+                e.note_on(n, 100);
+            }
+            let (l, r) = render(&mut e, 16_384);
+            let pk = peak(&l).max(peak(&r));
+            let mid: f32 = l.iter().zip(&r).map(|(a, b)| ((a + b) * 0.5).powi(2)).sum();
+            let side: f32 = l.iter().zip(&r).map(|(a, b)| ((a - b) * 0.5).powi(2)).sum();
+            (pk, if mid > 0.0 { side / mid } else { 0.0 })
+        };
+
+        let (coherent_pk, coherent_w) = run(0.0);
+        let (scattered_pk, scattered_w) = run(1.0);
+
+        assert!(
+            coherent_pk > 0.0 && scattered_pk > 0.0,
+            "one end went silent"
+        );
+        assert!(
+            coherent_pk > scattered_pk * 1.2,
+            "coherent ({coherent_pk}) should be clearly louder than scattered \
+             ({scattered_pk}) — seven aligned saws sum, seven scattered ones cancel"
+        );
+        // The point of the knob: pan is armed but inert while the seven saws
+        // carry an identical signal, and scattering their phases is what gives
+        // it something to separate.
+        assert!(
+            coherent_w < 1e-9,
+            "coherent should still be mono even with pan open ({coherent_w})"
+        );
+        assert!(
+            scattered_w > 0.01,
+            "scattering the phases did not unlock pan ({scattered_w})"
         );
     }
 

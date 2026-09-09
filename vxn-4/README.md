@@ -132,7 +132,7 @@ are at negative depth, so knob up is always darker.
 | `saws` | triangle modulator into both saws | sub level (a sum-bus send) | op4 → op3 | op4 → op2, a route the patch does not author | **damp both saw carriers** |
 | `web` | four feedback diagonals at once | the two corner routes | **damp all eight — the master control** | | |
 | `grind` | index past 1.7 turns, **both carriers** | self-feedback | *gates M2* | **the fizz control** | |
-| `supersaw` | **detune** | **width** | **level taper** | **modulation amount** | **modulation rolloff** |
+| `supersaw` | **detune** | **width** | **level taper** | **modulation amount** | **modulation rolloff** (+ M6 **phase spread**) |
 
 Measured range, as the render's difference from the knob-at-zero case (higher
 is a bigger change; `+` means the difference exceeds the original signal):
@@ -147,25 +147,39 @@ is a bigger change; `+` means the difference exceeds the original signal):
 | `supersaw` | M3 taper | -8.9 dB |
 | `supersaw` | M4 modulation | centroid 4302 → 8212 Hz (1.91x) |
 
-Two things about `supersaw` that follow from its operators starting
-**phase-coherent** (`OpConfig::phase`), rather than at the decorrelating hash
-every other patch uses:
+### Onset phase, and the loud/wide trade
 
-- **M2 does nothing until M1 is up.** With no detune the seven saws carry an
-  identical signal, and panning identical signals symmetrically sums to dead
-  centre however far apart you put them. Detune is what makes them seven
-  different signals; only then is there anything to widen. This is physics, not
-  a dead knob.
-- **M1 costs about 6 dB.** Seven coherent saws sum to 7x one saw; detuning
-  decorrelates that toward root-seven. The trim is set from the coherent end,
-  so the authored state is the loudest the patch gets.
+Onset phase has two axes, following vxn-2's split between `voice_spread`
+(deterministic, drives detune and pan) and `voice_rand` (drives phase only):
 
-The hash was the original behaviour for every operator, and it is right when
-operators sit at different ratios — but for a unison stack it made the seven
-saws cancel, which is why this patch was quiet and thin until phase became
-configurable. Beware the intuitive fix of an even `d/7` spread: it cancels every
-harmonic that is not a multiple of seven and leaves a thin tone a nineteenth too
-high.
+- `OpConfig::phase` — a static, **ordered** offset in turns.
+- `OpConfig::phase_spread` — `[0, 1]`, scaling an **unordered** per-operator
+  hash. **1.0 is the historical behaviour, bit-exactly**, which is what keeps
+  the six patches written against it unchanged. `supersaw` authors 0.0 and puts
+  M6 on it.
+
+Order is what you want for pitch and position and is actively harmful for
+phase: seven saws at an even `d/7` cancel every harmonic that is not a multiple
+of seven, leaving a thin tone a nineteenth too high. Random is right here, and
+the two axes are separate so that is structural rather than a comment.
+
+The knob exists because the ends are a real trade, and `supersaw` was pinned to
+one of them. Measured with pan open:
+
+| M6 | peak | width (side/mid) |
+|---|---|---|
+| 0.0 | -7.1 dBFS | **-113 dB** — dead mono |
+| 0.35 | -9.1 | -19.1 |
+| 0.7 | -11.2 | -13.7 |
+| 1.0 | -12.6 | **-11.1** |
+
+5.5 dB of level for the width. Two consequences worth knowing:
+
+- **M2 is inert until something makes the saws differ** — either M1 (detune) or
+  M6 (phase spread). Panning identical signals symmetrically sums to dead
+  centre however far apart you place them. Physics, not a dead knob.
+- **Phase is read at note onset**, so M6 affects the *next* note, not notes
+  already sounding. A running oscillator has no start phase left to change.
 
 `sine` M1+M2 is the clearest pair for hearing what damping *is*: one operator,
 one feedback route, nothing else moving. `grind` M4 is the widest.

@@ -54,7 +54,8 @@ pub fn configs() -> [OpConfig; NOPS] {
             // `None`, so both layouts keep the historical decorrelating hash
             // and stay bit-identical — the phase config is an engine-path
             // feature and `cook` is the bench path.
-            phase: None,
+            phase: 0.0,
+            phase_spread: 1.0,
         };
     }
     cfg

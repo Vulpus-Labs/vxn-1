@@ -144,25 +144,39 @@ pub struct OpConfig {
     /// In Hz rather than normalised so the response is identical at 8x and 16x.
     /// Zero or negative is a bypass.
     pub damp_hz: f32,
-    /// Phase this operator starts at on a fresh note, in **turns**, or `None`
-    /// to decorrelate it by hash as every operator used to be.
+    /// Static phase this operator starts at on a fresh note, in **turns**.
     ///
-    /// The hash is fine when operators are at different ratios and the phase
-    /// relationship between them is arbitrary anyway. It is actively wrong for
-    /// a unison stack: seven saws at one pitch and seven pseudo-random phases
-    /// partially cancel, and the sum is quiet and comb-filtered rather than
-    /// seven times one saw. `supersaw` is that case, and it sounded thin until
-    /// this existed.
+    /// The authored, *ordered* half of the onset phase — vxn-2's
+    /// `OpParams::phase`. Composed with [`Self::phase_spread`] by a wrapping
+    /// add, exactly as vxn-2's `apply_phase_offsets` composes its two halves.
+    pub phase: f32,
+    /// How far this operator's onset phase is decorrelated from the others,
+    /// `[0, 1]`. **1.0 is the historical behaviour and the default.**
     ///
-    /// Lane decorrelation is applied *on top* either way, so two voices on the
-    /// same note still never phase-lock — what this fixes is the relationship
-    /// **within** a voice, which is the one that sums.
+    /// The *unordered* half. It scales a per-operator hash, which is what every
+    /// operator used to get unconditionally — so `1.0` reproduces that
+    /// bit-exactly and `0.0` starts the operator phase-coherent with its
+    /// siblings.
     ///
-    /// Beware the obvious-looking choice of an even spread: seven saws at
-    /// `d/7` turns cancel every harmonic that is not a multiple of seven, which
-    /// leaves a thin tone a nineteenth too high. Coherent (`Some(0.0)`) is the
-    /// full-sounding setting; detune is what should break the coherence.
-    pub phase: Option<f32>,
+    /// A continuous axis rather than a switch, following vxn-2's
+    /// `StackParams::phase`, because the two ends are a real trade and patches
+    /// want to sit between them. Coherent is loud and full but cannot be
+    /// widened by panning — identical signals stay centred however far apart
+    /// you place them. Decorrelated is wide but comb-filtered and quiet:
+    /// `supersaw` lost 5 dB to seven saws cancelling each other before this
+    /// was dialable.
+    ///
+    /// Random, and **not** an ordered spread — the same split vxn-2 makes
+    /// between `voice_spread` (deterministic, drives detune and pan) and
+    /// `voice_rand` (drives phase only). Order is what you want for pitch and
+    /// position and is actively harmful for phase: seven saws at an even `d/7`
+    /// cancel every harmonic that is not a multiple of seven, leaving a thin
+    /// tone a nineteenth too high.
+    ///
+    /// Applied at **note onset**, so moving it does not affect notes already
+    /// sounding. That is not a limitation to work around: a running oscillator
+    /// has no start phase left to change.
+    pub phase_spread: f32,
 }
 
 /// Default damping corner: above the audio band, so it is nearly transparent
@@ -182,9 +196,29 @@ impl Default for OpConfig {
             level: 1.0,
             pan: 0.0,
             damp_hz: DEFAULT_DAMP_HZ,
-            phase: None,
+            phase: 0.0,
+            phase_spread: 1.0,
         }
     }
+}
+
+/// Q16 scale for [`OpConfig::phase_spread`].
+///
+/// Fixed point rather than float, and that is what makes `spread == 1.0`
+/// bit-identical to the unconditional hash it replaces: the scale is exactly
+/// `1 << 16`, so `(hash * 65536) >> 16` is `hash`. Scaling a `u32` through an
+/// `f32` would lose eight bits of it and quietly change every existing patch's
+/// onset.
+#[inline]
+pub fn spread_scale_q16(spread: f32) -> u64 {
+    (spread.clamp(0.0, 1.0) * 65_536.0) as u64
+}
+
+/// The per-operator decorrelation hash. Historical constant; changing it
+/// re-voices the onset of every patch that leaves `phase_spread` at 1.0.
+#[inline]
+pub fn phase_hash(op: usize) -> u32 {
+    (op as u32).wrapping_mul(0x85EB_CA6B)
 }
 
 /// Turns to a Q32 phase, wrapping into `[0, 1)` first.
@@ -383,8 +417,10 @@ pub struct VoiceMajor<const V: usize> {
     pmz: [[f32; V]; NOPS],
     /// Per-operator damping coefficient, from [`damp_coeff`].
     damp: [f32; NOPS],
-    /// Per-operator note-onset phase, or `None` to decorrelate by hash.
-    init_phase: [Option<u32>; NOPS],
+    /// Per-operator static note-onset phase, from [`OpConfig::phase`].
+    init_phase: [u32; NOPS],
+    /// Per-operator decorrelation scale, Q16. See [`OpConfig::phase_spread`].
+    spread_q16: [u64; NOPS],
     /// Peak `|pm - pmz|` since the last [`Self::update_mips`]. The filter's own
     /// residue, which is proportional to `d(pm)/dt` — so the mip selector gets
     /// its rate estimate as a by-product of a pass that has to happen anyway.
@@ -433,14 +469,23 @@ impl<const V: usize> VoiceMajor<V> {
             // through rather than silently damping it at some default.
             damp: [1.0; NOPS],
             peak: [[0.0; V]; NOPS],
-            init_phase: [None; NOPS],
+            init_phase: [0; NOPS],
+            spread_q16: [1 << 16; NOPS],
         }
     }
 
     /// Install the patch's per-operator onset phases. See [`OpConfig::phase`].
     pub fn set_phases(&mut self, cfg: &[OpConfig; NOPS]) {
         for d in 0..NOPS {
-            self.init_phase[d] = cfg[d].phase.map(phase_from_turns);
+            self.init_phase[d] = phase_from_turns(cfg[d].phase);
+            self.spread_q16[d] = spread_scale_q16(cfg[d].phase_spread);
+        }
+    }
+
+    /// [`Self::set_phases`]'s decorrelation half, from live (modulated) values.
+    pub fn set_phase_spread(&mut self, spread: &[f32; NOPS]) {
+        for d in 0..NOPS {
+            self.spread_q16[d] = spread_scale_q16(spread[d]);
         }
     }
 
@@ -588,13 +633,14 @@ impl<const V: usize> VoiceMajor<V> {
         // doubled copy, and the optimiser must not be able to collapse lanes.
         let lane_offset = seed.wrapping_mul(0x9E37_79B9);
         for d in 0..NOPS {
-            self.phase[d][lane] = match self.init_phase[d] {
-                Some(p) => lane_offset.wrapping_add(p),
-                // The historical hash. Bit-identical to what every patch got
-                // before `OpConfig::phase` existed, so the six patches voiced
-                // against it are unchanged.
-                None => lane_offset.wrapping_add((d as u32).wrapping_mul(0x85EB_CA6B)),
-            };
+            // Ordered part plus scaled unordered part, wrapping-added — the
+            // same two-term composition as vxn-2's `apply_phase_offsets`. At
+            // `spread_q16 == 1 << 16` the second term is the bare hash, which
+            // is what every operator got before this was configurable.
+            let scattered = ((phase_hash(d) as u64 * self.spread_q16[d]) >> 16) as u32;
+            self.phase[d][lane] = lane_offset
+                .wrapping_add(self.init_phase[d])
+                .wrapping_add(scattered);
             self.lvl[d][lane] = 0.0;
             // `self.hist.len()`, not a literal — this was a hardcoded 3 and
             // went out of bounds the moment the ring shrank to 2.
@@ -1104,7 +1150,8 @@ mod tests {
                 // `None`, so both layouts keep the historical decorrelating hash
                 // and stay bit-identical — the phase config is an engine-path
                 // feature and `cook` is the bench path.
-                phase: None,
+                phase: 0.0,
+                phase_spread: 1.0,
             };
         }
         cfg
@@ -1291,7 +1338,8 @@ mod tests {
                 level: 1.0,
                 pan: 0.0,
                 damp_hz: hz,
-                phase: None,
+                phase: 0.0,
+                phase_spread: 1.0,
             };
             let bus = SumBus::new(&cfg, &routing);
             let mut b = VoiceMajor::<8>::new();
