@@ -29,12 +29,19 @@
 //! own polarity and shape axes on the VCA. It came with the shared crate; there
 //! is nothing for vxn-4 to implement.
 //!
-//! ## Destinations: 80
+//! ## Destinations: 96
 //!
-//! 64 inter-operator PM depths (the diagonal is self-feedback), 8 sum-bus
-//! sends, and 8 damping corners. Generated rather than hand-written, because 80
-//! near-identical rows is exactly the duplication `matrix_enum!` exists to
-//! absorb.
+//! 64 inter-operator PM depths (the diagonal is self-feedback), then four
+//! per-operator families of eight: sum-bus sends, damping corners, detune and
+//! pan. Generated rather than hand-written, because 96 near-identical rows is
+//! exactly the duplication `matrix_enum!` exists to absorb.
+//!
+//! **Detune and pan are not modulation in the brief's sense** — they are voice
+//! architecture, and putting them under a knob is what makes a patch like
+//! `supersaw` expressible at all: seven detuned, panned, level-tapered saws
+//! whose spread, width and taper are three controls rather than three
+//! recompiles. Detune resolves to a phase increment and pan to the sum bus, so
+//! neither touches the operator kernel.
 //!
 //! The brief named the first 72. The damping rows are the bounded-chaos axis:
 //! `damp_hz` is what bounds the product bandwidth an operator can receive (see
@@ -76,15 +83,26 @@ use vxn4_dsp::ops::NOPS;
 /// Macro knobs exposed to the host as modulation sources.
 pub const N_MACROS: usize = 8;
 
-/// Matrix slots per patch. 16, matching vxn-1b and vxn-2.
+/// Matrix slots per patch.
+///
+/// 40, where vxn-1b and vxn-2 use 16. Not gratuitous: those synths have 16 and
+/// 51 destinations, vxn-4 has 96, and one patch routing a handful of macros
+/// across eight operators spends slots eight at a time. `supersaw` alone uses
+/// 32 — detune, pan and level taper across six operators, plus modulation and
+/// rolloff across seven. At 16 it could not have been written at all.
+///
+/// The cost is a longer `RouteList` walked once per control block when a knob
+/// has moved. Every route is `patch_global`, so it is not per voice and not per
+/// tick.
 ///
 /// Named `N_MATRIX_SLOTS` rather than `N_SLOTS` because `alloc::N_SLOTS` is the
 /// *voice* slot count. Two different 16-ish numbers with the same name in one
 /// crate is a bug waiting to happen.
-pub const N_MATRIX_SLOTS: usize = 16;
+pub const N_MATRIX_SLOTS: usize = 40;
 
-/// Routable destinations: 64 PM depths + 8 sum-bus sends + 8 damping corners.
-pub const N_DESTS: usize = NOPS * NOPS + NOPS + NOPS;
+/// Routable destinations: 64 PM depths, then four per-operator families of 8 —
+/// sum-bus sends, damping corners, detune and pan.
+pub const N_DESTS: usize = NOPS * NOPS + 4 * NOPS;
 
 /// A patch's modulation table: [`N_MATRIX_SLOTS`] slots over vxn-4's roster.
 pub type Matrix = MatrixTable<SourceId, DestId, N_MATRIX_SLOTS>;
@@ -198,6 +216,22 @@ matrix_enum! {
     Damp5 = 78, "damp-5", "Op5 Damp", gain = 6.0, taper = linear, tier = patch_global, smooth = block;
     Damp6 = 79, "damp-6", "Op6 Damp", gain = 6.0, taper = linear, tier = patch_global, smooth = block;
     Damp7 = 80, "damp-7", "Op7 Damp", gain = 6.0, taper = linear, tier = patch_global, smooth = block;
+    Ratio0 = 81, "ratio-0", "Op0 Detune", gain = 1.0, taper = linear, tier = patch_global, smooth = block;
+    Ratio1 = 82, "ratio-1", "Op1 Detune", gain = 1.0, taper = linear, tier = patch_global, smooth = block;
+    Ratio2 = 83, "ratio-2", "Op2 Detune", gain = 1.0, taper = linear, tier = patch_global, smooth = block;
+    Ratio3 = 84, "ratio-3", "Op3 Detune", gain = 1.0, taper = linear, tier = patch_global, smooth = block;
+    Ratio4 = 85, "ratio-4", "Op4 Detune", gain = 1.0, taper = linear, tier = patch_global, smooth = block;
+    Ratio5 = 86, "ratio-5", "Op5 Detune", gain = 1.0, taper = linear, tier = patch_global, smooth = block;
+    Ratio6 = 87, "ratio-6", "Op6 Detune", gain = 1.0, taper = linear, tier = patch_global, smooth = block;
+    Ratio7 = 88, "ratio-7", "Op7 Detune", gain = 1.0, taper = linear, tier = patch_global, smooth = block;
+    Pan0 = 89, "pan-0", "Op0 Pan", gain = 1.0, taper = linear, tier = patch_global, smooth = block;
+    Pan1 = 90, "pan-1", "Op1 Pan", gain = 1.0, taper = linear, tier = patch_global, smooth = block;
+    Pan2 = 91, "pan-2", "Op2 Pan", gain = 1.0, taper = linear, tier = patch_global, smooth = block;
+    Pan3 = 92, "pan-3", "Op3 Pan", gain = 1.0, taper = linear, tier = patch_global, smooth = block;
+    Pan4 = 93, "pan-4", "Op4 Pan", gain = 1.0, taper = linear, tier = patch_global, smooth = block;
+    Pan5 = 94, "pan-5", "Op5 Pan", gain = 1.0, taper = linear, tier = patch_global, smooth = block;
+    Pan6 = 95, "pan-6", "Op6 Pan", gain = 1.0, taper = linear, tier = patch_global, smooth = block;
+    Pan7 = 96, "pan-7", "Op7 Pan", gain = 1.0, taper = linear, tier = patch_global, smooth = block;
 }
 
 matrix_roster! {
@@ -207,7 +241,7 @@ matrix_roster! {
     /// so the shared evaluator can size its accumulators through the `const`
     /// guards in [`vxn_core_matrix::storage`], which turn a wrong-width buffer
     /// into a compile error rather than a silent overrun.
-    Roster, source = SourceId, dest = DestId, slots = 16,
+    Roster, source = SourceId, dest = DestId, slots = 40,
     source_names = ROSTER_SOURCE_NAMES, source_labels = ROSTER_SOURCE_LABELS,
     dest_names = ROSTER_DEST_NAMES, dest_labels = ROSTER_DEST_LABELS,
 }
@@ -288,6 +322,24 @@ pub const fn damp_dest_index(op: usize) -> usize {
     NOPS * NOPS + NOPS + op
 }
 
+/// Storage index of operator `op`'s detune destination.
+///
+/// Unit is **semitones**, added to the operator's ratio as
+/// `live_ratio = ratio * 2^(total/12)`. A route at full depth is one semitone,
+/// which is the range detuning wants; this row is not a vibrato destination and
+/// widening it would cost the resolution that makes a few cents dialable.
+#[inline]
+pub const fn ratio_dest_index(op: usize) -> usize {
+    NOPS * NOPS + 2 * NOPS + op
+}
+
+/// Storage index of operator `op`'s pan destination. Unit is pan position,
+/// added to the operator's authored pan and clamped to `[-1, 1]`.
+#[inline]
+pub const fn pan_dest_index(op: usize) -> usize {
+    NOPS * NOPS + 3 * NOPS + op
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,8 +350,8 @@ mod tests {
         assert_eq!(Roster::N_SOURCES, N_MACROS);
         assert_eq!(Roster::N_DESTS, N_DESTS);
         assert_eq!(
-            N_DESTS, 80,
-            "64 inter-op routes + 8 sum-bus sends + 8 damping corners"
+            N_DESTS, 96,
+            "64 inter-op routes + four per-operator families of 8"
         );
         assert_eq!(Roster::N_SLOTS, N_MATRIX_SLOTS);
     }
@@ -322,8 +374,26 @@ mod tests {
         // The three families must not overlap: the engine tests
         // `i >= damp_dest_index(0)` to decide whether a slot is a damping
         // route, which is only sound while damping is the final block.
-        assert!(damp_dest_index(0) > out_dest_index(NOPS - 1));
-        assert_eq!(damp_dest_index(NOPS - 1), N_DESTS - 1);
+        assert_eq!(DestId::Ratio0.idx(), Some(ratio_dest_index(0)));
+        assert_eq!(DestId::Ratio7.idx(), Some(ratio_dest_index(7)));
+        assert_eq!(DestId::Pan0.idx(), Some(pan_dest_index(0)));
+        assert_eq!(DestId::Pan7.idx(), Some(pan_dest_index(7)));
+        // The four families must tile the space after the PM block, in order
+        // and without gaps. The engine classifies a slot by half-open range, so
+        // a helper shifted by one family silently reclassifies every route in
+        // it — which is exactly what happened when detune and pan were added
+        // and `damp_dest_index` was moved along with them.
+        let bounds = [
+            out_dest_index(0),
+            damp_dest_index(0),
+            ratio_dest_index(0),
+            pan_dest_index(0),
+            N_DESTS,
+        ];
+        assert_eq!(bounds[0], NOPS * NOPS, "families start after the PM block");
+        for w in bounds.windows(2) {
+            assert_eq!(w[1] - w[0], NOPS, "each family is exactly one per operator");
+        }
     }
 
     /// Damping totals are in octaves and shift a corner multiplicatively, so

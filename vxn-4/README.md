@@ -6,8 +6,8 @@ bus. No filter.
 
 Playable in a CLAP host, and playable offline. **No faceplate** — the plugin
 exposes eleven parameters and a host's generic UI is enough to turn them. Under
-that: voice allocation, envelopes, six hardwired patches, a modulation matrix on
-eight macro knobs, and the oversampling chain down through a limiter.
+that: voice allocation, envelopes, seven hardwired patches, a modulation matrix
+on eight macro knobs, and the oversampling chain down through a limiter.
 
 Most of this README is the **sizing** work that came first, because the
 oversampling factor, the wavetable length and the lane-loop layout move the
@@ -49,15 +49,15 @@ Eleven parameters, and the count is the design:
 
 | id | param | range |
 |---|---|---|
-| 0 | Patch | stepped, `sine`…`grind` |
+| 0 | Patch | stepped, `sine`…`supersaw` |
 | 1 | Quality | stepped, 8x / 16x |
 | 2 | Master Gain | 0 … +6 dB, applied **upstream** of the limiter |
 | 3–10 | Macro 1–8 | 0 … 1 |
 
 **Modulation reaches the host as eight knobs and nothing else.** The synth has
-80 modulatable destinations — 64 PM depths, 8 sum-bus sends and 8 damping
-corners — each taking two sources; exposing that would be several hundred
-automation lanes, and it would bake the patch's routing topology into every
+96 modulatable destinations — 64 PM depths, then four per-operator families of
+eight: sum-bus sends, damping corners, detune and pan — each taking two
+sources; exposing that would be several hundred automation lanes, and it would bake the patch's routing topology into every
 saved project, so rewiring a patch would leave every lane that named a route
 pointing somewhere else. The knobs are matrix *sources*; which routes each one
 drives, and how far, is patch state. A lane that says "macro 3" survives the
@@ -83,9 +83,9 @@ Two things the plugin does that are worth knowing:
 
 ## Playing it
 
-Six patches — five graded by routing density, plus one that is off the ladder
-for aliasing — and six sequences, each chosen to put one question in front of
-your ears.
+Seven patches — five graded by routing density, one off the ladder for
+aliasing, one for the spread controls — and six sequences, each chosen to put
+one question in front of your ears.
 
 | patch | routes | what it is for |
 |---|---|---|
@@ -95,6 +95,7 @@ your ears.
 | `saws` | 11 | assignable waveforms — the thing a DX7 cannot do, and the hardest case for the mips |
 | `web` | 64 | every route live; the worst case the sizing bench quotes against |
 | `grind` | 4 | **saw modulating saw at high index** — the aliasing torture case, deliberately not musical |
+| `supersaw` | 0 | seven detuned saws plus a sine; the whole spread is macros |
 
 | sequence | what it asks |
 |---|---|
@@ -116,10 +117,12 @@ Each patch wires a few. All macros at zero **is** the patch as its table writes
 it, which is what keeps the patch source readable on its own — a default of 0.5
 would mean no patch ever sounded as authored without pulling eight knobs down.
 
-Two kinds of destination are under the knobs: **PM depths** (how much
-modulation) and **damping corners** (how much of it survives to the phase
-accumulator). Damping routes are in *octaves* against the patch's authored
-corner, at negative depth — so knob up is always darker.
+Four kinds of destination are under the knobs: **PM depths** (how much
+modulation), **sum-bus sends** (how loud an operator is), **damping corners**
+(how much modulation survives to the phase accumulator), and **detune / pan**
+(where an operator sits in pitch and in the image). Damping is in *octaves* and
+detune in *semitones*, both against the patch's authored value; damping routes
+are at negative depth, so knob up is always darker.
 
 | patch | M1 | M2 | M3 | M4 | M5 |
 |---|---|---|---|---|---|
@@ -128,7 +131,8 @@ corner, at negative depth — so knob up is always darker.
 | `bell` | feedback on the inharmonic modulator | brightness | **damp carriers** | **damp the feedback modulator** | |
 | `saws` | triangle modulator into both saws | sub level (a sum-bus send) | op4 → op3 | op4 → op2, a route the patch does not author | **damp both saw carriers** |
 | `web` | four feedback diagonals at once | the two corner routes | **damp all eight — the master control** | | |
-| `grind` | index past 1.7 turns | self-feedback | *gates M2* | **the fizz control** | |
+| `grind` | index past 1.7 turns, **both carriers** | self-feedback | *gates M2* | **the fizz control** | |
+| `supersaw` | **detune** | **width** | **level taper** | **modulation amount** | **modulation rolloff** |
 
 Measured range, as the render's difference from the knob-at-zero case (higher
 is a bigger change; `+` means the difference exceeds the original signal):
@@ -138,6 +142,9 @@ is a bigger change; `+` means the difference exceeds the original signal):
 | `grind` | M4 | **+4.7 dB** — a different instrument |
 | `sine` | M2 | -2.7 dB |
 | `web` | M3 | -9.5 dB |
+| `supersaw` | M1 detune | -5.6 dB |
+| `supersaw` | M2 width | -7.9 dB, and mono → -7.3 dB side/mid |
+| `supersaw` | M3 taper | -8.9 dB |
 
 `sine` M1+M2 is the clearest pair for hearing what damping *is*: one operator,
 one feedback route, nothing else moving. `grind` M4 is the widest.

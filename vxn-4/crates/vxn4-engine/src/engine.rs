@@ -47,7 +47,7 @@ use vxn4_dsp::wavetable::{ValueSlope, WaveBank};
 use crate::alloc::{Action, Alloc, N_SLOTS, Phase};
 use crate::matrix::{
     DestId, Matrix, N_DESTS, N_MACROS, Roster, SourceId, damp_dest_index, out_dest_index,
-    pm_dest_index,
+    pan_dest_index, pm_dest_index, ratio_dest_index,
 };
 use crate::patch::{Patch, patch};
 
@@ -297,8 +297,23 @@ pub struct Engine {
     ///
     /// Separate from [`Self::modulated`] because resolving damping costs eight
     /// `exp` calls per bank, and a patch whose macros only touch PM depths
-    /// should not pay them on every knob move.
+    /// should not pay them on every knob move. [`Self::detuned`] and
+    /// [`Self::panned`] earn their own flags for the same reason — detune
+    /// re-derives an increment for every sounding lane, which is the most
+    /// expensive of the three.
     damp_routed: bool,
+    /// Whether any active slot targets a `Ratio` destination.
+    detuned: bool,
+    /// Whether any active slot targets a `Pan` destination.
+    panned: bool,
+    /// Per-operator ratios with the detune total already folded in.
+    ///
+    /// Cached because `cook_lane` derives an increment from the patch's
+    /// *nominal* ratio, so every note-on and every quality switch would
+    /// otherwise wipe the detune — and `mod_dirty` is already clear by then, so
+    /// nothing would put it back. A note played after the knob moved would come
+    /// out at concert pitch while the ones already sounding stayed detuned.
+    live_ratios: [f32; NOPS],
 
     alloc: Alloc,
 
@@ -345,6 +360,9 @@ impl Engine {
             mod_dirty: true,
             modulated: false,
             damp_routed: false,
+            detuned: false,
+            panned: false,
+            live_ratios: [1.0; NOPS],
             alloc: Alloc::new(),
             left: Chain::new(),
             right: Chain::new(),
@@ -417,6 +435,7 @@ impl Engine {
             let pitch = self.alloc.voices[slot].pitch;
             let (bank, lane) = (slot / LANES, slot % LANES);
             self.banks[bank].cook_lane(&self.waves, &self.patch.ops, lane, pitch, sr_os);
+            self.restore_detune(slot);
         }
     }
 
@@ -444,11 +463,20 @@ impl Engine {
             s.is_active() && s.depth != 0.0
         };
         self.modulated = p.matrix.slots.iter().any(live);
-        self.damp_routed = p
-            .matrix
-            .slots
-            .iter()
-            .any(|s| live(s) && DestId::idx(s.dest).is_some_and(|i| i >= damp_dest_index(0)));
+        // Half-open ranges, not `>=`. The damping predicate was
+        // `i >= damp_dest_index(0)` while damping was the last family; adding
+        // detune and pan after it would have made every one of those routes
+        // read as a damping route. `matrix::tests::dest_indices_match_the_enum`
+        // pins the family boundaries this relies on.
+        let targets = |lo: usize, hi: usize| {
+            p.matrix
+                .slots
+                .iter()
+                .any(|s| live(s) && DestId::idx(s.dest).is_some_and(|i| i >= lo && i < hi))
+        };
+        self.damp_routed = targets(damp_dest_index(0), ratio_dest_index(0));
+        self.detuned = targets(ratio_dest_index(0), pan_dest_index(0));
+        self.panned = targets(pan_dest_index(0), N_DESTS);
 
         for d in 0..NOPS {
             let theta = (p.ops[d].pan.clamp(-1.0, 1.0) + 1.0) * 0.25 * std::f32::consts::PI;
@@ -462,6 +490,7 @@ impl Engine {
             b.set_waves(&p.ops);
             b.set_damping(&p.ops, sr_os);
         }
+        self.live_ratios = std::array::from_fn(|d| p.ops[d].ratio);
         self.patch = p;
         // Macro positions survive a patch change — they are host automation,
         // and a lane that holds macro 1 at 0.7 across a patch switch must not
@@ -565,6 +594,45 @@ impl Engine {
                 b.set_damping_hz(&hz, sr_os);
             }
         }
+
+        if self.detuned {
+            // Semitones, so the shift is multiplicative on the ratio for the
+            // same reason damping's is on the corner: pitch is logarithmic and
+            // an additive total would not be a detune at all.
+            let sr_os = self.sr_os();
+            self.live_ratios = std::array::from_fn(|d| {
+                let semis = self.dests[ratio_dest_index(d)];
+                self.patch.ops[d].ratio * (semis / 12.0).exp2()
+            });
+            let ratios = self.live_ratios;
+            // Every sounding lane, because an increment is per lane: the ratio
+            // is patch-wide but the frequency it lands on is not. One `exp2`
+            // per lane for the base pitch, then a multiply per operator.
+            for slot in 0..N_SLOTS {
+                if self.alloc.voices[slot].is_idle() {
+                    continue;
+                }
+                let hz0 = vxn4_dsp::ops::pitch_to_freq(self.alloc.voices[slot].pitch);
+                let (bank, lane) = (slot / LANES, slot % LANES);
+                self.banks[bank].set_lane_incs(lane, hz0, &ratios, sr_os);
+            }
+        }
+
+        if self.panned {
+            // Pan moves the constant-power factors, so the cached pair has to
+            // be recomputed rather than reused — and then the sends above have
+            // to be reapplied through the new factors, since they were written
+            // with the old ones a few lines up.
+            for d in 0..NOPS {
+                let pan = (self.patch.ops[d].pan + self.dests[pan_dest_index(d)]).clamp(-1.0, 1.0);
+                let theta = (pan + 1.0) * 0.25 * std::f32::consts::PI;
+                self.pan_c[d] = theta.cos();
+                self.pan_s[d] = theta.sin();
+                let g = (base.out[d] + self.dests[out_dest_index(d)]).clamp(0.0, 1.0);
+                self.bus.l[d] = g * self.pan_c[d];
+                self.bus.r[d] = g * self.pan_s[d];
+            }
+        }
     }
 
     /// Silence everything immediately.
@@ -602,6 +670,19 @@ impl Engine {
             self.banks[bank].reset_lane(lane, seed);
         }
         self.banks[bank].cook_lane(&self.waves, &self.patch.ops, lane, pitch, self.sr_os());
+        self.restore_detune(slot);
+    }
+
+    /// Re-apply the live detune to one lane after something cooked it from the
+    /// patch's nominal ratios. See [`Self::live_ratios`].
+    fn restore_detune(&mut self, slot: usize) {
+        if !self.detuned {
+            return;
+        }
+        let hz0 = vxn4_dsp::ops::pitch_to_freq(self.alloc.voices[slot].pitch);
+        let (bank, lane) = (slot / LANES, slot % LANES);
+        let (ratios, sr_os) = (self.live_ratios, self.sr_os());
+        self.banks[bank].set_lane_incs(lane, hz0, &ratios, sr_os);
     }
 
     pub fn note_off(&mut self, note: u8) {
@@ -1152,6 +1233,66 @@ mod tests {
         assert!(
             (a / b - 1.0).abs() < 0.20,
             "damping is rate-dependent: {a} at 8x vs {b} at 16x"
+        );
+    }
+
+    /// Detune, pan and level taper must each do something on `supersaw`, and
+    /// pan must specifically produce **stereo width** — the patch is perfectly
+    /// mono until M2 opens.
+    #[test]
+    fn the_supersaw_spread_controls_all_work() {
+        let render_macro = |m: usize| {
+            let mut e = Engine::new(SR);
+            e.set_patch(6);
+            if m > 0 {
+                e.set_macro(m - 1, 1.0);
+            }
+            for n in [48u8, 55, 60] {
+                e.note_on(n, 100);
+            }
+            render(&mut e, 16_384)
+        };
+        let width = |(l, r): &(Vec<f32>, Vec<f32>)| {
+            let mid: f32 = l.iter().zip(r).map(|(a, b)| ((a + b) * 0.5).powi(2)).sum();
+            let side: f32 = l.iter().zip(r).map(|(a, b)| ((a - b) * 0.5).powi(2)).sum();
+            if mid > 0.0 { side / mid } else { 0.0 }
+        };
+
+        let base = render_macro(0);
+        for (m, what) in [(1, "detune"), (2, "pan"), (3, "taper")] {
+            let out = render_macro(m);
+            assert_ne!(out.0, base.0, "macro {m} ({what}) changed nothing");
+            assert!(out.0.iter().chain(out.1.iter()).all(|s| s.is_finite()));
+        }
+
+        assert_eq!(width(&base), 0.0, "the authored patch should be mono");
+        assert!(
+            width(&render_macro(2)) > 0.01,
+            "macro 2 produced no stereo width"
+        );
+    }
+
+    /// A note started **after** a detune knob has moved must be detuned too.
+    ///
+    /// `cook_lane` derives the increment from the patch's nominal ratio, and by
+    /// the time a later note arrives `mod_dirty` is long clear — so without the
+    /// `live_ratios` cache the new note plays at concert pitch against a
+    /// detuned stack, which reads as one voice being out of tune rather than as
+    /// a broken knob.
+    #[test]
+    fn detune_reaches_a_note_started_after_the_knob_moved() {
+        let run = |m1: f32| {
+            let mut e = Engine::new(SR);
+            e.set_patch(6);
+            e.set_macro(0, m1);
+            render(&mut e, 4096); // clears mod_dirty
+            e.note_on(60, 100);
+            render(&mut e, 16_384).0
+        };
+        assert_ne!(
+            run(1.0),
+            run(0.0),
+            "a late note ignored the detune the knob had already set"
         );
     }
 

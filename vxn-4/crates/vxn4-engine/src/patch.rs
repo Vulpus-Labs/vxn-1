@@ -17,6 +17,7 @@
 //! | 3 | `Saws` | 11 | assignable waveforms — the thing a DX7 cannot do |
 //! | 4 | `Web` | 64 | every route live; the worst case the bench sizes against |
 //! | 5 | `Grind` | 4 | saw modulating saw at high index — the aliasing torture case |
+//! | 6 | `Supersaw` | 0 | seven detuned saws; every parameter is a macro |
 
 use vxn_core_matrix::curve::{Polarity, Shape};
 use vxn_core_matrix::slot::MatrixSlot;
@@ -95,7 +96,7 @@ pub struct Patch {
 }
 
 /// The set, in order.
-pub const N_PATCHES: usize = 6;
+pub const N_PATCHES: usize = 7;
 
 pub fn patch(index: usize) -> Patch {
     match index % N_PATCHES {
@@ -104,7 +105,8 @@ pub fn patch(index: usize) -> Patch {
         2 => bell(),
         3 => saws(),
         4 => web(),
-        _ => grind(),
+        5 => grind(),
+        _ => supersaw(),
     }
 }
 
@@ -116,6 +118,7 @@ pub fn patch_names() -> [&'static str; N_PATCHES] {
         saws().name,
         web().name,
         grind().name,
+        supersaw().name,
     ]
 }
 
@@ -552,7 +555,12 @@ fn grind() -> Patch {
         // M1 drives the index past 1.7 turns, which is the point of the patch:
         // it makes the 8x-vs-16x difference a knob rather than a recompile.
         matrix: matrix(&[
+            // Both carriers, at the same depth. M1 drove only op0 until now,
+            // which made the left side (op0 pans -0.2) progressively grittier
+            // than the right (op3, +0.2) as the knob came up — an accident of
+            // writing the route without looking at the pair.
             route(SourceId::Macro1, DestId::Pm01, 0.79),
+            route(SourceId::Macro1, DestId::Pm31, 0.79),
             scaled_route(SourceId::Macro2, SourceId::Macro3, DestId::Pm11, 0.63),
             // M4 damps both saw carriers — the fizz control. Down is tame, up
             // (knob at zero) is the SID-ish grit the patch has by default.
@@ -563,6 +571,147 @@ fn grind() -> Patch {
         ]),
         eg,
         gain: 0.432,
+    }
+}
+
+// ── 6. Supersaw ─────────────────────────────────────────────────────────────
+
+/// Seven saws in a detuned, panned, level-tapered spread, plus a sine
+/// modulating all of them. Every parameter of the spread is a macro.
+///
+/// The patch that motivated putting **detune** and **pan** in the roster. Both
+/// are voice architecture rather than modulation in the brief's sense, and
+/// without them a supersaw is three recompiles rather than three knobs.
+///
+/// Ops 0-6 are the spread: op0 at pitch, ops 1-3 sharp and right, ops 4-6 flat
+/// and left. Op7 is the modulator, which reaches all seven.
+///
+/// **Every macro sits at zero in the authored patch**, so the base state is
+/// seven unison saws — a thick, comb-filtered single saw, since `reset_lane`
+/// decorrelates each operator's starting phase. That is deliberate: the ask was
+/// for knobs that *determine* detune, width and taper, so each has to start
+/// from nothing and add. It also makes each knob's contribution audible in
+/// isolation, which a pre-voiced base would hide.
+fn supersaw() -> Patch {
+    // Distance from centre, in spread units. Sign is the side.
+    const OFFSET: [f32; 7] = [0.0, 1.0, 2.0, 3.0, -1.0, -2.0, -3.0];
+
+    let mut ops = [off(); NOPS];
+    for (d, k) in OFFSET.iter().enumerate() {
+        // Ratio, pan and level are all authored *neutral*; the macros supply
+        // the spread. `level` is the operator's own gain, distinct from
+        // `routing.out` below, which is the sum-bus send the taper moves.
+        ops[d] = op(Waveform::Saw, 1.0, 1.0, 0.0);
+        let _ = k;
+    }
+    // The modulator. A sine at unison keeps the result harmonic, so M4 reads as
+    // a timbre control rather than as a detune of its own.
+    ops[7] = op(Waveform::Sine, 1.0, 1.0, 0.0);
+
+    let mut routing = Routing::default();
+    for d in 0..7 {
+        // Seven equal sends. The taper is subtractive from here, so M3 at zero
+        // is a flat spread and turning it up thins the edges.
+        routing.out[d] = 0.30;
+    }
+
+    let mut eg = [eg_off(); NOPS];
+    // One shape across the spread — a supersaw's operators are one voice, not
+    // seven, so anything per-operator here would read as a chorus artefact.
+    let body = EgParams::adsr(0.008, 0.30, 0.85, 0.35);
+    for slot in eg.iter_mut().take(7) {
+        *slot = body;
+    }
+    eg[7] = EgParams::adsr(0.004, 0.45, 0.70, 0.30);
+
+    // 32 slots: six each for detune, pan and taper, then seven each for the
+    // modulation and its rolloff. This is the patch `N_MATRIX_SLOTS` was
+    // raised to 40 for.
+    let mut slots = Vec::with_capacity(32);
+
+    const DETUNE: [DestId; 7] = [
+        DestId::Ratio0,
+        DestId::Ratio1,
+        DestId::Ratio2,
+        DestId::Ratio3,
+        DestId::Ratio4,
+        DestId::Ratio5,
+        DestId::Ratio6,
+    ];
+    const PANS: [DestId; 7] = [
+        DestId::Pan0,
+        DestId::Pan1,
+        DestId::Pan2,
+        DestId::Pan3,
+        DestId::Pan4,
+        DestId::Pan5,
+        DestId::Pan6,
+    ];
+    const SENDS: [DestId; 7] = [
+        DestId::Out0,
+        DestId::Out1,
+        DestId::Out2,
+        DestId::Out3,
+        DestId::Out4,
+        DestId::Out5,
+        DestId::Out6,
+    ];
+    const PM: [DestId; 7] = [
+        DestId::Pm07,
+        DestId::Pm17,
+        DestId::Pm27,
+        DestId::Pm37,
+        DestId::Pm47,
+        DestId::Pm57,
+        DestId::Pm67,
+    ];
+    const DAMP: [DestId; 7] = [
+        DestId::Damp0,
+        DestId::Damp1,
+        DestId::Damp2,
+        DestId::Damp3,
+        DestId::Damp4,
+        DestId::Damp5,
+        DestId::Damp6,
+    ];
+
+    for (d, k) in OFFSET.iter().enumerate() {
+        if *k != 0.0 {
+            // M1 — detune, in semitones. 15 cents per spread unit puts the
+            // outer pair at +/-45 cents at full travel, which is the classic
+            // supersaw width. The centre operator is deliberately unrouted:
+            // detuning it would move the patch's pitch rather than widen it.
+            slots.push(route(SourceId::Macro1, DETUNE[d], 0.15 * k));
+
+            // M2 — width. Outer saws reach +/-0.9 rather than hard left/right,
+            // because a saw pinned fully to one side stops contributing to the
+            // beating that makes the spread sound like one instrument.
+            slots.push(route(SourceId::Macro2, PANS[d], 0.30 * k));
+
+            // M3 — taper, subtracted from the send. Proportional to distance,
+            // so the edges thin first and the centre never moves.
+            slots.push(route(SourceId::Macro3, SENDS[d], -0.06 * k.abs()));
+        }
+        // M4 — how much op7 modulates this saw. Cubic taper, so the usable low
+        // end of the index is dialable.
+        slots.push(route(SourceId::Macro4, PM[d], 0.70));
+        // M5 — rolloff on what arrives, in octaves against the 20 kHz default.
+        // This is the knob for how much of op7's contribution survives, which
+        // is a different question from how much is sent.
+        slots.push(route(SourceId::Macro5, DAMP[d], -0.70));
+    }
+
+    Patch {
+        name: "supersaw",
+        ops,
+        routing,
+        matrix: matrix(&slots),
+        eg,
+        // Measured like the rest: a six-note chord at velocity 100 near
+        // -6 dBFS in the authored (all-macros-zero) state. The spread state
+        // sits ~3 dB below that, because detuning decorrelates the seven saws
+        // so they stop summing coherently — which is the sound, not a fault.
+        gain: 0.386,
     }
 }
 

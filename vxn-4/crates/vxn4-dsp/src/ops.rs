@@ -519,6 +519,23 @@ impl<const V: usize> VoiceMajor<V> {
         }
     }
 
+    /// Re-derive one lane's phase increments from live per-operator ratios,
+    /// leaving the mip selection alone.
+    ///
+    /// The modulated-detune path. Deliberately **not** [`Self::cook_lane`],
+    /// which also re-selects the mip from the nominal increment — calling that
+    /// every control block would reset the hysteresis state on every block and
+    /// destroy the whole mechanism. `update_mips` reads `inc`, so it picks the
+    /// new rate up on its own schedule.
+    ///
+    /// `hz0` is the lane's base frequency, so the caller pays one `exp2` per
+    /// lane rather than one per operator per lane.
+    pub fn set_lane_incs(&mut self, lane: usize, hz0: f32, ratios: &[f32; NOPS], sr_os: f32) {
+        for d in 0..NOPS {
+            self.inc[d][lane] = ((hz0 * ratios[d] / sr_os) * PHASE_SCALE) as u32;
+        }
+    }
+
     /// Reset one lane to silence: zero phase history, decorrelated phases.
     ///
     /// This is the fresh-onset path. `seed` decorrelates the starting phases so
