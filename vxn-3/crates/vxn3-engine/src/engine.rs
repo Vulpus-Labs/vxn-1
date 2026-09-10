@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use crate::io::{EngineCommand, EngineIo, PlayheadState};
 use crate::lane::{LaneState, TrigEvent};
-use crate::sequencer::{Hit, LockParam, Pattern};
+use crate::sequencer::{LockParam, Pattern};
 use crate::swap::EngineSwap;
 use crate::track::Track;
 use crate::transport::Transport;
@@ -123,6 +123,12 @@ impl Engine {
                 // (mirror seeded to 0), preserving prior behaviour.
                 let mut track = Track::new(sample_rate, max_block, io.swaps[t].clone());
                 track.engine = crate::engines::make(io.kinds.get(t), sample_rate);
+                // Seed the lane from the main-thread model (0366). Construction is
+                // the one moment the engine's copy can be brought into step without
+                // a channel at all — `activate` runs on the main thread, before any
+                // block — so a plugin reactivated over a live model starts in
+                // agreement rather than flushing its way there.
+                track.pattern = io.patterns.get(t);
                 track
             })
             .collect();
@@ -372,108 +378,32 @@ impl Engine {
             }
             _ => {}
         }
-        let t = match &cmd {
-            EngineCommand::ToggleHit { track, .. }
-            | EngineCommand::SetHit { track, .. }
-            | EngineCommand::SetProbability { track, .. }
-            | EngineCommand::SetRetrig { track, .. }
-            | EngineCommand::AddHit { track, .. }
-            | EngineCommand::RemoveHit { track, .. }
-            | EngineCommand::SetHitPosition { track, .. }
-            | EngineCommand::SetHitY { track, .. }
-            | EngineCommand::SetHitNote { track, .. }
-            | EngineCommand::SetHitProbability { track, .. }
-            | EngineCommand::SetHitRetrig { track, .. }
-            | EngineCommand::QuantiseHitX { track, .. }
-            | EngineCommand::QuantiseHitY { track, .. }
-            | EngineCommand::SetGridBeats { track, .. }
-            | EngineCommand::SetGridSubs { track, .. }
-            | EngineCommand::SetGain { track, .. }
-            | EngineCommand::SetPan { track, .. }
-            | EngineCommand::SetMacro { track, .. }
-            | EngineCommand::SetLock { track, .. }
-            | EngineCommand::ClearLock { track, .. }
-            | EngineCommand::SetSend { track, .. }
-            | EngineCommand::SetMute { track, .. }
-            | EngineCommand::SetChokeGroup { track, .. } => *track as usize,
-            // Master commands handled above.
-            EngineCommand::SetDelayFeedback { .. }
-            | EngineCommand::SetDelaySyncBeats { .. }
-            | EngineCommand::SetDelayReturn { .. }
-            | EngineCommand::SetMasterVolume { .. } => return,
+        let Some(t) = cmd.track().map(|t| t as usize) else {
+            return; // master commands were dispatched above
         };
         let Some(track) = self.tracks.get_mut(t) else {
             return;
         };
+        // Lane edits go through the same function the main-thread model does
+        // (0366) — one implementation, so "the engine's copy tracks the model"
+        // rests on feeding it the same commands in the same order, not on two
+        // bodies of code agreeing.
+        if crate::io::apply_pattern_command(&mut track.pattern, cmd) {
+            return;
+        }
         match cmd {
-            EngineCommand::ToggleHit { slot, .. } => track.pattern.toggle(slot as usize),
-            EngineCommand::SetHit {
-                slot, note, velocity, ..
-            } => track.pattern.set(slot as usize, note, velocity),
-            EngineCommand::SetProbability { slot, probability, .. } => {
-                track.pattern.set_probability(slot as usize, probability)
+            // The full flush (0366): the marker's payload is waiting in the ring.
+            // Handled here rather than at the top of the block so a replacement
+            // lands at its own place among the deltas around it. A marker without a
+            // payload cannot happen — `flush_lane` commits both or neither — and if
+            // one somehow did, keeping the lane is the safe reading of "no new
+            // pattern" rather than clearing it.
+            EngineCommand::LoadPattern { .. } => {
+                if let Some(p) = self.io.patterns.pop_flush() {
+                    track.pattern = p;
+                }
             }
-            EngineCommand::SetRetrig { slot, retrig, .. } => {
-                track.pattern.set_retrig(slot as usize, retrig)
-            }
-            // The freely-positioned hit verbs (0353). `insert`'s over-capacity
-            // `None` is dropped here on purpose: the ceiling is the editor's to
-            // show, and the audio thread has nowhere to report it to.
-            EngineCommand::AddHit {
-                beat,
-                sub,
-                f,
-                nudge,
-                y,
-                note,
-                velocity,
-                ..
-            } => {
-                track.pattern.insert(Hit {
-                    f,
-                    nudge,
-                    y,
-                    note,
-                    velocity,
-                    ..Hit::at(beat, sub)
-                });
-            }
-            EngineCommand::RemoveHit { hit, .. } => track.pattern.remove(hit as usize),
-            EngineCommand::SetHitPosition {
-                hit,
-                beat,
-                sub,
-                f,
-                nudge,
-                ..
-            } => {
-                track.pattern.set_position(hit as usize, beat, sub, f, nudge);
-            }
-            EngineCommand::SetHitY { hit, y, .. } => track.pattern.set_hit_y(hit as usize, y),
-            EngineCommand::SetHitNote {
-                hit, note, velocity, ..
-            } => track.pattern.set_hit_note(hit as usize, note, velocity),
-            EngineCommand::SetHitProbability { hit, probability, .. } => {
-                track.pattern.set_hit_probability(hit as usize, probability)
-            }
-            EngineCommand::SetHitRetrig { hit, retrig, .. } => {
-                track.pattern.set_hit_retrig(hit as usize, retrig)
-            }
-            EngineCommand::QuantiseHitX { hit, amount, .. } => {
-                track.pattern.quantise_x(hit as usize, amount);
-            }
-            EngineCommand::QuantiseHitY { hit, amount, .. } => {
-                track.pattern.quantise_y(hit as usize, amount)
-            }
-            EngineCommand::SetGridBeats { beats, .. } => {
-                track.pattern.set_grid_beats(beats as usize)
-            }
-            EngineCommand::SetGridSubs { subs, .. } => {
-                track.pattern.set_grid_subs(subs as u32)
-            }
-            EngineCommand::SetGain { gain, .. } => {
-                track.set_base(LockParam::Gain, gain.max(0.0))
-            }
+            EngineCommand::SetGain { gain, .. } => track.set_base(LockParam::Gain, gain.max(0.0)),
             EngineCommand::SetPan { pan, .. } => {
                 track.set_base(LockParam::Pan, pan.clamp(-1.0, 1.0))
             }
@@ -482,22 +412,13 @@ impl Engine {
                     track.set_base(p, value)
                 }
             }
-            EngineCommand::SetLock {
-                hit, param, lock, ..
-            } => track.pattern.set_lock(hit as usize, param, lock),
-            EngineCommand::ClearLock { hit, param, .. } => {
-                track.pattern.clear_lock(hit as usize, param)
-            }
             EngineCommand::SetSend { amount, .. } => {
                 track.set_base(LockParam::Send, amount.clamp(0.0, 1.0))
             }
             EngineCommand::SetMute { muted, .. } => track.set_muted(muted),
             EngineCommand::SetChokeGroup { group, .. } => track.set_choke_group(group),
-            // Master commands were dispatched above.
-            EngineCommand::SetDelayFeedback { .. }
-            | EngineCommand::SetDelaySyncBeats { .. }
-            | EngineCommand::SetDelayReturn { .. }
-            | EngineCommand::SetMasterVolume { .. } => {}
+            // Lane edits returned above; master commands never reach here.
+            _ => {}
         }
     }
 

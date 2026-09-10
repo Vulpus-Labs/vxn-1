@@ -227,15 +227,15 @@
   // on the same key, computed by the same arithmetic, with the same insertion
   // rule — see the note on the geometry port above.
   //
-  // KNOWN GAP, and it is the mirror's one weak point: the page is seeded empty
-  // and from `build_html`'s default geometry, so it mirrors an engine that starts
-  // empty. Reopening the editor over a lane that already holds hits — a GUI
-  // close/reopen, or a `clap.state` restore — rebuilds this list from nothing
-  // while the engine keeps its own, and every index sent afterwards then names
-  // the wrong hit. The fix is a hit-list readback in `serialise_custom_view`,
-  // which needs its own ticket: the view channel carries only the playhead today,
-  // and the alternative (clearing the engine's lanes on load) would throw away a
-  // restored pattern to buy agreement.
+  // The mirror only works if it *starts* in agreement, and a page built from
+  // scratch does not: reopening the editor over a lane that already holds hits
+  // would rebuild this list from nothing while the model kept its own, and every
+  // index sent afterwards would name the wrong hit. So the page is not built from
+  // scratch — `CFG.lanes[t].hits` is the model's own list (0366), shipped in the
+  // config the page is constructed from, and this list starts as a copy of it.
+  // There is no request and no round trip, so there is no window in which the two
+  // disagree; `applyLaneReadback` handles the one case that is left, the model
+  // being replaced under a page already open.
 
   function canonicalHit(g, h) {
     var b = clamp(h.beat | 0, 0, g.n_beats - 1);
@@ -357,8 +357,9 @@
     n_beats: 4, len_beats: 4, markers: [0, 1, 2, 3, 4], subs: [4, 4, 4, 4],
     sub_override: [0, 0, 0, 0], default_subs: 4, swing: { shape: 0, amount: 0, period: 2 },
   };
-  function laneGeometry(t) {
-    var src = (CFG.lanes && CFG.lanes[t]) || FALLBACK_GRID;
+  // One reader for the `grid_json` shape, which arrives twice: in the config the
+  // page is built from, and in a lane the model replaced under it.
+  function gridFrom(src) {
     return {
       n_beats: src.n_beats,
       len_beats: src.len_beats,
@@ -369,13 +370,51 @@
       swing: { shape: src.swing.shape, amount: src.swing.amount, period: src.swing.period },
     };
   }
+  // …and one reader for a hit, for the same reason. `hit_json`'s field names are
+  // the opcode field names, but the page's own model is older and differs in two
+  // places: `probability` is `prob`, and retrig is a toggle (0353) with the engine's
+  // actual macro parked beside it so switching it back on restores what the hit had
+  // rather than the page's stock 4-over-2.
+  //
+  // `rgb` is `null` for an uncoloured hit and a triple otherwise — the engine's
+  // NO_COLOUR sentinel, which is not a renderable colour. Carried verbatim, because
+  // black is a real macro vector that sends zero to all three slots and the two must
+  // not be conflated. 0355 draws it; until then the page holds it without rendering.
+  function hitFrom(s) {
+    var r = s.retrig || { n: 1, m: 1, curve: "even", vel_end: 1.0 };
+    // `Retrig::is_retrig`, not `n > 1`: `m = 0` has no window to spread across.
+    var on = r.n >= 2 && r.m >= 1;
+    return {
+      beat: s.beat, sub: s.sub, f: f32(s.f), nudge: s.nudge | 0, y: f32(s.y),
+      note: s.note, velocity: s.velocity, prob: s.probability,
+      retrig: on,
+      retrigSpec: on ? { n: r.n, m: r.m, curve: r.curve, vel_end: r.vel_end } : null,
+      rgb: s.rgb == null ? null : s.rgb.slice(),
+    };
+  }
+  // A lane as the model states it. Adopted **in the order it arrives** and
+  // deliberately not re-sorted: the list is already in fire order, every hit-keyed
+  // opcode names a hit by its position in it, and re-deriving that order here would
+  // hide a page/model arithmetic disagreement instead of inheriting the answer.
+  function laneFrom(src) {
+    var s = src || {};
+    var g = s.grid;
+    return {
+      g: gridFrom(g && g.markers && g.subs && g.swing ? g : FALLBACK_GRID),
+      hits: (s.hits || []).map(hitFrom),
+    };
+  }
   var lanes = [];
   for (var t = 0; t < NT; t++) {
     var v0 = voiceByName(DEFAULT_LANE[t]) || voices[t % voices.length] || voices[0];
+    // Built from the model, not from defaults (0366): a reopened editor draws what
+    // the instrument holds, and its hit indices name the model's hits from the
+    // first gesture.
+    var seed = laneFrom(CFG.lanes && CFG.lanes[t]);
     lanes.push({
       voiceId: v0 ? v0.id : 0,
-      g: laneGeometry(t),
-      hits: [],
+      g: seed.g,
+      hits: seed.hits,
       choke: DEFAULT_CHOKE[t] || 0,
     });
   }
@@ -426,6 +465,8 @@
   var voiceBoxEls = [];   // voiceBoxEls[t]
   var macroLabelEls = []; // macroLabelEls[t][slot]
   var macroKnobEls = [];  // macroKnobEls[t][slot] — the 3 performance-macro knob handles
+  var beatsInputEls = []; // beatsInputEls[t] — the Bts box, refreshed by a lane readback
+  var subsInputEls = [];  // subsInputEls[t] — the Sub box, likewise
 
   // Selection holds hit **objects**, not indices: every position edit re-sorts the
   // lane, so an index is only valid until the next drag.
@@ -518,6 +559,9 @@
     // snap its performance macros to the shipped defaults).
     return { wrap: wrap, label: lab, input: inp, set: function (x) { inp.value = x; oninput(parseFloat(inp.value)); } };
   }
+  // Returns the input alongside its wrapper: a lane readback carries the engine's
+  // geometry, and a Bts/Sub box still showing the page's guess would be a lie the
+  // user's next click would act on.
   function makeNumber(label, title, min, max, value, onchange) {
     var wrap = el("div", "len");
     wrap.appendChild(el("label", null, label));
@@ -529,7 +573,7 @@
       onchange(n);
     });
     wrap.appendChild(inp);
-    return wrap;
+    return { wrap: wrap, input: inp };
   }
 
   // ── strip interaction: place, drag, delete ──────────────────────────────────
@@ -562,12 +606,12 @@
   var drag = null; // { track, hit, moved }
 
   function onStripDown(t, ev) {
+    ev.preventDefault();
     var lane = lanes[t];
     var idx = -1;
     if (ev.target && ev.target.classList.contains("hit")) {
       idx = Array.prototype.indexOf.call(hitLayerEls[t].children, ev.target);
     }
-    ev.preventDefault();
     if (idx < 0) {
       // Empty strip: place a hit where the pointer is.
       var p = pointerAt(t, ev);
@@ -576,6 +620,11 @@
       var h = {
         beat: pos.beat, sub: pos.sub, f: pos.f, nudge: pos.nudge, y: p.y,
         note: v.note, velocity: 1.0, prob: 1.0, retrig: false,
+        // Explicitly uncoloured, not merely absent: `null` is the shape a readback
+        // hit carries (the engine's NO_COLOUR), and a fresh hit is the same thing.
+        rgb: null,
+        // No engine-side retrig macro behind it yet — see the dblclick toggle.
+        retrigSpec: null,
       };
       var at = insertHit(lane, h);
       if (at < 0) { laneFull(t); return; }
@@ -759,9 +808,16 @@
         var h = lanes[t].hits[idx];
         if (!h) return;
         h.retrig = !h.retrig;
+        // Toggling back on restores the macro the hit actually had, where the lane
+        // was read back from an engine holding one. The strip's retrig is a single
+        // toggle (0353), so without this a hit authored as 3-over-1 accelerating
+        // would come back as the page's stock 4-over-2 even the first time it was
+        // switched off and on — an edit the user never made.
+        var spec = h.retrigSpec || { n: 4, m: 2, curve: "even", vel_end: 0.4 };
         send("set_hit_retrig", h.retrig
-          ? { track: t, hit: idx, n: 4, m: 2, curve: "even", vel_end: 0.4 }
+          ? { track: t, hit: idx, n: spec.n, m: spec.m, curve: spec.curve, vel_end: spec.vel_end }
           : { track: t, hit: idx, n: 1, m: 1, curve: "even", vel_end: 1.0 });
+        if (h.retrig) h.retrigSpec = spec;
         renderHits(t);
       });
     })(t);
@@ -789,25 +845,31 @@
     // Lane length is a beat count (0348): a lane of fewer beats loops sooner and
     // phases against its neighbours — polymeter as geometry. Changing it re-lays
     // the markers, which re-times every hit hanging off them.
-    knobs.appendChild(makeNumber("Bts", "beats in this lane (its loop length)", 1, MAX_BEATS, lanes[t].g.n_beats, function (n) {
+    var beatsNum = makeNumber("Bts", "beats in this lane (its loop length)", 1, MAX_BEATS, lanes[t].g.n_beats, function (n) {
+      // Geometry re-times every hit hanging off it, so it is a lane edit like any
+      // other and waits for the readback for the same reason.
       send("set_grid_beats", { track: t, beats: n });
       relayoutBeats(lanes[t].g, n);
       canonicaliseLane(lanes[t]);
       renderLaneStrip(t);
-    }));
+    });
+    beatsInputEls[t] = beatsNum.input;
+    knobs.appendChild(beatsNum.wrap);
     // Subdivisions per beat — the snap-target density, and what the sub markers
     // draw. Three inside an otherwise-16ths lane is where a tuplet lives.
-    knobs.appendChild(makeNumber("Sub", "subdivisions per beat (the snap targets)", 1, MAX_SUBS, lanes[t].g.default_subs, function (n) {
+    var subsNum = makeNumber("Sub", "subdivisions per beat (the snap targets)", 1, MAX_SUBS, lanes[t].g.default_subs, function (n) {
       send("set_grid_subs", { track: t, subs: n });
       setDefaultSubs(lanes[t].g, n);
       canonicaliseLane(lanes[t]);
       renderLaneStrip(t);
-    }));
+    });
+    subsInputEls[t] = subsNum.input;
+    knobs.appendChild(subsNum.wrap);
     // Choke group (0 = none). Tracks sharing a non-zero group cut each other.
     knobs.appendChild(makeNumber("Chk", "choke group (0 = none; shared group = mutual cut)", 0, 7, lanes[t].choke, function (g) {
       lanes[t].choke = g;
       send("set_choke_group", { track: t, group: g });
-    }));
+    }).wrap);
     row.appendChild(knobs);
 
     rack.appendChild(row);
@@ -1071,11 +1133,43 @@
     line.style.left = pct(subPos(g, at.beat, at.sub) / g.len_beats);
     line.classList.remove("hidden");
   }
+  // ── the model replaced a lane under us ──────────────────────────────────────
+  // The page is built from the model (0366), so this is *not* the ordinary path —
+  // it fires only when the model was replaced rather than edited, which is what a
+  // state restore does. An edit the user made came from here in the first place and
+  // is never echoed back.
+  //
+  // A hard resync, not a merge: the model is the authority and this lane's local
+  // copy is replaced whole, through the same `laneFrom` the page was built with.
+  function applyLaneReadback(t, ev) {
+    var lane = lanes[t];
+    if (!lane) return;
+    var next = laneFrom(ev);
+    lane.g = next.g;
+    lane.hits = next.hits;
+    // Any index a gesture is holding named the *old* list, so no gesture survives.
+    if (drag && drag.track === t) drag = null;
+    // The selection holds hit *objects*; the ones this replaced are now in no lane
+    // at all, so drop exactly those and leave other lanes' alone.
+    selection = selection.filter(stillPlaced);
+    if (beatsInputEls[t]) beatsInputEls[t].value = lane.g.n_beats;
+    if (subsInputEls[t]) subsInputEls[t].value = lane.g.default_subs;
+    renderLaneStrip(t);
+  }
+  function stillPlaced(h) {
+    for (var k = 0; k < NT; k++) if (lanes[k].hits.indexOf(h) >= 0) return true;
+    return false;
+  }
+
   var transport = document.getElementById("transport");
   window.__vxn = window.__vxn || {};
   window.__vxn.applyViewEvents = function (events) {
     for (var i = 0; i < events.length; i++) {
       var ev = events[i];
+      if (ev.kind === "lane") {
+        applyLaneReadback(ev.track, ev);
+        continue;
+      }
       if (ev.kind === "playhead") {
         transport.textContent = ev.playing ? "▶ playing" : "■ stopped";
         transport.classList.toggle("playing", !!ev.playing);

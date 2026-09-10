@@ -283,3 +283,170 @@ fn command_drain_is_allocation_free() {
     });
     assert_eq!(allocs, 0, "command drain / playhead publish allocated");
 }
+
+/// AC (0366): a lane edit reaches the model and the engine's copy, and the two
+/// hold the same list — asserted over a lane whose hits are **not** in insertion
+/// order, since the index every later edit uses is a fire-order position.
+///
+/// This is the defect in miniature. The editor is a view over the model; before
+/// 0366 the model did not exist, the engine's copy was the only one, and a page
+/// rebuilt over it started from an empty list — so its "hit 1" named nothing and
+/// the first drag moved someone else's diamond.
+#[test]
+fn the_model_and_the_engines_copy_hold_the_same_lane() {
+    let mut engine = Engine::new(SR, 512);
+    let io = engine.io();
+
+    // Placed back to front, so insertion order and fire order disagree.
+    for beat in [3_u16, 0, 2, 1] {
+        let cmd = EngineCommand::AddHit {
+            track: 0,
+            beat,
+            sub: 0,
+            f: 0.0,
+            nudge: 0,
+            y: 0.5,
+            note: 36.0 + beat as f32,
+            velocity: 1.0,
+        };
+        // What the controller does: queue it, then advance the model.
+        assert!(io.edits.push(cmd));
+        assert!(io.patterns.apply(cmd));
+    }
+    let _ = play_block(&mut engine, 0.0, 64);
+
+    let model = io.patterns.get(0);
+    assert_eq!(model.hits(), engine.track_mut(0).pattern.hits(), "one lane, two copies");
+    let beats: Vec<u16> = model.hits().iter().map(|h| h.beat).collect();
+    assert_eq!(beats, vec![0, 1, 2, 3], "fire order, not insertion order");
+
+    // The editor is built from the model, so it points at index 1 for the hit at
+    // beat 1 — and the engine moves that hit and no other.
+    let drag = EngineCommand::SetHitY { track: 0, hit: 1, y: 0.9 };
+    assert!(io.edits.push(drag));
+    assert!(io.patterns.apply(drag));
+    let _ = play_block(&mut engine, 0.0, 64);
+
+    let p = &engine.track_mut(0).pattern;
+    assert_eq!(p.hits()[1].beat, 1);
+    assert_eq!(p.hits()[1].y, 0.9);
+    for i in [0_usize, 2, 3] {
+        assert_eq!(p.hits()[i].y, 0.5, "hit {i} must not have moved");
+    }
+    assert_eq!(io.patterns.get(0).hits(), p.hits(), "still in step after the drag");
+}
+
+/// AC (0366): nothing clears a lane to reach agreement. A freshly built engine
+/// **seeds** its copy from the model, so a plugin reactivated over a live model
+/// starts holding it rather than starting empty and discarding it.
+#[test]
+fn a_new_engine_seeds_its_lanes_from_the_model() {
+    let io = vxn3_engine::io::EngineIo::new();
+    let mut p = vxn3_engine::Pattern::default();
+    p.insert(vxn3_engine::Hit::at(2, 1));
+    p.insert(vxn3_engine::Hit::at(0, 0));
+    p.set_grid_beats(3);
+    io.patterns.set(4, p);
+
+    let mut engine = Engine::with_io(SR, 512, io.clone());
+    assert_eq!(engine.track_mut(4).pattern.hits(), io.patterns.get(4).hits());
+    assert_eq!(engine.track_mut(4).pattern.grid(), io.patterns.get(4).grid());
+    assert_eq!(engine.track_mut(4).pattern.len(), 2);
+    // …and the model is untouched by having been read.
+    assert_eq!(io.patterns.get(4).len(), 2);
+}
+
+/// AC (0366): the **full flush** — the whole model down to a *running* engine, for
+/// when the model was replaced rather than edited. The marker rides the edit queue
+/// so the replacement lands at its own place among the deltas around it.
+#[test]
+fn a_full_flush_replaces_a_running_engines_lane() {
+    let mut engine = Engine::new(SR, 512);
+    let io = engine.io();
+
+    // The engine is running with a lane the user built.
+    let add = EngineCommand::AddHit {
+        track: 1, beat: 0, sub: 0, f: 0.0, nudge: 0, y: 0.5, note: 36.0, velocity: 1.0,
+    };
+    assert!(io.edits.push(add));
+    assert!(io.patterns.apply(add));
+    let _ = play_block(&mut engine, 0.0, 64);
+    assert_eq!(engine.track_mut(1).pattern.len(), 1);
+
+    // A restore replaces the model wholesale and flushes it down.
+    let mut restored = vxn3_engine::Pattern::default();
+    restored.set_grid_beats(2);
+    for (b, s) in [(1_u16, 2_u8), (0, 1), (1, 0)] {
+        restored.insert(vxn3_engine::Hit::at(b, s));
+    }
+    io.patterns.set(1, restored);
+    assert!(io.flush_lane(1));
+
+    let _ = play_block(&mut engine, 0.0, 64);
+    let live = &engine.track_mut(1).pattern;
+    assert_eq!(live.len(), 3, "the replacement landed whole");
+    assert_eq!(live.grid().n_beats(), 2, "geometry travels with it");
+    assert_eq!(live.hits(), io.patterns.get(1).hits(), "and matches the model");
+}
+
+/// A flush and the deltas around it have **one** order. The marker travels in the
+/// queue precisely so an edit sent after a flush is applied after it, rather than
+/// the two racing on separate channels.
+#[test]
+fn a_flush_orders_against_the_edits_around_it() {
+    let mut engine = Engine::new(SR, 512);
+    let io = engine.io();
+
+    let mut restored = vxn3_engine::Pattern::default();
+    restored.insert(vxn3_engine::Hit::at(0, 0));
+    io.patterns.set(2, restored);
+    assert!(io.flush_lane(2));
+
+    // …then an edit, which must land on top of the flushed lane, not under it.
+    let after = EngineCommand::AddHit {
+        track: 2, beat: 2, sub: 0, f: 0.0, nudge: 0, y: 0.5, note: 36.0, velocity: 1.0,
+    };
+    assert!(io.edits.push(after));
+    assert!(io.patterns.apply(after));
+
+    let _ = play_block(&mut engine, 0.0, 64);
+    let live = &engine.track_mut(2).pattern;
+    assert_eq!(live.len(), 2, "flush then edit, in that order");
+    assert_eq!(live.hits(), io.patterns.get(2).hits());
+}
+
+/// AC (0366): the readback costs the audio thread nothing, because there is no
+/// readback on the audio thread — the model is main-side. What the audio thread
+/// does carry is the flush, and applying one must not allocate either.
+#[test]
+fn flushing_every_lane_is_allocation_free() {
+    let mut engine = Engine::new(SR, 512);
+    let io = engine.io();
+    for t in 0..vxn3_engine::N_TRACKS {
+        let mut p = vxn3_engine::Pattern::default();
+        p.insert(vxn3_engine::Hit::at(0, 1));
+        io.patterns.set(t, p);
+    }
+    let bps = BPM / 60.0 / SR as f64;
+    let mut l = vec![0.0_f32; 512];
+    let mut r = vec![0.0_f32; 512];
+    engine.set_transport(Transport { playing: true, tempo_bpm: BPM, song_pos_beats: Some(0.0) });
+    engine.process_block(&mut l, &mut r); // prime
+
+    let allocs = alloc_trap::count_allocs(|| {
+        for b in 1..200 {
+            // The ring holds FLUSH_CAP - 1 in flight; whatever gets through is
+            // drained by the block below, so the next iteration has room again.
+            io.flush_all();
+            engine.set_transport(Transport {
+                playing: true,
+                tempo_bpm: BPM,
+                song_pos_beats: Some((b * 512) as f64 * bps),
+            });
+            engine.process_block(&mut l, &mut r);
+        }
+    });
+    assert_eq!(allocs, 0, "flush install allocated on the audio thread");
+    // Every lane the flush reached holds the model's pattern.
+    assert_eq!(engine.track_mut(0).pattern.hits(), io.patterns.get(0).hits());
+}

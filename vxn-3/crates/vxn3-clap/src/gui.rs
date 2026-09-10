@@ -37,9 +37,14 @@ impl PluginGuiImpl for VxnMainThread<'_> {
 
         let ctrl_handle = lock_mut(&self.controller).handle();
         let corpus = Arc::clone(&self.corpus);
+        // The page is built from the main-thread model (0366), so a reopened editor
+        // opens showing the lanes the instrument actually holds — and its hit-keyed
+        // edits name the model's hits from the first gesture rather than an empty
+        // list's.
+        let lanes = self.io.patterns.snapshot();
         // Construction failure surfaces as PluginError (never a panic across the
         // host C ABI — vxn-1 ticket 0115); the host may retry set_parent.
-        self.gui = Some(vxn3_ui_web::open_editor(parent, ctrl_handle, corpus)?);
+        self.gui = Some(vxn3_ui_web::open_editor(parent, ctrl_handle, corpus, &lanes)?);
 
         if let Some(host) = self.host.as_mut() {
             if let Some(host_timer) = host.shared().info().get_extension::<HostTimer>() {

@@ -107,9 +107,13 @@ Nothing in this epic touches the engines or the SoA kernels.
 - [ ] 0356 — Faceplate: Y-centre curve editing + groove pool UI.
 - [ ] 0365 — Swing warp applies per pair, not per beat (corrective; amends ADR
       0007 §3).
+- [ ] 0366 — Faceplate hit-list readback (corrective; the editor must see the
+      pattern it is editing).
 
 0346 and 0347 are independent and can run in parallel; 0348 gates everything
-else. 0365 is corrective, opened after 0347 landed, and must precede 0354.
+else. 0365 is corrective, opened after 0347 landed, and must precede 0354. 0366
+is corrective, opened after 0353 landed; it blocks nothing, but every remaining
+faceplate ticket adds editor state with the same problem.
 
 ## Risks
 

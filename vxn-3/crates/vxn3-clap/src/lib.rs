@@ -830,6 +830,52 @@ mod tests {
         assert_eq!(blob, state::save(&cache2, &kinds2, &flavours2), "resave identical");
     }
 
+    /// AC (0366): after a `clap.state` restore the faceplate's hit list agrees with
+    /// the engine's, because both come from the same main-thread model — the page is
+    /// built from it and the engine is flushed from it.
+    ///
+    /// The blob does **not** carry hits yet: 0348 redefined it as params, kinds and
+    /// per-track flavours. What 0366 adds is the *mechanism* a restore will use when
+    /// it does — `PatternStore::set` then `EngineIo::flush_all`, exercised here — so
+    /// what remains is the serialisation, not the plumbing. Today the property holds
+    /// over lanes the restore leaves alone, which is every lane; this test is what
+    /// will catch it if hits are serialised without being wired through the model.
+    #[test]
+    fn state_restore_leaves_model_and_engine_in_agreement() {
+        let mut engine = Engine::new(48_000.0, 512);
+        let io = engine.io();
+        let add = EngineCommand::AddHit {
+            track: 0,
+            beat: 2,
+            sub: 1,
+            f: 0.5,
+            nudge: -3,
+            y: 0.8,
+            note: 41.0,
+            velocity: 0.7,
+        };
+        assert!(io.edits.push(add));
+        assert!(io.patterns.apply(add));
+
+        let cache = ParamCache::new();
+        let kinds = vxn3_engine::TrackKinds::new();
+        let flavours = vxn3_engine::io::FlavourStore::new();
+        kinds.set(0, EngineKind::Noise);
+        let blob = state::save(&cache, &kinds, &flavours);
+        state::load(&blob, &ParamCache::new(), &kinds, &flavours).expect("state loads");
+        // What a restore does with the lanes it owns, once it owns any: write the
+        // model, then flush it down to the running engine's copy.
+        io.flush_all();
+
+        let (mut l, mut r) = (vec![0.0_f32; 512], vec![0.0_f32; 512]);
+        engine.process_block(&mut l, &mut r);
+        assert_eq!(io.patterns.get(0).hits(), engine.track_mut(0).pattern.hits());
+        assert_eq!(io.patterns.get(0).len(), 1, "restore neither added nor discarded a hit");
+
+        // And the page a reopened editor would be built from is that same model.
+        assert_eq!(io.patterns.snapshot()[0].hits(), engine.track_mut(0).pattern.hits());
+    }
+
     #[test]
     fn echo_skips_host_write_that_preset_cache() {
         // The host-write path (0171) sets the cache before the engine renders, so

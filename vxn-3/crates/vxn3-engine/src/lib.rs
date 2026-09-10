@@ -30,7 +30,10 @@ pub use grid::{
     Grid, GridPos, MAX_BEATS, MAX_MARKERS, MAX_SUBS, MIN_SLOT, Swing, SwingPeriod, SwingShape,
     Y_CENTRE,
 };
-pub use io::{EditQueue, EngineCommand, EngineIo, PlayheadState, TrackKinds};
+pub use io::{
+    EditQueue, EngineCommand, EngineIo, PatternStore, PlayheadState, TrackKinds,
+    apply_pattern_command,
+};
 pub use lane::{LaneState, TrigEvent};
 pub use sequencer::{
     EIGHTH, EIGHTH_TRIPLET, Hit, Lock, LockParam, MAX_HITS, MAX_NUDGE_TICKS, N_LOCK_PARAMS,

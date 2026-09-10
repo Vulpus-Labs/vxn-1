@@ -8,5 +8,7 @@
 //! editor, grid, and knobs are fully clickable for visual review.
 
 fn main() {
-    print!("{}", vxn3_ui_web::build_html());
+    // No model to build from outside a plugin instance; an empty slice falls back
+    // to a default lane per track, which is what a fresh instrument looks like.
+    print!("{}", vxn3_ui_web::build_html(&[]));
 }

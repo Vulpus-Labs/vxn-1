@@ -16,12 +16,17 @@
 //! a slot index. The strip does not use them — it is hit-keyed throughout, `hit`
 //! being a fire-order index into the lane.
 //!
-//! Which leaves one gap worth naming here rather than only in the page: the hit
-//! index is only meaningful while the page's list matches the engine's, and
-//! [`serialise_custom_view`] carries the playhead and nothing else. The page is
-//! therefore seeded empty, which is right for a fresh instance and wrong for an
-//! editor reopened over a lane that already holds hits. A hit-list readback is
-//! the fix and is its own ticket; see the matching note in `app.js`.
+//! The hit index is only meaningful while the page's list matches the model's, and
+//! the page used to be built **empty** — right for a fresh instance, wrong for an
+//! editor reopened over a lane that already holds hits. So [`build_html`] now ships
+//! each lane's real contents (0366): the page is constructed *from* the
+//! [`vxn3_engine::PatternStore`], the main-thread model, and opens in agreement
+//! rather than catching up. There is no request, no round trip and no window in
+//! which the two disagree.
+//!
+//! [`serialise_custom_view`]'s `lane` event covers the other direction of the same
+//! problem — the model being *replaced* under a page that is already open, which is
+//! what a state restore does.
 
 use std::any::Any;
 use std::ffi::c_void;
@@ -33,12 +38,12 @@ use vxn_core_ui_web::{DEFAULT_MAX_BATCH_BYTES, WebEditorConfig, open_editor as c
 // Re-exported so the clack shell can name the editor handle / error.
 pub use vxn_core_ui_web::{EditorHandle, OpenEditorError};
 use vxn3_app::{Vxn3UiCustom, Vxn3ViewCustom};
-use vxn3_engine::flavour::{Binding, Curve, Flavour};
+use vxn3_engine::flavour::{Binding, Curve, Flavour, colour_override};
 use vxn3_engine::sequencer::{Retrig, RetrigCurve, Y_CENTRE};
 use vxn3_engine::track_engine::{EngineKind, MACRO_SLOTS};
 use vxn3_engine::{
-    EngineCommand, Grid, MAX_BEATS, MAX_HITS, MAX_NUDGE_TICKS, MAX_SUBS, N_TRACKS, TICKS_PER_BEAT,
-    flavours_for, params_for,
+    EngineCommand, Grid, Hit, MAX_BEATS, MAX_HITS, MAX_NUDGE_TICKS, MAX_SUBS, N_TRACKS, Pattern,
+    TICKS_PER_BEAT, flavours_for, params_for,
 };
 
 pub const EDITOR_WIDTH: u32 = 900;
@@ -57,12 +62,16 @@ const STYLE_CSS: &str = include_str!("../assets/style.css");
 /// clack shell extracts in `gui::set_parent`). Never panics — a bad parent or
 /// wry build failure returns `OpenEditorError`, which the shell maps to
 /// `PluginError`.
+///
+/// `lanes` is the main-thread model, in track order — the page is built from it
+/// (0366), so a reopened editor draws what the instrument actually holds.
 pub fn open_editor(
     parent: *mut c_void,
     ctrl: ControllerHandle,
     corpus: CorpusHandle,
+    lanes: &[Pattern],
 ) -> Result<EditorHandle, OpenEditorError> {
-    let mut config = WebEditorConfig::new(build_html(), EDITOR_WIDTH, EDITOR_HEIGHT);
+    let mut config = WebEditorConfig::new(build_html(lanes), EDITOR_WIDTH, EDITOR_HEIGHT);
     config.max_batch_bytes = DEFAULT_MAX_BATCH_BYTES;
     config.webview2_vendor = Some("Vulpus");
     config.webview2_product = Some("VXN3");
@@ -133,14 +142,34 @@ fn grid_json(g: &Grid) -> Json {
     })
 }
 
+/// One lane of the model as faceplate JSON: its geometry and its hits, in fire
+/// order (0366).
+///
+/// **One shape, two doors.** The page is built from this, and a lane replaced under
+/// an open page is re-announced as this, so `app.js` has one reader for both and a
+/// lane cannot mean two different things depending on how it arrived.
+fn lane_json(p: &Pattern) -> Json {
+    serde_json::json!({
+        "grid": grid_json(p.grid()),
+        "hits": p.hits().iter().map(hit_json).collect::<Vec<_>>(),
+    })
+}
+
 /// Splice CSS, the config JSON, and the app JS into the HTML template.
-pub fn build_html() -> String {
+///
+/// `model` is the main-thread [`Pattern`] per track. The page is **built from the
+/// model** (0366) rather than from defaults: geometry *and* hits, so an editor
+/// reopened over a populated instrument opens showing it. A short `model` (or an
+/// empty one, as the preview example passes) falls back to a default lane, which is
+/// the honest picture of a fresh instance.
+pub fn build_html(model: &[Pattern]) -> String {
     // Per-lane geometry, not one global grid: lanes are independently subdivided
     // and independently long (polymeter, ADR 0001 §2), and the strip draws each
-    // one's own markers. They start identical; the page diverges them as the user
-    // edits, and the shape is per-lane from the first frame so nothing has to be
-    // rebuilt when they do.
-    let lanes: Vec<Json> = (0..N_TRACKS).map(|_| grid_json(&Grid::default())).collect();
+    // one's own markers. The shape is per-lane from the first frame, so nothing has
+    // to be rebuilt when the user diverges them.
+    let default = Pattern::default();
+    let lanes: Vec<Json> =
+        (0..N_TRACKS).map(|t| lane_json(model.get(t).unwrap_or(&default))).collect();
     let config = serde_json::json!({
         "tracks": N_TRACKS,
         "lanes": lanes,
@@ -428,6 +457,55 @@ fn parse_custom_ui(op: &str, v: &Json) -> Option<UiEvent> {
     }
 }
 
+/// The retrig curve's wire name — the inverse of [`curve_of`], so a hit's retrig
+/// survives the round trip out to the page and back in.
+fn retrig_curve_str(c: RetrigCurve) -> &'static str {
+    match c {
+        RetrigCurve::Even => "even",
+        RetrigCurve::Accel => "accel",
+        RetrigCurve::Decel => "decel",
+    }
+}
+
+/// One hit as faceplate JSON — the readback half of the lane-strip vocabulary
+/// (0366). Field names match the opcodes the page sends back, so a hit read out
+/// and re-sent keeps its position and every trig attribute.
+///
+/// Its **p-locks** are not here. They are hit-keyed like everything else and would
+/// belong, but the page has no p-lock surface to hold them in, and a field the
+/// editor cannot show is a field it would drop on the next edit. It joins when
+/// there is somewhere to put it.
+///
+/// `rgb` is `null` for an **uncoloured** hit and a triple otherwise, which is the
+/// distinction [`vxn3_engine::flavour::NO_COLOUR`] exists to draw: black is a real
+/// macro vector that sends zero to all three slots, and flattening "no colour" onto
+/// it would silently paint every fresh hit black. The triple is the *decoded*
+/// vector [`colour_override`] hands the slots rather than the raw channels — the
+/// page's job is to show what the hit will do.
+fn hit_json(h: &Hit) -> Json {
+    let rgb = match colour_override(h.rgb) {
+        Some(v) => Json::from(v.to_vec()),
+        None => Json::Null,
+    };
+    serde_json::json!({
+        "beat": h.beat,
+        "sub": h.sub,
+        "f": h.f,
+        "nudge": h.nudge,
+        "y": h.y,
+        "note": h.note,
+        "velocity": h.velocity,
+        "probability": h.probability,
+        "rgb": rgb,
+        "retrig": {
+            "n": h.retrig.n,
+            "m": h.retrig.m,
+            "curve": retrig_curve_str(h.retrig.curve),
+            "vel_end": h.retrig.vel_end,
+        },
+    })
+}
+
 /// Serialise a [`Vxn3ViewCustom`] for the page.
 fn serialise_custom_view(payload: &dyn Any) -> Option<Json> {
     let custom = payload.downcast_ref::<Vxn3ViewCustom>()?;
@@ -437,6 +515,15 @@ fn serialise_custom_view(payload: &dyn Any) -> Option<Json> {
             "steps": steps.to_vec(),
             "playing": playing,
         })),
+        // Geometry travels with the hits, and has to: a hit's position is a
+        // `(beat, sub)` *into* the lane's grid, so a list drawn against the page's
+        // stale markers would put every diamond in the wrong place.
+        Vxn3ViewCustom::Lane { track, pattern } => {
+            let mut j = lane_json(pattern);
+            j["kind"] = "lane".into();
+            j["track"] = (*track).into();
+            Some(j)
+        }
     }
 }
 
@@ -527,7 +614,7 @@ mod tests {
 
     #[test]
     fn html_has_assets_spliced() {
-        let html = build_html();
+        let html = build_html(&[]);
         assert!(html.contains("VXN3"));
         assert!(!html.contains("__CSS__"));
         assert!(!html.contains("__APP_JS__"));
@@ -541,19 +628,56 @@ mod tests {
         assert!(html.contains("\"swing\":{\"amount\":0.0,\"period\":2,\"shape\":0}"));
     }
 
+    /// AC (0366): the page is **built from the model**, hits and all. This is the
+    /// whole fix for the reopen case — no request, no round trip, no window in
+    /// which the page's list and the model's disagree.
+    #[test]
+    fn html_is_built_from_the_model() {
+        // Two lanes with contents, placed out of fire order, over edited geometry.
+        let mut model: Vec<Pattern> = (0..N_TRACKS).map(|_| Pattern::default()).collect();
+        model[0].insert(Hit { velocity: 0.5, ..Hit::at(3, 0) });
+        model[0].insert(Hit::at(0, 2));
+        model[2].set_grid_beats(3);
+        model[2].insert(Hit::at(1, 1));
+
+        let html = build_html(&model);
+        let config: Json = serde_json::from_str(
+            html.split("window.__VXN3_CONFIG__ = ")
+                .nth(1)
+                .and_then(|s| s.split(";\n").next())
+                .expect("config spliced"),
+        )
+        .expect("config parses");
+
+        let lanes = config["lanes"].as_array().unwrap();
+        assert_eq!(lanes.len(), N_TRACKS);
+        // Lane 0: the model's hits, in fire order, not insertion order.
+        let hits = lanes[0]["hits"].as_array().unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!((&hits[0]["beat"], &hits[0]["sub"]), (&Json::from(0), &Json::from(2)));
+        assert_eq!(hits[1]["beat"], 3);
+        assert_eq!(hits[1]["velocity"], 0.5);
+        // Lane 2: its own geometry travels with its hits (polymeter, ADR 0001 §2).
+        assert_eq!(lanes[2]["grid"]["n_beats"], 3);
+        assert_eq!(lanes[2]["hits"].as_array().unwrap().len(), 1);
+        // An untouched lane is empty, which is the truth for a fresh instance.
+        assert!(lanes[1]["hits"].as_array().unwrap().is_empty());
+        assert_eq!(lanes[1]["grid"]["n_beats"], 4);
+    }
+
     /// Every lane ships its own geometry — the strip is per-lane, and polymeter
     /// means the lanes diverge the moment the user edits one.
     #[test]
     fn config_ships_geometry_for_every_lane() {
-        let config = serde_json::json!({ "lanes": (0..N_TRACKS).map(|_| grid_json(&Grid::default())).collect::<Vec<_>>() });
+        let config = serde_json::json!({ "lanes": (0..N_TRACKS).map(|_| lane_json(&Pattern::default())).collect::<Vec<_>>() });
         let lanes = config["lanes"].as_array().unwrap();
         assert_eq!(lanes.len(), N_TRACKS);
         for l in lanes {
-            assert_eq!(l["n_beats"], 4);
-            assert_eq!(l["len_beats"], 4.0);
-            assert_eq!(l["markers"].as_array().unwrap().len(), 5, "n_beats + 1 markers");
-            assert_eq!(l["subs"].as_array().unwrap().len(), 4);
-            assert_eq!(l["sub_override"][0], 0);
+            assert_eq!(l["grid"]["n_beats"], 4);
+            assert_eq!(l["grid"]["len_beats"], 4.0);
+            assert_eq!(l["grid"]["markers"].as_array().unwrap().len(), 5, "n_beats + 1 markers");
+            assert_eq!(l["grid"]["subs"].as_array().unwrap().len(), 4);
+            assert_eq!(l["grid"]["sub_override"][0], 0);
         }
     }
 
@@ -610,6 +734,99 @@ mod tests {
             },
             _ => panic!("not custom"),
         }
+    }
+
+    /// AC (0366): a re-announced lane carries the model's hits **and** the geometry
+    /// they hang off, in fire order, keyed the same way the page's edits will be —
+    /// and in the same shape the page was built from, so one reader serves both.
+    #[test]
+    fn serialises_a_lane_readback() {
+        let mut p = Pattern::default();
+        // Inserted out of fire order on purpose: the wire order must be the
+        // model's, or the indices the page sends back name the wrong hits.
+        p.insert(Hit { velocity: 0.5, ..Hit::at(3, 0) });
+        p.insert(Hit::at(0, 2));
+        p.set_grid_subs(3);
+
+        let j = serialise_custom_view(&Vxn3ViewCustom::Lane {
+            track: 5,
+            pattern: Box::new(p),
+        })
+        .unwrap();
+        assert_eq!(j["kind"], "lane");
+        assert_eq!(j["track"], 5);
+        // Geometry travels with the hits — a `(beat, sub)` means nothing without it.
+        assert_eq!(j["grid"]["default_subs"], 3);
+        assert_eq!(j["grid"]["subs"], serde_json::json!([3, 3, 3, 3]));
+        let hits = j["hits"].as_array().unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0]["beat"], 0, "fire order, not insertion order");
+        assert_eq!(hits[0]["sub"], 2);
+        assert_eq!(hits[1]["beat"], 3);
+        assert_eq!(hits[1]["velocity"], 0.5);
+        // Field names are the opcode field names: a hit read out is a hit that can
+        // be re-sent.
+        for k in ["f", "nudge", "y", "note", "velocity", "probability", "rgb", "retrig"] {
+            assert!(hits[0].get(k).is_some(), "missing {k}");
+        }
+        assert_eq!(hits[0]["retrig"]["curve"], "even");
+        // The same shape the page is built from, so `app.js` has one reader.
+        let built = lane_json(&p);
+        assert_eq!(j["grid"], built["grid"]);
+        assert_eq!(j["hits"], built["hits"]);
+    }
+
+    /// AC (0366): `NO_COLOUR` is not black. An uncoloured hit reads as `null` and a
+    /// black one as a real zero vector — the two drive the macro slots completely
+    /// differently (fall through to the p-lock/base vs. send zero).
+    #[test]
+    fn no_colour_survives_the_readback_distinct_from_black() {
+        use vxn3_engine::Pattern;
+        let mut p = Pattern::default();
+        p.insert(Hit::at(0, 0)); // default: uncoloured
+        p.insert(Hit::at(1, 0));
+        p.set_colour(1, [0.0, 0.0, 0.0]);
+        p.insert(Hit::at(2, 0));
+        p.set_colour(2, [1.0, 0.5, 0.25]);
+
+        let j = serialise_custom_view(&Vxn3ViewCustom::Lane {
+            track: 0,
+            pattern: Box::new(p),
+        })
+        .unwrap();
+        let hits = j["hits"].as_array().unwrap();
+        assert_eq!(hits[0]["rgb"], Json::Null, "uncoloured is null, never black");
+        assert_eq!(hits[1]["rgb"], serde_json::json!([0.0, 0.0, 0.0]), "black is a colour");
+        assert_eq!(hits[2]["rgb"], serde_json::json!([1.0, 0.5, 0.25]));
+    }
+
+    /// The view has no verb for asking. It is built from the model and told when
+    /// the model is replaced; polling would be the wrong shape and is not offered.
+    #[test]
+    fn the_view_has_no_readback_request() {
+        for op in ["request_lane", "request_lanes"] {
+            assert!(parse_custom_ui(op, &obj(r#"{"track":0}"#)).is_none(), "{op}");
+        }
+        assert!(!APP_JS.contains("request_lane"));
+    }
+
+    /// Every retrig curve has a wire name that parses back to itself, so a hit's
+    /// retrig is not silently flattened to `Even` by a round trip through the page.
+    #[test]
+    fn retrig_curve_names_round_trip() {
+        for c in [RetrigCurve::Even, RetrigCurve::Accel, RetrigCurve::Decel] {
+            assert_eq!(curve_of(retrig_curve_str(c)), c);
+        }
+    }
+
+    /// The shipped JS reads the model both ways it can arrive: as the config the
+    /// page is built from, and as a `lane` event when the model replaces one.
+    #[test]
+    fn page_reads_the_model_through_one_reader() {
+        assert!(APP_JS.contains("function laneFrom("), "one reader for a lane");
+        assert!(APP_JS.contains("laneFrom(CFG.lanes"), "…used to build the page");
+        assert!(APP_JS.contains("applyLaneReadback"), "…and to adopt a replacement");
+        assert!(APP_JS.contains("\"lane\""));
     }
 
     #[test]
