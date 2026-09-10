@@ -80,7 +80,7 @@ use crate::matrix::{
     N_MATRIX_SLOTS, damp_dest_index, out_dest_index, pan_dest_index, pm_dest_index,
     ratio_dest_index, spread_dest_index,
 };
-use crate::patch::N_PATCHES;
+use crate::patch::{N_PATCHES, Patch};
 
 /// Per-operator scalar fields, in table order.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -726,12 +726,89 @@ pub fn variant_or_default(d: &ParamDesc, label: &str) -> f32 {
     }
 }
 
+// ── The table against a patch ───────────────────────────────────────────────
+
+/// This param's value in `patch`, or `None` for a **host** param.
+///
+/// The `None` is the host/patch split showing through: `master-gain`, `quality`,
+/// the loaded-patch index and the eight macro positions have nowhere in a
+/// [`Patch`] to be read from, because they are performance state rather than
+/// part of the sound. Callers that iterate [`patch_ids`] never see it.
+pub fn value_of(patch: &Patch, id: ParamId) -> Option<f32> {
+    Some(match decode(id)? {
+        Param::Op { op, field } => {
+            let o = &patch.ops[op];
+            match field {
+                OpField::Wave => o.wave.index() as f32,
+                OpField::Ratio => o.ratio,
+                OpField::Level => o.level,
+                OpField::Pan => o.pan,
+                OpField::DampHz => o.damp_hz,
+                OpField::Phase => o.phase,
+                OpField::PhaseSpread => o.phase_spread,
+            }
+        }
+        // `EgField`'s discriminants are the concatenation of `t` then `l`, which
+        // is what makes this an index rather than an eight-arm match.
+        Param::OpEg { op, field } => {
+            let e = &patch.eg[op];
+            let i = field as usize;
+            if i < 4 { e.t[i] } else { e.l[i - 4] }
+        }
+        Param::Pm { dest, src } => patch.routing.pm[dest][src],
+        Param::Out { op } => patch.routing.out[op],
+        // Raw and untapered, as the slot stores it. See [`MATRIX_DESCS`].
+        Param::MatrixDepth { slot } => patch.matrix.slots[slot].depth,
+        Param::PatchGain => patch.gain,
+        Param::Host(_) => return None,
+    })
+}
+
+/// Write a param into `patch`, clamped to its descriptor range. Returns whether
+/// it landed — `false` for an out-of-range id or a host param, neither of which
+/// a patch has room for.
+///
+/// Clamping here rather than at the call sites is what lets a hand-edited
+/// preset hold a nonsense number without the engine ever seeing one.
+pub fn set_value(patch: &mut Patch, id: ParamId, v: f32) -> bool {
+    let (Some(d), Some(p)) = (desc(id), decode(id)) else {
+        return false;
+    };
+    let v = d.clamp(v);
+    match p {
+        Param::Op { op, field } => {
+            let o = &mut patch.ops[op];
+            match field {
+                OpField::Wave => o.wave = waveform_from(v),
+                OpField::Ratio => o.ratio = v,
+                OpField::Level => o.level = v,
+                OpField::Pan => o.pan = v,
+                OpField::DampHz => o.damp_hz = v,
+                OpField::Phase => o.phase = v,
+                OpField::PhaseSpread => o.phase_spread = v,
+            }
+        }
+        Param::OpEg { op, field } => {
+            let e = &mut patch.eg[op];
+            let i = field as usize;
+            if i < 4 { e.t[i] = v } else { e.l[i - 4] = v }
+        }
+        Param::Pm { dest, src } => patch.routing.pm[dest][src] = v,
+        Param::Out { op } => patch.routing.out[op] = v,
+        Param::MatrixDepth { slot } => patch.matrix.slots[slot].depth = v,
+        Param::PatchGain => patch.gain = v,
+        Param::Host(_) => return false,
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     use crate::eg::EgParams;
     use crate::matrix::ROSTER_DEST_NAMES;
+    use crate::patch::patch;
 
     #[test]
     fn the_table_is_the_size_the_layout_implies() {
@@ -909,6 +986,52 @@ mod tests {
     #[test]
     fn macro_count_matches_the_matrix() {
         assert_eq!(N_MACROS, crate::matrix::N_MACROS);
+    }
+
+    /// Every patch field is reachable *and* writable through its id, on every
+    /// factory patch. A field the table names but `value_of` cannot see would
+    /// serialise as its default and be silently lost on the way back, which is
+    /// the failure this pairing exists to make impossible.
+    #[test]
+    fn every_patch_field_reads_and_writes_through_its_id() {
+        for i in 0..N_PATCHES {
+            let p = patch(i);
+            let mut blank = patch(0);
+            for id in patch_ids() {
+                let v = value_of(&p, id).expect("a patch field has a value");
+                assert!(
+                    set_value(&mut blank, id, v),
+                    "{} did not apply",
+                    desc(id).unwrap().name
+                );
+                assert_eq!(
+                    value_of(&blank, id).unwrap().to_bits(),
+                    v.to_bits(),
+                    "{} did not survive a write/read",
+                    desc(id).unwrap().name
+                );
+            }
+        }
+        // The host region is not patch state, in both directions.
+        let mut p = patch(0);
+        assert_eq!(value_of(&p, macro_id(3)), None);
+        assert!(!set_value(&mut p, macro_id(3), 0.5));
+        assert!(!set_value(&mut p, ParamId::new(N_PARAMS), 0.5));
+    }
+
+    /// A value outside the descriptor's range is clamped on the way in, so a
+    /// hand-edited preset cannot hand the engine a nonsense number.
+    #[test]
+    fn set_value_clamps_to_the_descriptor_range() {
+        let mut p = patch(0);
+        let id = encode(Param::Op {
+            op: 0,
+            field: OpField::Ratio,
+        });
+        assert!(set_value(&mut p, id, 1.0e9));
+        assert_eq!(value_of(&p, id), Some(desc(id).unwrap().max));
+        assert!(set_value(&mut p, id, -5.0));
+        assert_eq!(value_of(&p, id), Some(desc(id).unwrap().min));
     }
 
     #[test]

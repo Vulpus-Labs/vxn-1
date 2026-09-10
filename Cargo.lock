@@ -2535,9 +2535,12 @@ version = "0.3.1"
 name = "vxn4-engine"
 version = "0.3.1"
 dependencies = [
+ "serde",
+ "toml",
  "vxn-core-app",
  "vxn-core-matrix",
  "vxn-core-utils",
+ "vxn-preset",
  "vxn4-dsp",
 ]
 

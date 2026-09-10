@@ -47,6 +47,7 @@ pub mod engine;
 pub mod matrix;
 pub mod params;
 pub mod patch;
+pub mod preset;
 
 pub use alloc::{Alloc, N_ACTIVE, N_DECLICK, N_SLOTS, Phase, Voice};
 pub use eg::{Eg, EgParams, Stage};
@@ -54,3 +55,4 @@ pub use engine::{Engine, HOST_LATENCY_SAMPLES, MAX_MASTER_GAIN, Quality, latency
 pub use matrix::{DestId, Matrix, N_DESTS, N_MACROS, N_MATRIX_SLOTS, Roster, SourceId};
 pub use params::{N_PARAMS, PATCH_PARAMS, Param, ParamId, all_ids, desc, id_for_name, patch_ids};
 pub use patch::{N_PATCHES, Patch, patch, patch_names};
+pub use preset::{MacroSpec, Macros, Meta, Preset, PresetError, read_preset, write_preset};

@@ -451,12 +451,21 @@ impl Engine {
         self.panic();
     }
 
+    /// Install a factory patch by index.
+    fn load_patch(&mut self, index: usize) {
+        self.patch_index = index % crate::patch::N_PATCHES;
+        self.install_patch(patch(index));
+    }
+
     /// Install a patch's topology. Does not touch voices — [`Self::set_patch`]
     /// owns that decision, and construction has none to touch.
-    fn load_patch(&mut self, index: usize) {
-        let p = patch(index);
-        self.patch_index = index % crate::patch::N_PATCHES;
-
+    ///
+    /// Split from [`Self::load_patch`] so a patch that did not come from the
+    /// factory bank can be installed: 0383's preset round-trip renders a
+    /// *decoded* patch and compares the samples against the original's, which
+    /// an index-only entry point cannot express. Deliberately not `pub` — who
+    /// owns a live patch is 0382's question, not this one's.
+    pub(crate) fn install_patch(&mut self, p: Patch) {
         // Reserve a lane for every route the matrix can reach, live or not.
         // `sine` authors no PM at all and still has a macro on its feedback
         // diagonal; without the mask that knob would compile away to nothing.
