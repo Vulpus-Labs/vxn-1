@@ -11,3 +11,7 @@ description = "VXN4 engine — voice allocation, envelopes, patches and the over
 vxn4-dsp = { workspace = true }
 vxn-core-utils = { workspace = true }
 vxn-core-matrix = { workspace = true }
+# `ParamDesc` / `ParamKind` / `Taper` for the patch descriptor table (0381), and
+# `ParamId` as the id that indexes it. Schema and taper math only — this pulls in
+# no controller, no backend and no windowing.
+vxn-core-app = { workspace = true }

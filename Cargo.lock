@@ -2535,6 +2535,7 @@ version = "0.3.1"
 name = "vxn4-engine"
 version = "0.3.1"
 dependencies = [
+ "vxn-core-app",
  "vxn-core-matrix",
  "vxn-core-utils",
  "vxn4-dsp",
