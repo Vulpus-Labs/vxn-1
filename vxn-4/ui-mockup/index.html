@@ -1,0 +1,2548 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>VXN-4 — faceplate mockup</title>
+<style>
+/* ─────────────────────────────────────────────────────────────────────────
+   VXN-4 faceplate mockup.
+
+   Static mock — no engine behind it. Every control holds its own value and
+   redraws; nothing is bound to a param id yet. The point is to argue about
+   layout, density and grouping before any wiring exists.
+
+   Palette and control idioms are lifted from vxn-1b's faceplate.css so the
+   two instruments read as one family; the wave knob, the filter control set
+   and the key-scaling graph come from vxn-2.
+
+   Three panels, per the brief:
+     PERFORM    — 8 macro knobs, 2 LFOs, 2 ADHSR envelopes, filter, scope,
+                  and the voice-level mod matrix behind a button.
+     MIXER      — vxn-1b's global pane, minus what vxn-4 does not have.
+     OPERATORS  — per-operator config, the route table into ops and the bus,
+                  the amp EG and its key scaling.
+   ───────────────────────────────────────────────────────────────────────── */
+:root {
+  --face-bg: #2b2b2b;
+  --panel-bg: #1c1c1c;
+  --panel-bg-hi: #2f2f2f;
+  --panel-border: #0e0e0e;
+  --panel-corner: 4px;
+  --header-bg: #a7cfe2;
+  --header-fg: #141414;
+  --banner-fg: #a7cfe2;
+  --text: #d6d6d6;
+  --ctl-label: #aeaeae;
+  --ctl-value: #d9701b;
+  --track-bg: #0e0e0e;
+  --fader-fill-pale: #35507e;
+  --fader-fill-bright: #6cb1ff;
+  --lit-bg: #1f9cff;
+  --lit-border: #84cdff;
+  --lit-glow: #36b3ff;
+  --thumb-bg: #87afb2;
+  --thumb-border: #a7cfe2;
+  --glyph: #888888;
+  --glyph-active: #a7cfe2;
+  --knob-face: #2a2a2a;
+  --knob-rim: #444444;
+  --knob-dimple: #222222;
+  --knob-indicator: #a7cfe2;
+
+  --editor-w: 1140px;
+  --pad-outer: 10px;
+  --banner-h: 26px;
+  --preset-bar-h: 30px;
+  --panel-pad: 5px;
+  --row-vgap: 8px;
+  --row-hgap: 6px;
+  --header-h: 16px;
+  --ctl-label-h: 12px;
+  --ctl-gap: 2px;
+  --tg-box: 11px;
+  --fader-h: 84px;
+  --fader-track-w: 4px;
+  --thumb-w: 18px;
+  --thumb-h: 6px;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #202020;
+  color: var(--text);
+  font-family: "IBM Plex Sans Condensed", -apple-system, system-ui, sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+}
+body { display: flex; justify-content: center; padding: 16px 0 40px; }
+
+.faceplate {
+  position: relative;
+  width: var(--editor-w);
+  box-sizing: border-box;
+  padding: var(--pad-outer);
+  background: var(--face-bg);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--row-vgap);
+}
+
+/* Floating value popup (vxn-core-ui-web/assets/value-pop.css). One shared
+   element for the whole faceplate, anchored at the pointer in fixed coords so
+   it floats over the layout and cannot be clipped by a panel. This is where
+   every readout lives: the faceplate itself carries no printed values. */
+.value-pop {
+  position: fixed;
+  display: none;
+  pointer-events: none;
+  background: var(--track-bg);
+  border: 1px solid var(--ctl-value);
+  border-radius: 3px;
+  padding: 2px 5px;
+  font-size: 10px;
+  color: #f6f6f6;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  z-index: 1000;
+}
+
+/* ── Chrome: banner, preset bar, tab strip ──────────────────────────────── */
+.banner {
+  height: var(--banner-h);
+  background: linear-gradient(to top left, var(--panel-bg), var(--panel-bg-hi));
+  border: 1px solid var(--panel-border);
+  border-radius: var(--panel-corner);
+  color: var(--banner-fg);
+  font-size: 16px;
+  letter-spacing: 3px;
+  display: flex; align-items: center; justify-content: center;
+}
+
+.preset-bar {
+  height: var(--preset-bar-h);
+  background: linear-gradient(to top left, var(--panel-bg), var(--panel-bg-hi));
+  border: 1px solid var(--panel-border);
+  border-radius: var(--panel-corner);
+  display: flex; align-items: center;
+  padding: 0 8px; gap: 6px;
+  box-sizing: border-box;
+}
+.pbar-btn {
+  height: 20px; padding: 0 10px;
+  background: #262626; color: var(--ctl-label);
+  border: 1px solid #3a3a3a; border-radius: 3px;
+  font: inherit; font-size: 10px; letter-spacing: 1px;
+  text-transform: uppercase; cursor: pointer;
+}
+.pbar-btn:hover { border-color: var(--glyph-active); color: #ececec; }
+.pbar-btn.lit { background: #17334a; border-color: var(--lit-border); color: #ececec; }
+.pbar-step { padding: 0 6px; min-width: 18px; text-align: center; }
+.pbar-name {
+  min-width: 150px; padding: 0 8px; height: 20px;
+  display: flex; align-items: center;
+  background: #141414; border: 1px solid #3a3a3a; border-radius: 3px;
+  color: var(--ctl-value); font-size: 12px; letter-spacing: 1px;
+}
+.pbar-spacer { flex: 1 1 auto; }
+.pbar-note { font-size: 10px; color: #6f7780; letter-spacing: 1px; }
+
+.tab-strip {
+  display: flex; gap: 2px; align-items: stretch;
+  border-bottom: 1px solid var(--panel-border);
+}
+.tab-btn {
+  background: transparent; border: none;
+  padding: 5px 16px 6px;
+  color: #7d7d7d; font: inherit; font-size: 11px;
+  letter-spacing: 2px; cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+.tab-btn:hover { color: var(--text); }
+.tab-btn.active { color: var(--glyph-active); border-bottom-color: var(--glyph-active); }
+.tab-strip .pbar-btn { align-self: center; margin-left: auto; margin-right: 2px; }
+
+.tab-pane { display: none; }
+.tab-pane.active { display: flex; flex-direction: column; gap: var(--row-vgap); }
+
+/* ── Rows and panels ────────────────────────────────────────────────────── */
+.row { display: flex; gap: var(--row-hgap); align-items: stretch; }
+.panel {
+  background: linear-gradient(to top left, var(--panel-bg), var(--panel-bg-hi));
+  border: 1px solid var(--panel-border);
+  border-radius: var(--panel-corner);
+  padding: var(--panel-pad);
+  box-sizing: border-box;
+  display: flex; flex-direction: column; gap: 4px;
+  flex: 1 1 0; min-width: 0;
+}
+.panel-header {
+  height: var(--header-h);
+  background: var(--header-bg); color: var(--header-fg);
+  border-radius: 2px;
+  font-size: 10px; letter-spacing: 2px;
+  display: flex; align-items: center; justify-content: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.panel-header .hdr-switch {
+  width: var(--tg-box); height: var(--tg-box);
+  border: 1px solid #4a4a4a; background: #141414;
+  border-radius: 2px; cursor: pointer;
+}
+.panel-header .hdr-switch.on {
+  background: var(--lit-bg); border-color: var(--lit-border);
+  box-shadow: 0 0 4px var(--lit-glow);
+}
+.panel-body {
+  flex: 1 1 auto;
+  display: flex; align-items: flex-start; justify-content: space-around;
+  gap: 6px; min-height: 0;
+}
+.panel-strip {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 12px;
+  min-height: 13px;
+}
+.panel-sep { width: 1px; align-self: stretch; background: #0e0e0e; margin: 0 4px; }
+/* A named sub-group inside a panel — the filter's HP stage against its main
+   stage. The caption is what stops "two cutoffs" from reading as a mistake. */
+.subgroup { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.subgroup-body { display: flex; align-items: flex-start; gap: 6px; }
+.subgroup-cap {
+  font-size: 8px; letter-spacing: 2px; color: #6f7780;
+  text-transform: uppercase; order: -1;
+}
+
+/* ── Control primitives ─────────────────────────────────────────────────── */
+.ctl {
+  display: flex; flex-direction: column; align-items: center;
+  gap: var(--ctl-gap); flex: 0 0 auto;
+}
+.ctl-label {
+  height: var(--ctl-label-h); line-height: var(--ctl-label-h);
+  font-size: 9px; letter-spacing: 1px; color: var(--ctl-label);
+  text-transform: uppercase; white-space: nowrap;
+}
+.ctl-col { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+
+/* Vertical fader. */
+.ctl-fader { height: var(--fader-h); width: 22px; position: relative; cursor: ns-resize; }
+.ctl-fader-track {
+  position: absolute; left: 50%; top: 0; bottom: 0;
+  width: var(--fader-track-w); transform: translateX(-50%);
+  background: var(--track-bg); border-radius: 2px; overflow: hidden;
+}
+.ctl-fader-fill {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  background: linear-gradient(to top, var(--fader-fill-pale), var(--fader-fill-bright));
+}
+.ctl-fader-thumb {
+  position: absolute; left: 50%; width: var(--thumb-w); height: var(--thumb-h);
+  transform: translate(-50%, 50%);
+  background: var(--thumb-bg); border: 1px solid var(--thumb-border);
+  border-radius: 2px;
+}
+.ctl-fader.dragging .ctl-fader-thumb { background: #cfe6e8; }
+
+/* Rotary dial. */
+.ctl-dial { cursor: ns-resize; line-height: 0; }
+.ctl-dial .dial-track { fill: none; stroke: var(--track-bg); stroke-linecap: round; }
+.ctl-dial .dial-fill { fill: none; stroke: var(--fader-fill-bright); stroke-linecap: round; }
+.ctl-dial .dial-face { fill: var(--knob-face); stroke: var(--knob-rim); stroke-width: 1; }
+.ctl-dial .dial-indicator { stroke: var(--knob-indicator); stroke-width: 2; stroke-linecap: round; }
+.ctl-dial.dragging .dial-fill { stroke: #fff; }
+.ctl-dial.dragging .dial-indicator { stroke: #fff; }
+
+/* Rotary waveform selector (vxn-2's wave knob). The lit glyph is the readout —
+   an enum has nothing a popup would add. */
+.ctl-wave { cursor: pointer; line-height: 0; }
+.ctl-wave .knob-face { fill: var(--knob-face); stroke: var(--knob-rim); stroke-width: 1; }
+.ctl-wave .knob-dimple { fill: var(--knob-dimple); }
+.ctl-wave .knob-indicator-line { stroke: var(--knob-indicator); stroke-width: 2; stroke-linecap: round; }
+.ctl-wave .wave-glyph { fill: none; stroke: var(--glyph); stroke-width: 1.2; }
+.ctl-wave .wave-glyph.active { stroke: var(--glyph-active); stroke-width: 1.6; }
+.ctl-wave .wave-hit { fill: transparent; }
+
+/* Operator waveform picker. Eleven waveforms is past what a rotary selector
+   can carry — the glyphs collide on the arc and the hit targets stop being
+   clickable — so the operator uses a dropdown with a drawn preview above it.
+   The LFO keeps its knob: six shapes still fit, and shape is a performed
+   choice there in a way an operator's waveform is not. */
+.wave-pick { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+.wave-preview {
+  background: #0b0f0d; border: 1px solid #262626; border-radius: 2px;
+  display: block;
+}
+.wave-preview .wave-trace { fill: none; stroke: var(--glyph-active); stroke-width: 1.3; }
+.wave-preview .wave-axis { stroke: #23372c; stroke-width: 1; }
+.wave-pick .combo { width: 96px; }
+/* Waveforms with a non-zero mean are flagged where they are chosen. On a
+   modulator DC is only a constant phase offset, but on a carrier it is bias at
+   the sum bus — a note-on thump and lost headroom — so it is a property worth
+   seeing before you pick, not after. */
+.dc-chip {
+  font-size: 8px; letter-spacing: 1px; color: #b58b5e;
+  border: 1px solid #4a3a2a; border-radius: 2px;
+  padding: 0 3px; line-height: 11px;
+}
+.dc-chip.hidden { visibility: hidden; }
+
+/* Toggle row — small box + inline label. */
+.ctl-tg-row { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; height: 13px; }
+.ctl-tg-box {
+  width: var(--tg-box); height: var(--tg-box);
+  border: 1px solid #4a4a4a; background: #141414; border-radius: 2px;
+  flex: 0 0 auto;
+}
+.ctl-tg-row:hover .ctl-tg-box { border-color: #c4c4c4; }
+.ctl-tg-row.on .ctl-tg-box {
+  background: var(--lit-bg); border-color: var(--lit-border);
+  box-shadow: 0 0 4px var(--lit-glow);
+}
+.ctl-tg-lbl { font-size: 9px; letter-spacing: 1px; color: var(--ctl-label); text-transform: uppercase; }
+.ctl-tg-row.on .ctl-tg-lbl { color: #ececec; }
+
+/* Button group — a strip of toggle rows, one of which is lit. */
+.ctl-buttongroup .tg-rows { display: flex; flex-direction: column; gap: 2px; }
+.ctl-buttongroup[data-flow="row"] .tg-rows { flex-direction: row; gap: 8px; }
+
+/* Combo (matrix source / dest / curve pickers). */
+.combo {
+  appearance: none; -webkit-appearance: none;
+  background: #141414 url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='8' height='5'><path d='M0 0 L4 5 L8 0 Z' fill='%23aeaeae'/></svg>") no-repeat right 5px center;
+  color: var(--text); border: 1px solid #3a3a3a; border-radius: 2px;
+  font: inherit; font-size: 10px; height: 17px;
+  padding: 0 14px 0 5px; width: 100%; min-width: 0; cursor: pointer;
+}
+.combo:hover, .combo:focus { border-color: var(--glyph-active); outline: none; }
+.combo.empty { color: #6f7780; }
+
+/* ── Macro row ──────────────────────────────────────────────────────────── */
+.macro-body { justify-content: space-between; padding: 0 4px; }
+.macro-cell { flex: 1 1 0; }
+.macro-cell .ctl-label { color: var(--glyph-active); font-size: 10px; }
+.macro-cell .macro-idx { font-size: 8px; color: #6f7780; letter-spacing: 1px; height: 10px; line-height: 10px; }
+
+/* ── Canvases ───────────────────────────────────────────────────────────── */
+.panel-scope .panel-body { align-items: stretch; }
+/* `min-width: 0` matters: a canvas beside a control column (the key-scaling
+   panel) otherwise refuses to shrink and pushes the column off the panel. */
+.graph-canvas {
+  flex: 1 1 0; min-width: 0; height: 100%;
+  background: #0b0f0d; border: 1px solid #0e0e0e; border-radius: 2px;
+  display: block;
+}
+.graph-canvas.grabbable { cursor: crosshair; }
+
+/* ── Meters ─────────────────────────────────────────────────────────────── */
+/* Stereo throughout: a mono bar cannot show a patch that has collapsed to one
+   side, which on an instrument with per-operator pan is a thing you need to
+   see. Two bars share one frame so the pair reads as one meter. */
+.meter-col { display: flex; flex-direction: column; align-items: center; gap: var(--ctl-gap); }
+.meter-bar {
+  height: var(--fader-h);
+  background: #0b0b0b; border: 1px solid #0e0e0e; border-radius: 2px;
+  display: flex; gap: 1px; padding: 1px;
+}
+.meter-chan { position: relative; width: 6px; overflow: hidden; }
+.meter-fill {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  background: linear-gradient(to top, #2f9e44 0%, #2f9e44 62%, #e8b13a 82%, #e03131 100%);
+  background-size: 100% var(--fader-h);
+  background-position: bottom;
+}
+.meter-peak { position: absolute; left: 0; right: 0; height: 1px; background: #ececec; }
+/* One channel, so it takes the width the stereo pair would have had rather
+   than reading as half a meter. */
+.meter-gr .meter-chan { width: 13px; }
+.meter-gr .meter-fill { top: 0; bottom: auto; background: #d9701b; }
+.meter-gr .meter-peak { display: none; }
+
+/* ── Dial grid (dynamics) ───────────────────────────────────────────────── */
+.dial-grid { display: grid; grid-template-columns: repeat(3, auto); gap: 4px 8px; }
+
+/* ── Operator panel ─────────────────────────────────────────────────────── */
+.op-tabs { display: flex; gap: 4px; align-items: center; }
+.op-tab {
+  position: relative;
+  width: 46px; height: 26px;
+  background: #262626; border: 1px solid #3a3a3a; border-radius: 3px;
+  color: #8a8a8a; font: inherit; font-size: 10px; letter-spacing: 1px;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.op-tab:hover { border-color: var(--glyph-active); color: var(--text); }
+.op-tab.active { background: #17334a; border-color: var(--lit-border); color: #ececec; }
+.op-tab .op-dot {
+  position: absolute; top: 3px; right: 3px;
+  width: 5px; height: 5px; border-radius: 50%; background: #3a3a3a;
+}
+.op-tab.audible .op-dot { background: var(--lit-bg); box-shadow: 0 0 4px var(--lit-glow); }
+
+.opcfg-body { align-items: flex-start; gap: 10px; padding: 0 12px; }
+
+/* The 8×8 PM grid. Rows are destinations, columns sources; the last column is
+   the sum-bus send. Cell colour is the route's *live* level, not its authored
+   depth, so a slow swell reads as the grid brightening. */
+.pm-grid { display: grid; grid-template-columns: 16px repeat(8, 17px) 10px 22px; gap: 2px; }
+.pm-grid .pm-hd {
+  font-size: 8px; color: #6f7780; text-align: center;
+  line-height: 12px; letter-spacing: 0;
+}
+.pm-grid .pm-rowhd { font-size: 8px; color: #6f7780; line-height: 17px; text-align: right; }
+.pm-cell {
+  width: 17px; height: 17px; border-radius: 2px;
+  background: #141414; border: 1px solid #262626; cursor: ns-resize;
+}
+.pm-cell:hover { border-color: var(--glyph-active); }
+.pm-cell.dragging { border-color: #fff; }
+.pm-cell.diag { border-color: #3a3a3a; }
+.pm-cell.sel-src { border-color: #55707e; }
+.pm-cell.bus { width: 22px; }
+.pm-axis {
+  font-size: 8px; color: #4e565e; letter-spacing: 1px;
+  text-transform: uppercase; text-align: center;
+}
+/* Sign key. The swatches carry the accent bar as well as the hue, so the
+   legend shows both cues rather than teaching only the one that fails for a
+   colour-blind player. */
+.pm-legend {
+  display: flex; align-items: center; justify-content: center; gap: 3px;
+  color: #3f464c;
+}
+.pm-swatch { width: 11px; height: 11px; border-radius: 2px; }
+.pm-swatch-pos {
+  background: rgba(108, 177, 255, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(108, 177, 255, 0.62),
+              inset 0 -3px 0 -1px rgba(108, 177, 255, 0.95);
+}
+.pm-swatch-neg {
+  background: rgba(198, 122, 232, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(198, 122, 232, 0.62),
+              inset 0 3px 0 -1px rgba(198, 122, 232, 0.95);
+}
+.pm-swatch-pos { margin-left: 2px; }
+.pm-swatch-neg { margin-left: 6px; }
+
+/* Route table for the selected operator. */
+.panel-routes .panel-body { justify-content: flex-start; }
+.routes {
+  position: relative;
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: 26px 50px 1fr 1.25fr 84px 1.25fr 84px;
+  gap: 3px 8px;
+  align-items: center;
+  align-content: start;
+  font-size: 10px;
+}
+.routes-hd {
+  font-size: 8px; letter-spacing: 1px; color: #6f7780;
+  text-transform: uppercase; padding-bottom: 2px;
+  border-bottom: 1px solid #0e0e0e;
+}
+.route-target { color: #8a8a8a; letter-spacing: 1px; }
+.route-row-bus .route-target { color: var(--glyph-active); }
+.route-row-self .route-target { color: #b58b5e; }
+/* Arriving from a PM-grid cell highlights the row it named, so the click lands
+   somewhere visible instead of silently swapping the table underneath you.
+
+   One band across the whole row, not a box per cell: the row is the thing being
+   pointed at, and seven separate outlines read as seven findings. It is
+   absolutely positioned over the grid rather than being a grid item — an item
+   spanning `1 / -1` would occupy the row and push the auto-placed cells out of
+   it — and is measured off the row's first cell after layout. */
+.route-band {
+  position: absolute; left: -3px; right: -3px;
+  border: 1px solid var(--lit-border); border-radius: 3px;
+  background: rgba(31, 156, 255, 0.07);
+  pointer-events: none;
+}
+
+/* Horizontal bipolar fader — a route's authored constant. */
+.hfader { position: relative; height: 15px; cursor: ew-resize; }
+.hfader-track {
+  position: absolute; top: 50%; left: 0; right: 0; height: 4px;
+  transform: translateY(-50%);
+  background: var(--track-bg); border-radius: 2px; overflow: hidden;
+}
+.hfader-fill { position: absolute; top: 0; bottom: 0; background: var(--fader-fill-bright); }
+.hfader-centre { position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; background: #3a3a3a; }
+.hfader-thumb {
+  position: absolute; top: 50%; width: 6px; height: 15px;
+  transform: translate(-50%, -50%);
+  background: var(--thumb-bg); border: 1px solid var(--thumb-border); border-radius: 2px;
+}
+
+.dim { opacity: 0.35; pointer-events: none; }
+
+/* ── Mod-matrix overlay ─────────────────────────────────────────────────── */
+.overlay-backdrop {
+  position: absolute; inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  z-index: 40;
+}
+.overlay-backdrop[hidden] { display: none; }
+.overlay-panel {
+  position: relative;
+  background: var(--panel-bg);
+  border: 1px solid #3a3a3a; border-radius: 5px;
+  padding: 10px 12px 12px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.6);
+  max-height: 88%; display: flex; flex-direction: column; gap: 6px;
+}
+.overlay-title {
+  color: var(--glyph-active); font-size: 11px; letter-spacing: 2px;
+  text-transform: uppercase; text-align: center;
+}
+.overlay-sub {
+  color: #6f7780; font-size: 9px; letter-spacing: 1px;
+  text-align: center; margin-top: -4px;
+}
+.overlay-close {
+  position: absolute; top: 6px; right: 8px;
+  background: none; border: none; color: #6f7780;
+  font-size: 15px; cursor: pointer; line-height: 1;
+}
+.overlay-close:hover { color: var(--text); }
+.mm-list { overflow-y: auto; padding-right: 4px; }
+.mm-grid {
+  display: grid;
+  grid-template-columns: 24px 20px 1.1fr 1.5fr 130px 82px 1.1fr 82px;
+  gap: 3px 8px; align-items: center; font-size: 10px;
+}
+.mm-hd {
+  font-size: 8px; letter-spacing: 1px; color: #6f7780;
+  text-transform: uppercase; padding-bottom: 2px;
+  border-bottom: 1px solid #0e0e0e;
+}
+.mm-num { font-size: 9px; color: #4e565e; text-align: right; font-variant-numeric: tabular-nums; }
+
+/* Mockup-only footnote strip under the faceplate. */
+.mock-note {
+  width: var(--editor-w); box-sizing: border-box;
+  margin: 10px auto 0; padding: 8px 12px;
+  color: #6f7780; font-size: 11px; line-height: 1.5;
+}
+.mock-note b { color: #8fa6b3; font-weight: normal; }
+</style>
+</head>
+<body>
+<div style="display:flex;flex-direction:column;align-items:center;">
+<div class="faceplate" id="faceplate">
+
+  <div class="banner">VULPUS LABS &mdash; VXN-4</div>
+
+  <div class="preset-bar">
+    <button class="pbar-btn pbar-step" id="preset-prev" type="button">&lt;</button>
+    <div class="pbar-name" id="preset-name">supersaw</div>
+    <button class="pbar-btn pbar-step" id="preset-next" type="button">&gt;</button>
+    <button class="pbar-btn" type="button">Browse</button>
+    <button class="pbar-btn" type="button">Save</button>
+    <button class="pbar-btn" type="button">Save As</button>
+    <div class="pbar-spacer"></div>
+    <div class="pbar-note">MOCKUP &mdash; NOT WIRED</div>
+  </div>
+
+  <div class="tab-strip" id="tab-strip">
+    <button type="button" class="tab-btn active" data-tab="perform">PERFORM</button>
+    <button type="button" class="tab-btn" data-tab="mixer">MIXER</button>
+    <button type="button" class="tab-btn" data-tab="operators">OPERATORS</button>
+    <button type="button" class="pbar-btn" id="matrix-open">Mod Matrix</button>
+  </div>
+
+  <!-- ═══ PERFORM ═══════════════════════════════════════════════════════════
+       Everything an ordinary user touches. Macros first and widest: they are
+       the primary surface. LFOs, envelopes and the filter are the shaping
+       controls behind them. Where a source *goes* is the mod matrix, which
+       opens over the whole faceplate from the tab strip. -->
+  <div class="tab-pane active" data-tab-pane="perform">
+
+    <!-- Macro row. Labels and ranges come from the patch, so switching preset
+         relabels all eight; the index under each knob is the only fixed thing
+         about it, and is what host automation sees. -->
+    <div class="row" style="height:104px">
+      <div class="panel">
+        <div class="panel-header">MACROS</div>
+        <div class="panel-body macro-body" id="macro-body"></div>
+      </div>
+    </div>
+
+    <!-- LFOs + filter. LFO 1 is note-synced with a delayable onset; LFO 2 is
+         free-running. Both carry vxn-2's shape set.
+
+         Rows re-declare `--fader-h` rather than inheriting the root value: the
+         travel a fader wants is a property of the row it sits in, and a track
+         sized for the densest row reads as a hairline in the roomiest one. -->
+    <div class="row" style="height:196px; --fader-h:104px">
+      <div class="panel" style="flex-grow:1.15">
+        <div class="panel-header">LFO 1 &mdash; NOTE SYNC</div>
+        <div class="panel-body" id="lfo1-body"></div>
+        <div class="panel-strip" id="lfo1-strip"></div>
+      </div>
+      <div class="panel" style="flex-grow:0.8">
+        <div class="panel-header">LFO 2 &mdash; FREE</div>
+        <div class="panel-body" id="lfo2-body"></div>
+      </div>
+      <!-- Two stages, drawn as two captioned groups in one panel: a fixed
+           high-pass ahead of the multimode filter. Separate because they are
+           separate in the signal path and are reached for at different times —
+           HP is corrective, the main filter is the instrument. -->
+      <div class="panel" style="flex-grow:2.2">
+        <div class="panel-header">
+          <span class="hdr-switch on" data-hdr="filter"></span>
+          <span>FILTER</span>
+        </div>
+        <div class="panel-body" id="filter-body"></div>
+      </div>
+    </div>
+
+    <!-- Envelopes + scope. ADHSR: attack, decay, hold, sustain, release, with
+         a curve rocker. These two are mod SOURCES, distinct from the
+         per-operator amplitude EGs on the OPERATORS tab. -->
+    <div class="row" style="height:172px; --fader-h:104px">
+      <div class="panel" style="flex-grow:1">
+        <div class="panel-header">ENV 1</div>
+        <div class="panel-body" id="env1-body"></div>
+      </div>
+      <div class="panel" style="flex-grow:1">
+        <div class="panel-header">ENV 2</div>
+        <div class="panel-body" id="env2-body"></div>
+      </div>
+      <div class="panel panel-scope" style="flex-grow:1.9">
+        <div class="panel-header">SCOPE</div>
+        <div class="panel-body">
+          <canvas class="graph-canvas" id="scope"></canvas>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /perform -->
+
+  <!-- ═══ MIXER ════════════════════════════════════════════════════════════
+       vxn-1b's global pane, minus what vxn-4 does not have: one layer, so no
+       layer strips and no keyboard split; no voice stacking; and the only
+       oversampling control is the operator section's 8x/16x quality toggle. -->
+  <div class="tab-pane" data-tab-pane="mixer">
+
+    <div class="row" style="height:250px; --fader-h:140px">
+      <div class="panel" style="flex-grow:2.6">
+        <div class="panel-header">
+          <span class="hdr-switch on" data-hdr="dynamics"></span>
+          <span>DYNAMICS</span>
+        </div>
+        <div class="panel-body" id="dyn-body" style="align-items:center;gap:12px"></div>
+      </div>
+      <div class="panel" style="flex-grow:1.4">
+        <div class="panel-header">MASTER</div>
+        <div class="panel-body" id="master-body"></div>
+        <div class="panel-strip" id="master-strip" style="justify-content:space-around"></div>
+      </div>
+    </div>
+
+    <div class="row" style="height:236px; --fader-h:150px">
+      <div class="panel">
+        <div class="panel-header">
+          <span class="hdr-switch" data-hdr="phaser"></span><span>PHASER</span>
+        </div>
+        <div class="panel-body" id="phaser-body"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header">
+          <span class="hdr-switch on" data-hdr="chorus"></span><span>CHORUS</span>
+        </div>
+        <div class="panel-body" id="chorus-body"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header">
+          <span class="hdr-switch on" data-hdr="delay"></span><span>DELAY</span>
+        </div>
+        <div class="panel-body" id="delay-body"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header">
+          <span class="hdr-switch on" data-hdr="reverb"></span><span>REVERB</span>
+        </div>
+        <div class="panel-body" id="reverb-body"></div>
+      </div>
+    </div>
+
+  </div><!-- /mixer -->
+
+  <!-- ═══ OPERATORS ════════════════════════════════════════════════════════
+       The expert tier. Pick an operator, then edit its parameters and its ten
+       outgoing routes: eight into the operator bank (including its own
+       self-feedback), then the sum-bus send and its pan. Each route is a
+       constant plus a mod-matrix offset (source + curve) and a mod-matrix
+       scaling (source + curve) — the shape a vxn-core-matrix slot has. -->
+  <div class="tab-pane" data-tab-pane="operators">
+
+    <div class="row" style="align-items:center">
+      <div class="op-tabs" id="op-tabs"></div>
+      <div class="pbar-spacer"></div>
+      <div class="panel-strip" id="op-global-strip" style="gap:16px"></div>
+    </div>
+
+    <div class="row" style="height:186px; --fader-h:110px">
+      <div class="panel">
+        <div class="panel-header" id="opcfg-header">OPERATOR 1</div>
+        <div class="panel-body opcfg-body" id="opcfg-body"></div>
+      </div>
+    </div>
+
+    <!-- Routes and the grid sit in one row: the grid is the map, the table is
+         the detail for the one operator the map has selected. -->
+    <div class="row" style="height:250px">
+      <div class="panel panel-routes">
+        <div class="panel-header" id="routes-header">ROUTES OUT &mdash; OPERATOR 1</div>
+        <div class="panel-body" style="align-items:stretch">
+          <div class="routes" id="routes"></div>
+        </div>
+      </div>
+      <div class="panel" style="flex:0 0 auto">
+        <div class="panel-header">PM GRID</div>
+        <div class="panel-body" style="align-items:center; flex-direction:column; gap:4px">
+          <div class="pm-grid" id="pm-grid"></div>
+          <div class="pm-axis">columns: source &middot; rows: destination</div>
+          <!-- The swatches carry the outline, the fill and the accent bar, so
+               they double as the key for all three and the line that used to
+               spell out "outline = wired · fill = depth" is redundant. -->
+          <div class="pm-axis pm-legend">
+            <span class="pm-swatch pm-swatch-pos"></span>positive
+            <span class="pm-swatch pm-swatch-neg"></span>negative
+          </div>
+          <div class="pm-axis" style="color:#3f464c">drag &#8597; depth &middot; dbl-click on/off</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row" style="height:186px; --fader-h:104px">
+      <div class="panel" style="flex-grow:1.05">
+        <div class="panel-header" id="opeg-header">OPERATOR 1 &mdash; AMP EG</div>
+        <div class="panel-body" id="opeg-body"></div>
+      </div>
+      <div class="panel" style="flex-grow:1.2">
+        <div class="panel-header">EG SHAPE</div>
+        <div class="panel-body">
+          <canvas class="graph-canvas grabbable" id="eg-graph"></canvas>
+        </div>
+      </div>
+      <!-- Key scaling, ported in idiom from vxn-2's per-op KS graph: a break
+           point with an independent depth and curve either side of it. This is
+           what the old "Key Trk" fader could not say — a single number cannot
+           express "quieter as you go up, much quieter as you go down". -->
+      <div class="panel" style="flex-grow:1.5">
+        <div class="panel-header">KEY SCALING &mdash; LEVEL</div>
+        <div class="panel-body" style="align-items:stretch; gap:8px">
+          <canvas class="graph-canvas grabbable" id="ks-graph"></canvas>
+          <div id="ks-side" style="flex:0 0 auto;display:flex;flex-direction:column;gap:4px;justify-content:center;align-items:center"></div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /operators -->
+
+  <!-- Mod matrix — the voice-level routing table. Opens over the whole
+       faceplate from the tab strip rather than living on a panel: it is
+       reached rarely, it is wide, and it is not tied to one tab. Destinations
+       reach the filter, the FX mixes, the other mod sources (an envelope on an
+       LFO's rate), pitch, and any individual operator parameter. -->
+  <div class="overlay-backdrop" id="matrix-backdrop" hidden>
+    <div class="overlay-panel" style="width:96%">
+      <button class="overlay-close" id="matrix-close" type="button">&times;</button>
+      <div class="overlay-title">Mod Matrix</div>
+      <div class="overlay-sub">
+        Per-route offsets into the operator bank live on the OPERATORS tab; these slots
+        are everything else.
+      </div>
+      <div class="mm-list">
+        <div class="mm-grid" id="mm-grid"></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="mock-note">
+  <b>Mockup only.</b> No engine, no params — every control holds its own value.
+  Values read out in a popup on hover and during a drag, never printed on the
+  faceplate. Drag faders and dials vertically, route constants horizontally;
+  drag the EG breakpoints and the key-scaling handles directly on their graphs;
+  click glyphs on an LFO's wave knob, cells in the PM grid, and the operator tabs.
+  The operator waveform is a dropdown with a drawn preview — eleven waveforms is
+  past what a rotary selector can carry.
+  Switching preset relabels and rescales the eight macros, which is the point of
+  the macro row: the labels are patch data, the knob indices are not.
+</div>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════════════════
+   Mock state and control factory.
+
+   Everything is local. A control owns a normalised 0..1 `t`, a spec that maps
+   `t` to a displayed value, and a redraw. There is no dispatch, no model, no
+   echo — swapping this for the real bridge is the wiring job this mockup is
+   meant to precede.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+const NOPS = 8;
+
+/* ── Value mapping ──────────────────────────────────────────────────────── */
+
+// `spec` fields: min, max, unit, dp, exp (log taper), step (quantise), signed,
+// bipolar, fmt.
+function mapValue(spec, t) {
+  const min = spec.min ?? 0, max = spec.max ?? 1;
+  if (spec.exp) {
+    const lo = Math.max(min, 1e-4);
+    return lo * Math.pow(max / lo, t);
+  }
+  const v = min + (max - min) * t;
+  return spec.step ? Math.round(v / spec.step) * spec.step : v;
+}
+
+// Inverse of `mapValue` — the EG and key-scaling graphs drag in real units and
+// have to put the result back into a fader's normalised position.
+function invValue(spec, v) {
+  const min = spec.min ?? 0, max = spec.max ?? 1;
+  if (spec.exp) {
+    const lo = Math.max(min, 1e-4);
+    return Math.log(Math.max(v, lo) / lo) / Math.log(max / lo);
+  }
+  return (v - min) / (max - min);
+}
+
+function formatValue(spec, t) {
+  if (spec.fmt) return spec.fmt(mapValue(spec, t), t);
+  const v = mapValue(spec, t);
+  const dp = spec.dp ?? (Math.abs(v) < 10 ? 2 : 0);
+  const s = v.toFixed(dp);
+  const signed = spec.signed && v > 0 ? "+" + s : s;
+  return signed + (spec.unit || "");
+}
+
+const fmtHz = (v) => (v >= 1000 ? (v / 1000).toFixed(2) + " kHz" : v.toFixed(v < 10 ? 2 : 0) + " Hz");
+const fmtSec = (v) => (v >= 1 ? v.toFixed(2) + " s" : (v * 1000).toFixed(0) + " ms");
+const fmtPct = (v) => Math.round(v) + "%";
+
+const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+const noteName = (m) => NOTE_NAMES[((m % 12) + 12) % 12] + (Math.floor(m / 12) - 1);
+
+/* ── Value popup ────────────────────────────────────────────────────────── */
+
+// One shared element. A control registers `el.popText`; hover shows it, a drag
+// keeps it up and live until the pointer is released. Nothing is printed on
+// the faceplate itself, which is the house convention — the readout follows
+// the hand rather than filling the panel with numbers nobody is reading.
+const pop = document.createElement("div");
+pop.className = "value-pop";
+document.body.append(pop);
+let popOwner = null;
+
+function popMove(x, y) {
+  pop.style.left = (x + 12) + "px";
+  pop.style.top = (y - 24) + "px";
+}
+function popShow(el, x, y) {
+  if (!el.popText) return;
+  popOwner = el;
+  pop.textContent = el.popText();
+  pop.style.display = "block";
+  popMove(x, y);
+}
+function popRefresh() {
+  if (popOwner && popOwner.popText) pop.textContent = popOwner.popText();
+}
+function popHide(el) {
+  if (el && popOwner !== el) return;
+  if (popOwner && popOwner.classList.contains("dragging")) return;
+  pop.style.display = "none";
+  popOwner = null;
+}
+
+document.addEventListener("pointerover", (e) => {
+  const el = e.target.closest && e.target.closest("[data-pop]");
+  if (el) popShow(el, e.clientX, e.clientY);
+});
+document.addEventListener("pointermove", (e) => {
+  if (popOwner) popMove(e.clientX, e.clientY);
+});
+document.addEventListener("pointerout", (e) => {
+  const el = e.target.closest && e.target.closest("[data-pop]");
+  if (el) popHide(el);
+});
+
+function attachPop(el, textFn) {
+  el.dataset.pop = "1";
+  el.popText = textFn;
+}
+
+/* ── Drag plumbing ──────────────────────────────────────────────────────── */
+
+// One handler for every continuous control. `axis` is "y" (faders, dials) or
+// "x" (the route constants); fine drag on shift, reset on double-click.
+function makeDraggable(el, get, set, axis, range) {
+  let startT = 0, startPos = 0;
+  el.addEventListener("pointerdown", (e) => {
+    el.setPointerCapture(e.pointerId);
+    el.classList.add("dragging");
+    startT = get();
+    startPos = axis === "y" ? e.clientY : e.clientX;
+    popShow(el, e.clientX, e.clientY);
+    e.preventDefault();
+  });
+  el.addEventListener("pointermove", (e) => {
+    if (!el.classList.contains("dragging")) return;
+    const pos = axis === "y" ? e.clientY : e.clientX;
+    const delta = axis === "y" ? startPos - pos : pos - startPos;
+    const span = range || 140;
+    const scale = e.shiftKey ? 0.25 : 1;
+    set(Math.min(1, Math.max(0, startT + (delta / span) * scale)));
+    popRefresh();
+  });
+  const end = (e) => {
+    if (!el.classList.contains("dragging")) return;
+    el.classList.remove("dragging");
+    try { el.releasePointerCapture(e.pointerId); } catch (_) {}
+    popHide(el);
+  };
+  el.addEventListener("pointerup", end);
+  el.addEventListener("pointercancel", end);
+}
+
+/* ── Fader ──────────────────────────────────────────────────────────────── */
+
+function fader(label, spec, t0) {
+  const cell = document.createElement("div");
+  cell.className = "ctl";
+  const lbl = document.createElement("div");
+  lbl.className = "ctl-label";
+  lbl.textContent = label;
+  const track = document.createElement("div");
+  track.className = "ctl-fader";
+  track.innerHTML =
+    '<div class="ctl-fader-track"><div class="ctl-fader-fill"></div></div>' +
+    '<div class="ctl-fader-thumb"></div>';
+  cell.append(lbl, track);
+
+  let t = t0 ?? 0.5;
+  let onChange = null;
+  const fill = track.querySelector(".ctl-fader-fill");
+  const thumb = track.querySelector(".ctl-fader-thumb");
+  function draw() {
+    fill.style.height = (t * 100) + "%";
+    thumb.style.bottom = (t * 100) + "%";
+    if (onChange) onChange(t);
+  }
+  attachPop(track, () => label + "  " + formatValue(spec, t));
+  makeDraggable(track, () => t, (nt) => { t = nt; draw(); }, "y", 120);
+  track.addEventListener("dblclick", () => { t = t0 ?? 0.5; draw(); });
+  draw();
+  cell.api = {
+    get: () => t,
+    set: (nt) => { t = nt; draw(); },
+    spec,
+    onChange: (fn) => { onChange = fn; },
+  };
+  return cell;
+}
+
+/* ── Dial ───────────────────────────────────────────────────────────────── */
+
+function polar(cx, cy, r, deg) {
+  const a = (deg - 90) * Math.PI / 180;
+  return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+}
+function arcPath(cx, cy, r, a0, a1) {
+  const [x0, y0] = polar(cx, cy, r, a0);
+  const [x1, y1] = polar(cx, cy, r, a1);
+  const large = Math.abs(a1 - a0) > 180 ? 1 : 0;
+  return `M${x0.toFixed(2)} ${y0.toFixed(2)} A${r} ${r} 0 ${large} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`;
+}
+
+const ARC_START = -135, ARC_SWEEP = 270;
+
+function dial(label, spec, t0, size) {
+  size = size || 36;
+  const cell = document.createElement("div");
+  cell.className = "ctl";
+  const lbl = document.createElement("div");
+  lbl.className = "ctl-label";
+  lbl.textContent = label;
+  const holder = document.createElement("div");
+  holder.className = "ctl-dial";
+  cell.append(lbl, holder);
+
+  let t = t0 ?? 0.5;
+  const cx = size / 2, cy = size / 2, r = size * 0.40, faceR = size * 0.29;
+  function draw() {
+    const a1 = ARC_START + ARC_SWEEP * t;
+    // Bipolar specs fill outward from centre rather than from the left stop,
+    // so "no modulation" reads as an empty arc, not a half-full one.
+    const from = spec.bipolar ? ARC_START + ARC_SWEEP * 0.5 : ARC_START;
+    const [ix, iy] = polar(cx, cy, faceR - 1, a1);
+    holder.innerHTML =
+      `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">` +
+      `<path class="dial-track" stroke-width="3" d="${arcPath(cx, cy, r, ARC_START, ARC_START + ARC_SWEEP)}"/>` +
+      (Math.abs(a1 - from) > 0.5
+        ? `<path class="dial-fill" stroke-width="3" d="${arcPath(cx, cy, r, Math.min(from, a1), Math.max(from, a1))}"/>`
+        : "") +
+      `<circle class="dial-face" cx="${cx}" cy="${cy}" r="${faceR}"/>` +
+      `<line class="dial-indicator" x1="${cx}" y1="${cy}" x2="${ix.toFixed(2)}" y2="${iy.toFixed(2)}"/>` +
+      `</svg>`;
+  }
+  attachPop(holder, () => label + "  " + formatValue(spec, t));
+  makeDraggable(holder, () => t, (nt) => { t = nt; draw(); }, "y", 140);
+  holder.addEventListener("dblclick", () => { t = t0 ?? 0.5; draw(); });
+  draw();
+  cell.api = { get: () => t, set: (nt) => { t = nt; draw(); } };
+  return cell;
+}
+
+/* ── Wave knob (port of vxn-2 panels/knob.js) ───────────────────────────── */
+
+const WAVE_GLYPHS = {
+  "Sine": (() => {
+    const pts = [];
+    for (let k = 0; k <= 16; k++) { const u = k / 16; pts.push([u, 0.5 - 0.38 * Math.sin(u * Math.PI * 2)]); }
+    return pts;
+  })(),
+  "Tri":   [[0, 0.85], [0.5, 0.15], [1, 0.85]],
+  "Saw+":  [[0, 0.85], [0.5, 0.15], [0.5, 0.85], [1, 0.15]],
+  "Saw-":  [[0, 0.15], [0.5, 0.85], [0.5, 0.15], [1, 0.85]],
+  "Pulse": [[0, 0.85], [0, 0.15], [0.5, 0.15], [0.5, 0.85], [1, 0.85]],
+  "S&H":   [[0, 0.6], [0.28, 0.6], [0.28, 0.2], [0.56, 0.2], [0.56, 0.8], [0.82, 0.8], [0.82, 0.45], [1, 0.45]],
+  "Sqr":   [[0, 0.85], [0, 0.15], [0.5, 0.15], [0.5, 0.85], [1, 0.85]],
+};
+
+const LFO_SHAPES = ["Sine", "Tri", "Saw+", "Saw-", "Pulse", "S&H"];
+
+/* Operator waveforms.
+
+   The first four are `vxn4_dsp::Waveform` as it stands. The rest are the
+   proposed additions, and each is one arm of `harmonic_amp` plus one table set
+   (~34 KB at TABLE_LEN 2048, once for the bank rather than per operator).
+
+   The sine family is the substantive part: every waveform in the current set
+   is symmetric, so every one produces odd-ordered sideband structure. The
+   rectified and gated variants carry EVEN harmonics and waveform asymmetry,
+   which is what a sine cannot reach at any ratio or index — clav, reed and
+   vocal-ish FM live there.
+
+   Impulse is deliberately too bright to use raw. That is why vxn-4 in
+   particular can carry it: per-operator damping is a one-pole on the
+   modulation input in Hz, so its corner turns one table into a continuous
+   brightness axis.
+
+   Not here, and why: an inverted saw is a saw a half-cycle out, which the
+   per-operator Phase control already reaches; noise breaks the phase
+   accumulator and would be a separate source type, not a table; formant tables
+   transpose their peaks with the key, which a fixed-frequency operator into
+   the filter does properly.
+
+   `f` is the ideal shape, sampled for the preview — the real tables are
+   band-limited by summing `harmonic_amp`, so a preview drawn from the series
+   would show Gibbs ringing that says nothing about the waveform's identity. */
+const TAU_ = Math.PI * 2;
+const dirichlet = (th, n) => {
+  let s = 0;
+  for (let k = 1; k <= n; k++) s += Math.cos(k * th);
+  return s / n;
+};
+const OP_WAVE_DEFS = [
+  { name: "Sine", dc: false, f: (th) => Math.sin(th) },
+  { name: "Triangle", dc: false, f: (th) => 1 - 4 * Math.abs(((th / TAU_) + 0.25) % 1 - 0.5) },
+  { name: "Saw", dc: false, f: (th) => 1 - th / Math.PI },
+  { name: "Square", dc: false, f: (th) => (th < Math.PI ? 1 : -1) },
+  { name: "Half Sine", dc: true, f: (th) => (th < Math.PI ? Math.sin(th) : 0) },
+  { name: "Abs Sine", dc: true, f: (th) => Math.abs(Math.sin(th)) },
+  { name: "Quarter Sine", dc: true, f: (th) => (th < Math.PI / 2 ? Math.sin(2 * th) : 0) },
+  { name: "Pinch Sine", dc: true, f: (th) => (th < Math.PI ? Math.abs(Math.sin(2 * th)) : 0) },
+  { name: "Pulse 25%", dc: true, f: (th) => (th < Math.PI / 2 ? 1 : -1) },
+  { name: "Pulse 12%", dc: true, f: (th) => (th < Math.PI / 4 ? 1 : -1) },
+  { name: "Impulse", dc: false, f: (th) => dirichlet(th, 12) },
+];
+
+function glyphPath(name, w, h) {
+  const pts = WAVE_GLYPHS[name];
+  if (!pts) return null;
+  return pts.map((p, i) => (i === 0 ? "M" : "L") + (p[0] * w).toFixed(2) + " " + (p[1] * h).toFixed(2)).join(" ");
+}
+
+function waveKnob(label, variants, idx0, labels, size) {
+  size = size || 64;
+  const cell = document.createElement("div");
+  cell.className = "ctl";
+  const lbl = document.createElement("div");
+  lbl.className = "ctl-label";
+  lbl.textContent = label;
+  const holder = document.createElement("div");
+  holder.className = "ctl-wave";
+  cell.append(lbl, holder);
+
+  let idx = idx0 || 0;
+  const cx = size / 2, cy = size / 2;
+  const knobR = size * 0.20, glyphR = size * 0.41, gw = size * 0.22, gh = size * 0.16;
+  const n = variants.length;
+  const stepDeg = n > 1 ? ARC_SWEEP / (n - 1) : 0;
+
+  function draw() {
+    let svg = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">`;
+    svg += `<circle class="knob-face" cx="${cx}" cy="${cy}" r="${knobR.toFixed(2)}"/>`;
+    svg += `<circle class="knob-dimple" cx="${cx}" cy="${cy}" r="${(knobR * 0.62).toFixed(2)}"/>`;
+    for (let i = 0; i < n; i++) {
+      const a = (ARC_START + i * stepDeg) * Math.PI / 180;
+      const gx = cx + glyphR * Math.sin(a), gy = cy - glyphR * Math.cos(a);
+      const d = glyphPath(variants[i], gw, gh);
+      svg += `<g transform="translate(${(gx - gw / 2).toFixed(2)} ${(gy - gh / 2).toFixed(2)})" data-variant="${i}">`;
+      svg += `<rect class="wave-hit" x="-3" y="-3" width="${(gw + 6).toFixed(2)}" height="${(gh + 6).toFixed(2)}"/>`;
+      if (d) svg += `<path class="wave-glyph${i === idx ? " active" : ""}" d="${d}"/>`;
+      svg += `</g>`;
+    }
+    const ang = (ARC_START + idx * stepDeg).toFixed(2);
+    svg += `<g transform="rotate(${ang} ${cx} ${cy})">`;
+    svg += `<line class="knob-indicator-line" x1="${cx}" y1="${cy}" x2="${cx}" y2="${(cy - knobR + 2).toFixed(2)}"/>`;
+    svg += `</g></svg>`;
+    holder.innerHTML = svg;
+  }
+  attachPop(holder, () => label + "  " + (labels || variants)[idx]);
+  holder.addEventListener("pointerdown", (e) => {
+    const g = e.target.closest("[data-variant]");
+    if (g) { idx = +g.dataset.variant; draw(); popRefresh(); }
+  });
+  draw();
+  cell.api = { get: () => idx, set: (i) => { idx = i; draw(); } };
+  return cell;
+}
+
+/* ── Operator waveform picker ───────────────────────────────────────────── */
+
+function wavePreviewSvg(def, w, h) {
+  const mid = h / 2, amp = h / 2 - 3;
+  let d = "";
+  const N = 96;
+  for (let i = 0; i <= N; i++) {
+    const th = (i / N) * TAU_;
+    const v = Math.max(-1.15, Math.min(1.15, def.f(th)));
+    d += (i === 0 ? "M" : "L") + ((i / N) * (w - 4) + 2).toFixed(2) + " " + (mid - v * amp).toFixed(2);
+  }
+  return `<svg class="wave-preview" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">` +
+         `<line class="wave-axis" x1="0" y1="${mid}" x2="${w}" y2="${mid}"/>` +
+         `<path class="wave-trace" d="${d}"/></svg>`;
+}
+
+function wavePicker(label, defs, idx0) {
+  const cell = document.createElement("div");
+  cell.className = "ctl";
+  const lbl = document.createElement("div");
+  lbl.className = "ctl-label";
+  lbl.textContent = label;
+  const pick = document.createElement("div");
+  pick.className = "wave-pick";
+  const preview = document.createElement("div");
+  preview.style.lineHeight = "0";
+  const chip = document.createElement("div");
+  chip.className = "dc-chip";
+  chip.textContent = "DC";
+  chip.title = "Non-zero mean — biases the sum bus when used as a carrier";
+  const sel = combo(defs.map((d) => d.name), idx0);
+  pick.append(preview, sel, chip);
+  cell.append(lbl, pick);
+
+  let idx = idx0 || 0;
+  function draw() {
+    preview.innerHTML = wavePreviewSvg(defs[idx], 92, 34);
+    chip.classList.toggle("hidden", !defs[idx].dc);
+  }
+  sel.addEventListener("change", () => { idx = +sel.value; draw(); });
+  draw();
+  cell.api = { get: () => idx, set: (i) => { idx = i; sel.value = String(i); draw(); } };
+  return cell;
+}
+
+/* ── Toggle, button group ───────────────────────────────────────────────── */
+
+function toggle(label, on, onChange) {
+  const row = document.createElement("div");
+  row.className = "ctl-tg-row" + (on ? " on" : "");
+  row.innerHTML = `<span class="ctl-tg-box"></span><span class="ctl-tg-lbl">${label}</span>`;
+  row.addEventListener("click", () => {
+    row.classList.toggle("on");
+    if (onChange) onChange(row.classList.contains("on"));
+  });
+  row.api = {
+    get: () => row.classList.contains("on"),
+    // Silent: used when something else already owns the state change (the PM
+    // grid toggling a route), so the toggle follows without re-announcing it.
+    set: (on) => row.classList.toggle("on", on),
+  };
+  return row;
+}
+
+function buttonGroup(label, options, idx0, flow, onChange) {
+  const cell = document.createElement("div");
+  cell.className = "ctl ctl-buttongroup";
+  if (flow) cell.dataset.flow = flow;
+  const lbl = document.createElement("div");
+  lbl.className = "ctl-label";
+  lbl.textContent = label || "";
+  const rows = document.createElement("div");
+  rows.className = "tg-rows";
+  cell.append(lbl, rows);
+
+  let idx = idx0 || 0;
+  options.forEach((opt, i) => {
+    const row = document.createElement("div");
+    row.className = "ctl-tg-row";
+    row.innerHTML = `<span class="ctl-tg-box"></span><span class="ctl-tg-lbl">${opt}</span>`;
+    row.addEventListener("click", () => { idx = i; draw(); if (onChange) onChange(i); });
+    rows.append(row);
+  });
+  function draw() {
+    [...rows.children].forEach((r, i) => r.classList.toggle("on", i === idx));
+  }
+  draw();
+  cell.api = { get: () => idx, set: (i) => { idx = i; draw(); } };
+  return cell;
+}
+
+/* ── Mod sources and destinations ───────────────────────────────────────── */
+
+// Sources the matrix offers. Macros are patch-global; the LFOs, envelopes and
+// the player expressions below them are per-voice.
+const MOD_SOURCES = [
+  "—",
+  "Macro 1", "Macro 2", "Macro 3", "Macro 4",
+  "Macro 5", "Macro 6", "Macro 7", "Macro 8",
+  "LFO 1", "LFO 2", "Env 1", "Env 2",
+  "Velocity", "Key", "Mod Wheel", "Aftertouch", "Random",
+];
+
+// Polarity × Shape, as vxn-core-matrix's curve table lays them out.
+const CURVES = [
+  "Lin", "Exp", "Log",
+  "Bipolar", "Bipolar Exp", "Bipolar Log",
+  "Abs", "Abs Exp", "Abs Log",
+];
+
+// Destinations, grouped. The per-route offsets into the operator bank are
+// edited on the OPERATORS tab, so what is left here is everything a source
+// might reach that is not a PM depth: pitch, both filter stages, the FX mixes,
+// the other mod sources — an envelope on an LFO's rate is the standard
+// gesture this exists for — and any individual operator parameter.
+const MOD_DESTS = [
+  { label: "", items: ["—"] },
+  { label: "Pitch", items: ["Pitch", "Fine Tune", "Glide Time"] },
+  { label: "Filter", items: [
+    "HP Cutoff", "HP Reso", "Cutoff", "Reso", "Drive", "Filter Key Track", "Filter Mode",
+  ]},
+  { label: "Mod sources", items: [
+    "LFO 1 Rate", "LFO 1 Depth", "LFO 1 Delay", "LFO 1 Fade",
+    "LFO 2 Rate", "LFO 2 Depth",
+    "Env 1 Attack", "Env 1 Decay", "Env 1 Sustain", "Env 1 Release",
+    "Env 2 Attack", "Env 2 Decay", "Env 2 Sustain", "Env 2 Release",
+  ]},
+  { label: "FX", items: [
+    "Phaser Rate", "Phaser Depth", "Phaser Mix",
+    "Chorus Rate", "Chorus Depth", "Chorus Mix",
+    "Delay Time", "Delay FB", "Delay Mix",
+    "Reverb Size", "Reverb Decay", "Reverb Mix",
+    "Dyn Threshold", "Dyn Drive", "Master Volume",
+  ]},
+  // Fine and Detune rather than Num/Den: the rational pair is integer by
+  // design and a modulated numerator would step, not glide. The two continuous
+  // tuning controls are the ones worth routing to.
+  { label: "Operators", items: (() => {
+    const out = [];
+    for (let i = 1; i <= NOPS; i++) {
+      ["Level", "Fine", "Detune", "Damp", "Pan", "Phase Decorr"].forEach((p) => out.push(`Op ${i} ${p}`));
+    }
+    return out;
+  })() },
+];
+
+function combo(options, idx0, onChange) {
+  const sel = document.createElement("select");
+  sel.className = "combo";
+  options.forEach((o, i) => {
+    const opt = document.createElement("option");
+    opt.value = i; opt.textContent = o;
+    sel.append(opt);
+  });
+  sel.value = String(idx0 || 0);
+  const sync = () => sel.classList.toggle("empty", sel.value === "0" && options[0] === "—");
+  sel.addEventListener("change", () => { sync(); if (onChange) onChange(+sel.value); });
+  sync();
+  return sel;
+}
+
+// Same control, grouped options. Indices are flat across all groups so a slot
+// stores one number, exactly as a DestId does.
+function comboGrouped(groups, idx0, onChange) {
+  const sel = document.createElement("select");
+  sel.className = "combo";
+  let flat = 0;
+  groups.forEach((g) => {
+    const parent = g.label
+      ? Object.assign(document.createElement("optgroup"), { label: g.label })
+      : sel;
+    g.items.forEach((it) => {
+      const opt = document.createElement("option");
+      opt.value = flat++; opt.textContent = it;
+      parent.append(opt);
+    });
+    if (g.label) sel.append(parent);
+  });
+  sel.value = String(idx0 || 0);
+  const sync = () => sel.classList.toggle("empty", sel.value === "0");
+  sel.addEventListener("change", () => { sync(); if (onChange) onChange(+sel.value); });
+  sync();
+  return sel;
+}
+
+/* ── Horizontal bipolar fader (route + slot depths) ─────────────────────── */
+
+function hFader(t0, spec, label, onChange) {
+  const el = document.createElement("div");
+  el.className = "hfader";
+  el.innerHTML =
+    '<div class="hfader-track"><div class="hfader-fill"></div></div>' +
+    '<div class="hfader-centre"></div>' +
+    '<div class="hfader-thumb"></div>';
+  const fill = el.querySelector(".hfader-fill");
+  const thumb = el.querySelector(".hfader-thumb");
+  const centre = el.querySelector(".hfader-centre");
+  if (!spec.bipolar) centre.style.display = "none";
+
+  let t = t0;
+  function draw() {
+    const origin = spec.bipolar ? 0.5 : 0;
+    const lo = Math.min(origin, t), hi = Math.max(origin, t);
+    fill.style.left = (lo * 100) + "%";
+    fill.style.width = ((hi - lo) * 100) + "%";
+    thumb.style.left = (t * 100) + "%";
+    if (onChange) onChange(t);
+  }
+  attachPop(el, () => label + "  " + formatValue(spec, t));
+  makeDraggable(el, () => t, (nt) => { t = nt; draw(); }, "x", 160);
+  el.addEventListener("dblclick", () => { t = spec.bipolar ? 0.5 : 0; draw(); });
+  draw();
+  el.api = { get: () => t, set: (nt) => { t = nt; draw(); } };
+  return el;
+}
+
+/* ── Stereo meters ──────────────────────────────────────────────────────── */
+
+// Levels are stereo; gain reduction is not. The compressor's detector is
+// linked across the pair — both channels are pulled down by the same amount,
+// by design, or a hard pan would wander mid-transient — so a two-bar GR meter
+// would be two copies of one number. It draws as a single bar, reading
+// downward from 0 dB.
+function meter(label, kind) {
+  const gr = kind === "gr";
+  const chan = '<div class="meter-chan"><div class="meter-fill"></div><div class="meter-peak"></div></div>';
+  const col = document.createElement("div");
+  col.className = "meter-col";
+  col.innerHTML =
+    `<div class="ctl-label">${label}</div>` +
+    `<div class="meter-bar${gr ? " meter-gr" : ""}">${gr ? chan : chan + chan}</div>`;
+  const fills = [...col.querySelectorAll(".meter-fill")];
+  const peaks = [...col.querySelectorAll(".meter-peak")];
+  const pk = [0, 0];
+  col.tick = (l, r) => {
+    fills.forEach((fill, i) => {
+      const v = i === 0 ? l : r;
+      fill.style.height = (v * 100) + "%";
+      pk[i] = Math.max(pk[i] * 0.97, v);
+      peaks[i].style.bottom = (pk[i] * 100) + "%";
+    });
+  };
+  METERS.push(col);
+  return col;
+}
+const METERS = [];
+
+/* ═══ Patches ══════════════════════════════════════════════════════════════
+   The seven factory patches (vxn4_engine::patch). Macro labels and ranges are
+   patch data — invented here, since the engine does not carry them yet, but
+   this is exactly the shape the UI needs from a patch: a name, a unit and a
+   range per knob.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+const PATCHES = [
+  { name: "sine", macros: [
+    ["Level", { min: 0, max: 100, fmt: fmtPct }], ["Bright", { min: 0, max: 100, fmt: fmtPct }],
+    ["Attack", { min: 0.001, max: 2, exp: 1, fmt: fmtSec }], ["Release", { min: 0.01, max: 8, exp: 1, fmt: fmtSec }],
+    ["Drift", { min: 0, max: 50, unit: " ct" }], ["Damp", { min: 200, max: 20000, exp: 1, fmt: fmtHz }],
+    ["Vel", { min: 0, max: 100, fmt: fmtPct }], ["Width", { min: 0, max: 100, fmt: fmtPct }],
+  ]},
+  { name: "epiano", macros: [
+    ["Tine", { min: 0, max: 100, fmt: fmtPct }], ["Bark", { min: 0, max: 100, fmt: fmtPct }],
+    ["Bell", { min: 0, max: 100, fmt: fmtPct }], ["Decay", { min: 0.1, max: 12, exp: 1, fmt: fmtSec }],
+    ["Bloom", { min: 0, max: 100, fmt: fmtPct }], ["Damp", { min: 200, max: 20000, exp: 1, fmt: fmtHz }],
+    ["Vel", { min: 0, max: 100, fmt: fmtPct }], ["Width", { min: 0, max: 100, fmt: fmtPct }],
+  ]},
+  { name: "bell", macros: [
+    ["Strike", { min: 0, max: 100, fmt: fmtPct }], ["Inharm", { min: -50, max: 50, unit: " ct", signed: true, bipolar: true }],
+    ["Ring", { min: 0.2, max: 20, exp: 1, fmt: fmtSec }], ["Partials", { min: 0, max: 100, fmt: fmtPct }],
+    ["Beat", { min: 0, max: 12, unit: " Hz", dp: 2 }], ["Damp", { min: 200, max: 20000, exp: 1, fmt: fmtHz }],
+    ["Vel", { min: 0, max: 100, fmt: fmtPct }], ["Air", { min: 0, max: 100, fmt: fmtPct }],
+  ]},
+  { name: "saws", macros: [
+    ["Detune", { min: 0, max: 60, unit: " ct" }], ["Sub", { min: 0, max: 100, fmt: fmtPct }],
+    ["Bite", { min: 0, max: 100, fmt: fmtPct }], ["Sweep", { min: 0, max: 100, fmt: fmtPct }],
+    ["Attack", { min: 0.001, max: 2, exp: 1, fmt: fmtSec }], ["Damp", { min: 200, max: 20000, exp: 1, fmt: fmtHz }],
+    ["Vel", { min: 0, max: 100, fmt: fmtPct }], ["Width", { min: 0, max: 100, fmt: fmtPct }],
+  ]},
+  { name: "web", macros: [
+    ["Density", { min: 0, max: 100, fmt: fmtPct }], ["Chaos", { min: 0, max: 100, fmt: fmtPct }],
+    ["Damp", { min: 200, max: 20000, exp: 1, fmt: fmtHz }], ["Drift", { min: 0, max: 100, fmt: fmtPct }],
+    ["Bloom", { min: 0, max: 100, fmt: fmtPct }], ["Decay", { min: 0.1, max: 20, exp: 1, fmt: fmtSec }],
+    ["Vel", { min: 0, max: 100, fmt: fmtPct }], ["Width", { min: 0, max: 100, fmt: fmtPct }],
+  ]},
+  { name: "grind", macros: [
+    ["Drive", { min: 0, max: 100, fmt: fmtPct }], ["Grit", { min: 0, max: 100, fmt: fmtPct }],
+    ["Fold", { min: 0, max: 100, fmt: fmtPct }], ["Sag", { min: 0, max: 100, fmt: fmtPct }],
+    ["Rate", { min: 0.05, max: 20, exp: 1, unit: " Hz", dp: 2 }], ["Damp", { min: 200, max: 20000, exp: 1, fmt: fmtHz }],
+    ["Vel", { min: 0, max: 100, fmt: fmtPct }], ["Width", { min: 0, max: 100, fmt: fmtPct }],
+  ]},
+  { name: "supersaw", macros: [
+    ["Detune", { min: 0, max: 60, unit: " ct" }], ["Width", { min: 0, max: 100, fmt: fmtPct }],
+    ["Mix", { min: 0, max: 100, fmt: fmtPct }], ["Bright", { min: 0, max: 100, fmt: fmtPct }],
+    ["Grind", { min: 0, max: 100, fmt: fmtPct }], ["Damp", { min: 200, max: 20000, exp: 1, fmt: fmtHz }],
+    ["Attack", { min: 0.001, max: 2, exp: 1, fmt: fmtSec }], ["Sub", { min: 0, max: 100, fmt: fmtPct }],
+  ]},
+];
+
+let patchIdx = 6;
+
+/* ═══ PERFORM panel ════════════════════════════════════════════════════════ */
+
+const macroBody = document.getElementById("macro-body");
+
+function buildMacros() {
+  macroBody.innerHTML = "";
+  const p = PATCHES[patchIdx];
+  for (let i = 0; i < 8; i++) {
+    const [label, spec] = p.macros[i];
+    const wrap = document.createElement("div");
+    wrap.className = "ctl macro-cell";
+    const d = dial(label, Object.assign({}, spec), 0.3 + 0.07 * i, 46);
+    const idxLbl = document.createElement("div");
+    idxLbl.className = "macro-idx";
+    idxLbl.textContent = "MACRO " + (i + 1);
+    wrap.append(d, idxLbl);
+    macroBody.append(wrap);
+  }
+}
+
+function setPatch(i) {
+  patchIdx = (i + PATCHES.length) % PATCHES.length;
+  document.getElementById("preset-name").textContent = PATCHES[patchIdx].name;
+  buildMacros();
+}
+document.getElementById("preset-prev").onclick = () => setPatch(patchIdx - 1);
+document.getElementById("preset-next").onclick = () => setPatch(patchIdx + 1);
+
+// LFO 1 — note-synced. Delay holds the LFO at zero after a note-on, Fade ramps
+// it in; Sync swaps Rate's Hz for a musical subdivision, and rides under the
+// fader it re-maps rather than in the bottom strip. Retrig is the one quirk of
+// the LFO as a whole, so it is the only thing in the strip.
+document.getElementById("lfo1-body").append(
+  waveKnob("Shape", LFO_SHAPES, 0),
+  (() => {
+    const col = document.createElement("div");
+    col.className = "ctl-col";
+    col.append(fader("Rate", { min: 0.01, max: 40, exp: 1, unit: " Hz", dp: 2 }, 0.45), toggle("Sync", false));
+    return col;
+  })(),
+  fader("Delay", { min: 0, max: 5, exp: 1, fmt: fmtSec }, 0.2),
+  fader("Fade", { min: 0, max: 5, exp: 1, fmt: fmtSec }, 0.3),
+  fader("Depth", { min: 0, max: 100, fmt: fmtPct }, 0.7),
+);
+document.getElementById("lfo1-strip").append(toggle("Retrig", true));
+
+// LFO 2 is free-running: no onset to delay, nothing to retrigger, and nothing
+// to phase-lock to.
+document.getElementById("lfo2-body").append(
+  waveKnob("Shape", LFO_SHAPES, 1),
+  (() => {
+    const col = document.createElement("div");
+    col.className = "ctl-col";
+    col.append(fader("Rate", { min: 0.01, max: 40, exp: 1, unit: " Hz", dp: 2 }, 0.3), toggle("Sync", true));
+    return col;
+  })(),
+  fader("Depth", { min: 0, max: 100, fmt: fmtPct }, 0.5),
+);
+
+// Filter — two stages. The HP is a fixed high-pass ahead of the multimode
+// section; the main stage is vxn-2's control set (Cutoff + Tuned, Reso, Drive,
+// Key, with Mode and Slope as button groups).
+(() => {
+  const body = document.getElementById("filter-body");
+
+  const hp = document.createElement("div");
+  hp.className = "subgroup";
+  const hpBody = document.createElement("div");
+  hpBody.className = "subgroup-body";
+  hpBody.append(
+    fader("Cutoff", { min: 10, max: 2000, exp: 1, fmt: fmtHz }, 0.1),
+    fader("Reso", { min: 0, max: 100, fmt: fmtPct }, 0.0),
+  );
+  const hpCap = document.createElement("div");
+  hpCap.className = "subgroup-cap";
+  hpCap.textContent = "HP stage";
+  hp.append(hpBody, hpCap);
+
+  const main = document.createElement("div");
+  main.className = "subgroup";
+  const mainBody = document.createElement("div");
+  mainBody.className = "subgroup-body";
+  const cutCol = document.createElement("div");
+  cutCol.className = "ctl-col";
+  cutCol.append(fader("Cutoff", { min: 20, max: 20000, exp: 1, fmt: fmtHz }, 0.8), toggle("Tuned", false));
+  mainBody.append(
+    buttonGroup("Mode", ["LP", "HP", "BP", "Notch"], 0),
+    buttonGroup("Slope", ["2P", "4P"], 1),
+    cutCol,
+    fader("Reso", { min: 0, max: 100, fmt: fmtPct }, 0.25),
+    fader("Drive", { min: 0, max: 100, fmt: fmtPct }, 0.15),
+    fader("Key", { min: 0, max: 100, fmt: fmtPct }, 0.0),
+  );
+  const mainCap = document.createElement("div");
+  mainCap.className = "subgroup-cap";
+  mainCap.textContent = "Main stage";
+  main.append(mainBody, mainCap);
+
+  const sep = document.createElement("div");
+  sep.className = "panel-sep";
+  body.append(hp, sep, main);
+})();
+
+// ADHSR × 2. Hold sits between Decay and Sustain: the level holds at the decay
+// target before falling to sustain, which is the segment the DX-style four-rate
+// EG already has and plain ADSR does not.
+function buildEnv(id) {
+  document.getElementById(id).append(
+    fader("A", { min: 0.001, max: 8, exp: 1, fmt: fmtSec }, 0.15),
+    fader("D", { min: 0.001, max: 12, exp: 1, fmt: fmtSec }, 0.4),
+    fader("H", { min: 0, max: 8, exp: 1, fmt: fmtSec }, 0.1),
+    fader("S", { min: 0, max: 100, fmt: fmtPct }, 0.6),
+    fader("R", { min: 0.001, max: 20, exp: 1, fmt: fmtSec }, 0.35),
+    buttonGroup("Curve", ["Lin", "Exp"], 1),
+  );
+}
+buildEnv("env1-body");
+buildEnv("env2-body");
+
+/* ═══ Mod matrix overlay ═══════════════════════════════════════════════════ */
+
+const N_SLOTS = 16;
+const SLOTS = Array.from({ length: N_SLOTS }, () => ({
+  on: false, src: 0, dest: 0, depth: 0.5, curve: 0, sclSrc: 0, sclCurve: 0,
+}));
+// A few authored slots so the table is not blank — including the one the brief
+// names, an envelope on an LFO's rate, and an LFO on the filter scaled by
+// velocity, which is what the scale column is for.
+Object.assign(SLOTS[0], { on: true, src: 11, dest: 11, depth: 0.72, curve: 0 });                    // Env 1 → LFO 1 Rate
+Object.assign(SLOTS[1], { on: true, src: 9, dest: 6, depth: 0.63, curve: 3, sclSrc: 13 });          // LFO 1 → Cutoff, × Velocity
+Object.assign(SLOTS[2], { on: true, src: 13, dest: 8, depth: 0.66, curve: 1 });                     // Velocity → Drive
+Object.assign(SLOTS[3], { on: true, src: 15, dest: 2, depth: 0.53, curve: 3 });                     // Mod Wheel → Fine Tune
+
+const mmGrid = document.getElementById("mm-grid");
+function buildMatrix() {
+  mmGrid.innerHTML = "";
+  ["On", "#", "Source", "Destination", "Depth", "Curve", "Scale src", "Curve"].forEach((h) => {
+    const d = document.createElement("div");
+    d.className = "mm-hd"; d.textContent = h;
+    mmGrid.append(d);
+  });
+
+  SLOTS.forEach((s, i) => {
+    const tg = toggle("", s.on, (on) => { s.on = on; sync(); });
+    tg.style.justifySelf = "center";
+    const num = document.createElement("div");
+    num.className = "mm-num"; num.textContent = String(i + 1);
+    const src = combo(MOD_SOURCES, s.src, (v) => { s.src = v; sync(); });
+    const dest = comboGrouped(MOD_DESTS, s.dest, (v) => { s.dest = v; sync(); });
+    const depth = hFader(s.depth, { min: -100, max: 100, dp: 0, signed: true, bipolar: true },
+                         "Depth", (t) => { s.depth = t; });
+    const curve = combo(CURVES, s.curve, (v) => { s.curve = v; });
+    const sclSrc = combo(MOD_SOURCES, s.sclSrc, (v) => { s.sclSrc = v; sync(); });
+    const sclCurve = combo(CURVES, s.sclCurve, (v) => { s.sclCurve = v; });
+
+    // An empty slot, or one with no scaling source, dims the parts of the row
+    // that cannot do anything yet.
+    function sync() {
+      const live = s.on && s.src !== 0 && s.dest !== 0;
+      [num, dest, depth, curve, sclSrc].forEach((e) => e.classList.toggle("dim", !live));
+      src.classList.toggle("dim", !s.on);
+      sclCurve.classList.toggle("dim", !live || s.sclSrc === 0);
+    }
+    mmGrid.append(tg, num, src, dest, depth, curve, sclSrc, sclCurve);
+    sync();
+  });
+}
+buildMatrix();
+
+const mmBackdrop = document.getElementById("matrix-backdrop");
+const mmBtn = document.getElementById("matrix-open");
+function setMatrixOpen(open) {
+  mmBackdrop.hidden = !open;
+  mmBtn.classList.toggle("lit", open);
+}
+mmBtn.onclick = () => setMatrixOpen(mmBackdrop.hidden);
+document.getElementById("matrix-close").onclick = () => setMatrixOpen(false);
+mmBackdrop.addEventListener("pointerdown", (e) => {
+  if (e.target === mmBackdrop) setMatrixOpen(false);
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") setMatrixOpen(false);
+});
+
+/* ═══ MIXER panel ══════════════════════════════════════════════════════════ */
+
+(() => {
+  const dyn = document.getElementById("dyn-body");
+  const grid = document.createElement("div");
+  grid.className = "dial-grid";
+  grid.append(
+    dial("Thresh", { min: -48, max: 0, unit: " dB", dp: 1 }, 0.7),
+    dial("Ratio", { min: 1, max: 20, exp: 1, unit: ":1", dp: 1 }, 0.4),
+    dial("Atk", { min: 0.1, max: 200, exp: 1, unit: " ms", dp: 1 }, 0.3),
+    dial("Rel", { min: 5, max: 2000, exp: 1, unit: " ms", dp: 0 }, 0.5),
+    dial("Mkup", { min: 0, max: 24, unit: " dB", dp: 1 }, 0.2),
+    dial("Drive", { min: 0, max: 100, fmt: fmtPct }, 0.1),
+  );
+  dyn.append(meter("In"), grid, fader("Mix", { min: 0, max: 100, fmt: fmtPct }, 1.0),
+             meter("GR", "gr"), meter("Out"));
+
+  document.getElementById("master-body").append(
+    fader("Tune", { min: -100, max: 100, unit: " ct", signed: true }, 0.5),
+    fader("Volume", { min: -60, max: 6, unit: " dB", dp: 1 }, 0.8),
+    meter("Out"),
+  );
+  document.getElementById("master-strip").append(
+    buttonGroup("Quality", ["8x", "16x"], 0, "row"),
+    toggle("Limit", true),
+  );
+
+  document.getElementById("phaser-body").append(
+    fader("Rate", { min: 0.01, max: 10, exp: 1, unit: " Hz", dp: 2 }, 0.3),
+    fader("Depth", { min: 0, max: 100, fmt: fmtPct }, 0.6),
+    fader("FB", { min: 0, max: 100, fmt: fmtPct }, 0.4),
+    fader("Stereo", { min: 0, max: 100, fmt: fmtPct }, 0.5),
+    fader("Mix", { min: 0, max: 100, fmt: fmtPct }, 0.5),
+  );
+  document.getElementById("chorus-body").append(
+    fader("Rate", { min: 0.01, max: 10, exp: 1, unit: " Hz", dp: 2 }, 0.25),
+    fader("Depth", { min: 0, max: 100, fmt: fmtPct }, 0.45),
+    fader("Mix", { min: 0, max: 100, fmt: fmtPct }, 0.35),
+  );
+  const delayCol = document.createElement("div");
+  delayCol.className = "ctl-col";
+  delayCol.append(fader("Time", { min: 0.005, max: 2, exp: 1, fmt: fmtSec }, 0.5), toggle("Sync", true));
+  const mixCol = document.createElement("div");
+  mixCol.className = "ctl-col";
+  mixCol.append(fader("Mix", { min: 0, max: 100, fmt: fmtPct }, 0.3), toggle("Ping-Pong", true));
+  document.getElementById("delay-body").append(
+    delayCol, fader("FB", { min: 0, max: 100, fmt: fmtPct }, 0.4), mixCol,
+  );
+  document.getElementById("reverb-body").append(
+    fader("Size", { min: 0, max: 100, fmt: fmtPct }, 0.6),
+    fader("Decay", { min: 0.1, max: 30, exp: 1, fmt: fmtSec }, 0.5),
+    fader("Damp", { min: 0, max: 100, fmt: fmtPct }, 0.5),
+    fader("Mix", { min: 0, max: 100, fmt: fmtPct }, 0.25),
+  );
+})();
+
+// Header on/off switches. A bypassed section dims its whole body — including
+// at load, so a patch that ships with the phaser off looks off.
+document.querySelectorAll(".hdr-switch").forEach((s) => {
+  const body = s.closest(".panel").querySelector(".panel-body");
+  const sync = () => body.classList.toggle("dim", !s.classList.contains("on"));
+  s.addEventListener("click", () => { s.classList.toggle("on"); sync(); });
+  sync();
+});
+
+/* ═══ OPERATORS panel ══════════════════════════════════════════════════════ */
+
+// Mock per-operator state. `routes[d]` is this operator's depth into operator
+// d; `bus` is its send into the stereo sum, `pan` its position there. Depths
+// are stored 0..1 over a bipolar range, matching how the hFader reads them.
+function makeOp(i) {
+  return {
+    wave: i === 7 ? 0 : (i < 3 ? 2 : 0),
+    // Tuning, in vxn-2's scheme (OpParams / PARAMETERS.md): a rational ratio
+    // num/denom with a fine offset on the numerator, a separate cents detune,
+    // or a fixed frequency that ignores the played note. Stored as the
+    // faders' normalised positions; `opTuning` reads them back out.
+    mode: 0,                       // 0 = Ratio, 1 = Fixed
+    num: 0, den: 0, fine: 0.5, cents: 0.5, hz: 0.62,
+    level: 0.5, damp: 0.85, phase: 0, decorr: 1,
+    vel: 0.4,
+    // Key scaling, in the vxn-2 idiom: one break point, independent depth and
+    // curve either side of it, plus a rate-scaling amount that pivots
+    // separately (A3, as the DSP does).
+    ks: { bp: 60, l: 34, r: 28, lExp: false, rExp: true, lBoost: true, rBoost: false, rate: 0.25 },
+    routes: Array.from({ length: NOPS }, () => ({
+      on: false, k: 0.5, offSrc: 0, offCur: 0, sclSrc: 0, sclCur: 0,
+    })),
+    bus: { on: i < 4, k: 0.72, offSrc: 0, offCur: 0, sclSrc: 0, sclCur: 0 },
+    pan: { on: i < 4, k: 0.5 + (i - 1.5) * 0.08, offSrc: 0, offCur: 0, sclSrc: 0, sclCur: 0 },
+  };
+}
+const OPS = Array.from({ length: NOPS }, (_, i) => makeOp(i));
+// A plausible starting topology so the grid is not empty: a couple of
+// modulator→carrier pairs and one self-feedback.
+OPS[1].routes[0].on = true; OPS[1].routes[0].k = 0.78;
+OPS[3].routes[2].on = true; OPS[3].routes[2].k = 0.68;
+OPS[3].routes[3].on = true; OPS[3].routes[3].k = 0.58;
+// Two of them negative, so the grid's sign encoding has something to show.
+OPS[4].routes[1].on = true; OPS[4].routes[1].k = 0.24;
+OPS[7].routes[0].on = true; OPS[7].routes[0].k = 0.38;
+// A route with a source on it, so the grid has something that actually moves.
+OPS[1].routes[0].offSrc = 11;
+OPS[3].routes[2].offSrc = 9;
+
+let selOp = 0;
+let hiRoute = null;   // route row to highlight after arriving from the PM grid
+
+const opTabs = document.getElementById("op-tabs");
+function buildOpTabs() {
+  opTabs.innerHTML = "";
+  for (let i = 0; i < NOPS; i++) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "op-tab" + (i === selOp ? " active" : "") + (OPS[i].bus.on ? " audible" : "");
+    b.innerHTML = `OP ${i + 1}<span class="op-dot"></span>`;
+    b.onclick = () => { selOp = i; hiRoute = null; renderOperators(); };
+    opTabs.append(b);
+  }
+}
+
+document.getElementById("op-global-strip").append(
+  buttonGroup("Quality", ["8x", "16x"], 0, "row"),
+);
+
+/* PM grid.
+
+   Cell colour is the route's LIVE level, not its authored depth: depth times
+   whatever its offset source is doing this instant. A slow envelope or a
+   sub-Hz LFO then shows as the grid swelling, which is the one view in the
+   instrument where you can watch the patch move rather than infer it. In the
+   mock the sources are stand-in oscillators; wired up this reads a level
+   snapshot off the audio thread.
+
+   The grid is editable, not just a map:
+
+     click        select the cell's SOURCE operator — whose route table the
+                  panel below edits — and highlight the row it names
+     drag ↕       set that route's constant, shift for fine
+     double-click toggle the route on or off
+
+   Which makes the grid the fast way to rough out a topology — wire a pair,
+   pull its depth, move on — and the table below the place to reach for the
+   parts a grid cell cannot hold: the offset and scaling sources and curves.
+   Edits made here write straight through to that table's controls, since both
+   are views of the same route. */
+const pmGrid = document.getElementById("pm-grid");
+const pmCells = [];             // { el, route, tint }
+/* PM depths are bipolar, and the sign is not cosmetic — a modulator inverted
+   against its neighbour cancels where it would otherwise reinforce, which is
+   the difference between a patch and the same patch gone thin. So the grid
+   encodes it twice:
+
+     hue        blue for a positive depth, violet for a negative one
+     accent bar along the cell's bottom edge for positive, top edge for
+                negative — the same up/down sense as the bipolar fader the
+                depth is dragged on
+
+   Two channels rather than one because hue alone fails for a red-green or
+   blue-violet colour-blind player, and the sign is exactly the thing that is
+   invisible in the sound until you go looking for it. */
+const PM_TINT_POS = "108, 177, 255";   // operator → operator, positive depth
+const PM_TINT_NEG = "198, 122, 232";   // operator → operator, negative depth
+const BUS_TINT = "217, 112, 27";       // operator → sum bus (unipolar)
+
+function buildPmGrid() {
+  pmGrid.innerHTML = "";
+  pmCells.length = 0;
+  pmGrid.append(cellDiv("pm-hd", ""));
+  for (let s = 0; s < NOPS; s++) pmGrid.append(cellDiv("pm-hd", String(s + 1)));
+  pmGrid.append(cellDiv("pm-hd", ""));
+  pmGrid.append(cellDiv("pm-hd", "BUS"));
+
+  for (let d = 0; d < NOPS; d++) {
+    pmGrid.append(cellDiv("pm-rowhd", String(d + 1)));
+    for (let s = 0; s < NOPS; s++) {
+      const r = OPS[s].routes[d];
+      const c = document.createElement("div");
+      c.className = "pm-cell" + (s === d ? " diag" : "") + (s === selOp ? " sel-src" : "");
+      const label = s === d ? `OP${s + 1} self` : `OP${s + 1} → OP${d + 1}`;
+      wirePmCell(c, r, label, PM_SPEC, s, d);
+      pmGrid.append(c);
+      pmCells.push({ el: c, route: r, bus: false, srcOp: s });
+    }
+    pmGrid.append(cellDiv("pm-hd", ""));
+    const b = document.createElement("div");
+    b.className = "pm-cell bus" + (d === selOp ? " sel-src" : "");
+    wirePmCell(b, OPS[d].bus, `OP${d + 1} → bus`, BUS_SPEC, d, "bus");
+    pmGrid.append(b);
+    pmCells.push({ el: b, route: OPS[d].bus, bus: true, srcOp: d });
+  }
+  paintPmGrid();
+}
+
+// Selection is repainted in place rather than rebuilt. Rebuilding the grid
+// between the two clicks of a double-click would replace the element under the
+// pointer and the dblclick would never land — the cells have to outlive a
+// selection change.
+function refreshPmSelection() {
+  pmCells.forEach(({ el, srcOp }) => el.classList.toggle("sel-src", srcOp === selOp));
+}
+
+// Same specs the route table uses, so a depth dragged on the grid and the same
+// depth read in the table are the same number in the same units.
+const PM_SPEC = { min: -8, max: 8, dp: 2, signed: true, bipolar: true };
+const BUS_SPEC = { min: 0, max: 100, fmt: fmtPct };
+
+function wirePmCell(el, route, label, spec, srcOp, rowKey) {
+  attachPop(el, () =>
+    label + "  " + formatValue(spec, route.k) + (route.on ? "" : "   (off)"));
+
+  let startY = 0, startK = 0, down = false, dragged = false;
+
+  el.addEventListener("pointerdown", (e) => {
+    down = true; dragged = false;
+    startY = e.clientY; startK = route.k;
+    el.setPointerCapture(e.pointerId);
+    el.classList.add("dragging");
+    popShow(el, e.clientX, e.clientY);
+    e.preventDefault();
+  });
+
+  el.addEventListener("pointermove", (e) => {
+    if (!down) return;
+    // A few pixels of slop before a click becomes a drag, so selecting a cell
+    // does not nudge its depth on the way past.
+    if (!dragged && Math.abs(e.clientY - startY) < 3) return;
+    dragged = true;
+    const scale = e.shiftKey ? 0.25 : 1;
+    route.k = Math.min(1, Math.max(0, startK + ((startY - e.clientY) / 140) * scale));
+    syncRouteControls(route);
+    paintPmGrid();
+    popRefresh();
+  });
+
+  const end = (e) => {
+    if (!down) return;
+    down = false;
+    el.classList.remove("dragging");
+    try { el.releasePointerCapture(e.pointerId); } catch (_) {}
+    popHide(el);
+    // A click that never became a drag selects, which is what it did before
+    // the cell became editable.
+    if (!dragged) { selOp = srcOp; hiRoute = rowKey; renderOperators(); }
+  };
+  el.addEventListener("pointerup", end);
+  el.addEventListener("pointercancel", end);
+
+  el.addEventListener("dblclick", () => {
+    if (dragged) return;
+    route.on = !route.on;
+    syncRouteControls(route);
+    paintPmGrid();
+    buildOpTabs();
+    popRefresh();
+  });
+}
+
+// The route table and the grid are two views of one route. Anything edited on
+// the grid pushes into the table's controls rather than rebuilding it — a
+// rebuild mid-drag would drop the pointer capture and lose the gesture.
+const routeControls = new Map();
+function syncRouteControls(route) {
+  const c = routeControls.get(route);
+  if (!c) return;
+  c.kf.api.set(route.k);
+  c.tg.api.set(route.on);
+  c.sync();
+}
+
+// Two things are drawn per cell, and they answer different questions:
+//
+//   the OUTLINE says a route EXISTS — enabled, whatever its depth. A route
+//   authored at 2% is still part of the patch's shape and has to be findable.
+//   the FILL is the authored depth, so the topology reads at a glance.
+//
+// Both are static patch data. The grid deliberately does NOT try to show live
+// signal: vxn-4 is polyphonic, so there is no single level per route — eight
+// voices each have their own, at different points in their own envelopes, and
+// any summary of them (max? mean? last voice?) would be a number the player
+// cannot act on.
+function paintPmGrid() {
+  pmCells.forEach(({ el, route, bus }) => {
+    const signed = bus ? 0 : route.k - 0.5;      // bus sends are unipolar
+    const depth = bus ? route.k : Math.abs(signed) * 2;
+    const tint = bus ? BUS_TINT : (signed < 0 ? PM_TINT_NEG : PM_TINT_POS);
+    const wired = route.on;
+
+    if (!wired) { el.style.boxShadow = ""; el.style.background = ""; return; }
+
+    // Outline says the route exists; the accent bar says which way it points.
+    // A depth sitting on zero gets no bar — it has no sign to report.
+    const outline = `inset 0 0 0 1px rgba(${tint}, 0.62)`;
+    const bar = bus || depth < 0.02
+      ? ""
+      : `, inset 0 ${signed < 0 ? "" : "-"}3px 0 -1px rgba(${tint}, 0.95)`;
+    el.style.boxShadow = outline + bar;
+    el.style.background = depth > 0.01
+      ? `rgba(${tint}, ${(0.14 + 0.82 * depth).toFixed(3)})`
+      : "";
+  });
+}
+
+function cellDiv(cls, text) {
+  const d = document.createElement("div");
+  d.className = cls; d.textContent = text;
+  return d;
+}
+
+/* Per-operator parameters.
+
+   Ratio doubles as a fixed frequency when Fixed is on, which is why the toggle
+   rides under that fader rather than in a strip.
+
+   `Decorr` is `OpConfig::phase_spread` — how far this operator's onset phase is
+   scattered from its siblings, 1.0 being the historical unconditional scatter
+   and 0.0 starting it phase-coherent. It is NOT stereo width (that is Pan, on
+   the bus route): coherent is loud and full but cannot be widened by panning,
+   scattered is wide but comb-filtered and quieter. `supersaw` lost 5 dB to
+   seven saws cancelling before this was dialable. Named Decorr here precisely
+   because "Spread" read as a stereo control. */
+
+/* Tuning specs, matching vxn-2's OpParams exactly (PARAMETERS.md §Operator):
+   frequency = note × (num + fine/100) / denom × 2^(detune/1200), or fixed_hz
+   flat if the mode is Fixed. Num and Den are integers — the whole point of a
+   rational ratio is that it lands on detents, so they step rather than sweep,
+   and Fine is what gets you between them (its sweep width scales inversely
+   with denom, which is why it belongs on the numerator rather than being a
+   second cents control). Detune is the log-domain one, independent of the
+   ratio, for thickening and beating. */
+const TUNE_SPECS = {
+  num:   { min: 1, max: 32, step: 1, dp: 0 },
+  den:   { min: 1, max: 8, step: 1, dp: 0 },
+  fine:  { min: -100, max: 100, step: 1, dp: 0, signed: true, bipolar: true },
+  cents: { min: -100, max: 100, step: 1, dp: 0, signed: true, bipolar: true, unit: " ct" },
+  hz:    { min: 1, max: 9772, exp: 1, fmt: fmtHz },
+};
+
+// What the tuning controls come out to, for the panel header.
+function opTuning(op) {
+  if (op.mode === 1) return fmtHz(mapValue(TUNE_SPECS.hz, op.hz));
+  const num = mapValue(TUNE_SPECS.num, op.num);
+  const den = mapValue(TUNE_SPECS.den, op.den);
+  const fine = mapValue(TUNE_SPECS.fine, op.fine);
+  const cents = mapValue(TUNE_SPECS.cents, op.cents);
+  const ratio = ((num + fine / 100) / den) * Math.pow(2, cents / 1200);
+  const rational = `${num}/${den}`;
+  return `${rational}${fine ? (fine > 0 ? "+" : "−") + Math.abs(fine) : ""}` +
+         `${cents ? (cents > 0 ? " +" : " −") + Math.abs(cents) + "ct" : ""}` +
+         `  (${ratio.toFixed(3)}×)`;
+}
+
+const opcfgBody = document.getElementById("opcfg-body");
+function buildOpCfg() {
+  const op = OPS[selOp];
+  opcfgBody.innerHTML = "";
+  document.getElementById("routes-header").textContent = `ROUTES OUT — OPERATOR ${selOp + 1}`;
+  document.getElementById("opeg-header").textContent = `OPERATOR ${selOp + 1} — AMP EG`;
+
+  // The header carries the resolved tuning. It is the one figure no single
+  // control holds — four faders go into it, and nobody works out
+  // (7 + 12/100) / 4 in their head — so it is derived state rather than a
+  // printed control value, and does not break the popup convention.
+  const header = () => {
+    document.getElementById("opcfg-header").textContent =
+      `OPERATOR ${selOp + 1}  —  ${opTuning(op)}`;
+  };
+
+  // Tuning group. Ratio mode greys the Hz fader and Fixed mode greys the four
+  // rational controls, following vxn-2: the inert set stays visible so the
+  // mode switch reads as "these, not those" rather than as controls vanishing.
+  const tuneBody = document.createElement("div");
+  tuneBody.className = "subgroup-body";
+  const mk = (label, key) => {
+    const f = fader(label, TUNE_SPECS[key], op[key]);
+    f.api.onChange((t) => { op[key] = t; header(); });
+    return f;
+  };
+  const numF = mk("Num", "num"), denF = mk("Den", "den");
+  const fineF = mk("Fine", "fine"), centsF = mk("Cents", "cents");
+  const hzF = mk("Hz", "hz");
+  const modeG = buttonGroup("Mode", ["Ratio", "Fixed"], op.mode, "row", (i) => {
+    op.mode = i; syncMode(); header();
+  });
+  function syncMode() {
+    const fixed = op.mode === 1;
+    [numF, denF, fineF, centsF].forEach((f) => f.classList.toggle("dim", fixed));
+    hzF.classList.toggle("dim", !fixed);
+  }
+  tuneBody.append(numF, denF, fineF, centsF, hzF);
+  const tuneCap = document.createElement("div");
+  tuneCap.className = "subgroup-cap";
+  tuneCap.textContent = "Tuning";
+  const tune = document.createElement("div");
+  tune.className = "subgroup";
+  tune.append(tuneBody, tuneCap, modeG);
+  syncMode();
+
+  const sep = document.createElement("div");
+  sep.className = "panel-sep";
+
+  const waveCell = wavePicker("Wave", OP_WAVE_DEFS, op.wave);
+  opcfgBody.append(
+    waveCell,
+    tune,
+    sep,
+    fader("Level", { min: 0, max: 100, fmt: fmtPct }, op.level),
+    fader("Damp", { min: 200, max: 20000, exp: 1, fmt: fmtHz }, op.damp),
+    fader("Phase", { min: 0, max: 360, unit: "°", dp: 0 }, op.phase),
+    fader("Decorr", { min: 0, max: 100, fmt: fmtPct }, op.decorr),
+    fader("Vel", { min: 0, max: 100, fmt: fmtPct }, op.vel),
+  );
+  header();
+}
+
+/* Route table. Ten rows: eight into the operator bank (the self row is the
+   operator's own feedback), then the bus send and its pan. Each row is a
+   constant plus an offset (source + curve) and a scaling (source + curve),
+   which is the shape a vxn-core-matrix slot already has. */
+const routesEl = document.getElementById("routes");
+function buildRoutes() {
+  const op = OPS[selOp];
+  routesEl.innerHTML = "";
+  hiCells = null;
+  routeControls.clear();
+  ["On", "To", "Constant", "Offset src", "Curve", "Scale src", "Curve"].forEach((h) => {
+    routesEl.append(cellDiv("routes-hd", h));
+  });
+
+  const rows = [];
+  for (let d = 0; d < NOPS; d++) {
+    rows.push({
+      key: d,
+      r: op.routes[d],
+      label: d === selOp ? "SELF" : "OP " + (d + 1),
+      cls: d === selOp ? "route-row-self" : "",
+      spec: PM_SPEC,
+    });
+  }
+  rows.push({ key: "bus", r: op.bus, label: "BUS", cls: "route-row-bus", spec: BUS_SPEC });
+  rows.push({ key: "pan", r: op.pan, label: "PAN", cls: "route-row-bus",
+              spec: { min: -1, max: 1, dp: 2, signed: true, bipolar: true } });
+
+  rows.forEach((row) => {
+    const tg = toggle("", row.r.on, (on) => { row.r.on = on; sync(); });
+    tg.style.justifySelf = "center";
+
+    const target = cellDiv("route-target " + row.cls, row.label);
+    const kf = hFader(row.r.k, row.spec, row.label, (t) => { row.r.k = t; paintPmGrid(); });
+    const offSrc = combo(MOD_SOURCES, row.r.offSrc, (v) => { row.r.offSrc = v; sync(); });
+    const offCur = combo(CURVES, row.r.offCur, (v) => { row.r.offCur = v; });
+    const sclSrc = combo(MOD_SOURCES, row.r.sclSrc, (v) => { row.r.sclSrc = v; sync(); });
+    const sclCur = combo(CURVES, row.r.sclCur, (v) => { row.r.sclCur = v; });
+    const cells = [tg, target, kf, offSrc, offCur, sclSrc, sclCur];
+
+    // A curve with no source behind it does nothing, so it dims until one is
+    // picked — the same rule the mod matrix rows use.
+    function sync() {
+      const live = row.r.on;
+      [target, kf, offSrc, sclSrc].forEach((e) => e.classList.toggle("dim", !live));
+      offCur.classList.toggle("dim", !live || row.r.offSrc === 0);
+      sclCur.classList.toggle("dim", !live || row.r.sclSrc === 0);
+      buildOpTabs();
+      paintPmGrid();
+    }
+
+    routesEl.append(...cells);
+    routeControls.set(row.r, { kf, tg, sync });
+    if (row.key === hiRoute) hiCells = cells;
+    sync();
+  });
+
+  paintRouteBand();
+}
+
+// The band is measured, not laid out: the grid owns the row geometry, so the
+// highlight reads its extent back off the row's cells once that geometry
+// exists. Cells in a row are not all the same height — a 13px toggle sits
+// beside a 17px combo — so the band takes the union rather than any one cell.
+let hiCells = null;
+function paintRouteBand() {
+  const old = routesEl.querySelector(".route-band");
+  if (old) old.remove();
+  if (!hiCells || hiRoute === null) return;
+  const top = Math.min(...hiCells.map((c) => c.offsetTop));
+  const bottom = Math.max(...hiCells.map((c) => c.offsetTop + c.offsetHeight));
+  const band = document.createElement("div");
+  band.className = "route-band";
+  band.style.top = (top - 2) + "px";
+  band.style.height = (bottom - top + 4) + "px";
+  routesEl.append(band);
+}
+
+/* The operator's own amplitude EG — the four-rate / four-level DX shape the
+   engine already runs (vxn4_engine::eg), one per operator per voice. Not the
+   same thing as PERFORM's two ADHSR mod sources.
+
+   The faders and the graph are two views of one set of numbers: dragging a
+   breakpoint moves the faders and vice versa. */
+const opegBody = document.getElementById("opeg-body");
+const opegCells = [];
+const EG_TIME_SPECS = [
+  { min: 0.001, max: 8, exp: 1, fmt: fmtSec },
+  { min: 0.001, max: 12, exp: 1, fmt: fmtSec },
+  { min: 0.001, max: 20, exp: 1, fmt: fmtSec },
+  { min: 0.001, max: 20, exp: 1, fmt: fmtSec },
+];
+const EG_LEVEL_SPEC = { min: 0, max: 100, fmt: fmtPct };
+
+function buildOpEg() {
+  opegBody.innerHTML = "";
+  opegCells.length = 0;
+  [["A", 0.12], ["D1", 0.45], ["D2", 0.6], ["R", 0.35]].forEach(([l, t], i) => {
+    const c = fader(l, EG_TIME_SPECS[i], t);
+    c.api.onChange(() => drawEg());
+    opegCells.push(c);
+    opegBody.append(c);
+  });
+  const sep = document.createElement("div");
+  sep.className = "panel-sep";
+  opegBody.append(sep);
+  [["L1", 1.0], ["L2", 0.7], ["L3", 0.5], ["L4", 0.0]].forEach(([l, t]) => {
+    const c = fader(l, EG_LEVEL_SPEC, t);
+    c.api.onChange(() => drawEg());
+    opegCells.push(c);
+    opegBody.append(c);
+  });
+}
+
+// Everything that follows the selected operator. The PM grid is NOT rebuilt
+// here — it is built once and repainted, so its cells survive a selection
+// change (see `refreshPmSelection`).
+function renderOperators() {
+  buildOpTabs();
+  refreshPmSelection();
+  paintPmGrid();
+  buildOpCfg();
+  buildRoutes();
+  drawKs();
+  buildKsSide();
+}
+
+/* ═══ Canvases ═════════════════════════════════════════════════════════════ */
+
+function fitCanvas(c) {
+  const r = c.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  c.width = Math.max(1, Math.round(r.width * dpr));
+  c.height = Math.max(1, Math.round(r.height * dpr));
+  const ctx = c.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, w: r.width, h: r.height };
+}
+
+// A grid, drawn the same way in all three graphs.
+function graphGrid(ctx, w, h, cols, rows) {
+  ctx.strokeStyle = "#16241d";
+  ctx.lineWidth = 1;
+  for (let i = 1; i < cols; i++) {
+    const x = (w * i) / cols;
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+  }
+  for (let i = 1; i < rows; i++) {
+    const y = (h * i) / rows;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+  }
+}
+
+// Scope. A stand-in trace: three detuned saws through a soft nonlinearity,
+// which is roughly what `supersaw` looks like and reads as motion.
+const scopeCanvas = document.getElementById("scope");
+let scopePhase = 0;
+function drawScope() {
+  const { ctx, w, h } = fitCanvas(scopeCanvas);
+  ctx.clearRect(0, 0, w, h);
+  graphGrid(ctx, w, h, 8, 4);
+  ctx.strokeStyle = "#2b4a3a";
+  ctx.beginPath(); ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2); ctx.stroke();
+
+  ctx.strokeStyle = "#7fe0a8";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (let px = 0; px <= w; px++) {
+    const t = px / w;
+    let v = 0;
+    for (let k = 0; k < 3; k++) {
+      const f = 3 * (1 + 0.011 * (k - 1));
+      const ph = (t * f + scopePhase * (1 + 0.03 * k)) % 1;
+      v += 2 * ph - 1;
+    }
+    v = Math.tanh(v * 0.7) * 0.8;
+    const y = h / 2 - v * h * 0.42;
+    px === 0 ? ctx.moveTo(px, y) : ctx.lineTo(px, y);
+  }
+  ctx.stroke();
+}
+
+/* EG graph — the selected operator's amp EG, with draggable breakpoints.
+
+   Each handle carries both axes: horizontal is the segment's time, vertical is
+   the level it arrives at. Dragging writes straight back into the faders, so
+   the two views never disagree. */
+const egCanvas = document.getElementById("eg-graph");
+let egGeom = null;      // {x(), y(), pts, handles} from the last paint
+
+function egTimes() {
+  return [0, 1, 2, 3].map((i) => mapValue(EG_TIME_SPECS[i], opegCells[i].api.get()));
+}
+function egLevels() {
+  return [4, 5, 6, 7].map((i) => opegCells[i].api.get());
+}
+
+function drawEg() {
+  if (opegCells.length < 8) return;
+  const { ctx, w, h } = fitCanvas(egCanvas);
+  ctx.clearRect(0, 0, w, h);
+
+  const pad = 12;
+  const gw = w - pad * 2, gh = h - pad * 2 - 8;
+  ctx.strokeStyle = "#16241d";
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = pad + (gh * i) / 4;
+    ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(w - pad, y); ctx.stroke();
+  }
+
+  const t = egTimes();
+  const l = egLevels();
+  // The sustain span is drawn, not stored: it is however long the key is held.
+  // Scaled off the attack-to-decay total so the picture stays inside the box
+  // whatever the times are.
+  const sustain = (t[0] + t[1] + t[2]) * 0.45 + 0.2;
+  const total = t[0] + t[1] + t[2] + sustain + t[3];
+  const x = (secs) => pad + (secs / total) * gw;
+  const y = (lev) => pad + gh * (1 - lev);
+
+  const tA = t[0], tB = tA + t[1], tC = tB + t[2], tD = tC + sustain;
+  const pts = [[0, 0], [tA, l[0]], [tB, l[1]], [tC, l[2]], [tD, l[2]], [total, l[3]]];
+
+  ctx.beginPath();
+  ctx.moveTo(x(pts[0][0]), y(pts[0][1]));
+  pts.slice(1).forEach((p) => ctx.lineTo(x(p[0]), y(p[1])));
+  ctx.strokeStyle = "#d9701b";
+  ctx.lineWidth = 1.75;
+  ctx.stroke();
+
+  ctx.lineTo(x(total), y(0));
+  ctx.lineTo(x(0), y(0));
+  ctx.closePath();
+  ctx.fillStyle = "rgba(217, 112, 27, 0.12)";
+  ctx.fill();
+
+  // Sustain span, marked so the flat section is not read as another segment.
+  ctx.setLineDash([3, 3]);
+  ctx.strokeStyle = "#55707e";
+  ctx.lineWidth = 1;
+  [tC, tD].forEach((s) => {
+    ctx.beginPath(); ctx.moveTo(x(s), pad); ctx.lineTo(x(s), pad + gh); ctx.stroke();
+  });
+  ctx.setLineDash([]);
+
+  // Handles: the four the player can move. The sustain corner is not one —
+  // its position is a consequence of D2 and L3, not a parameter.
+  const handles = [
+    { ti: 0, li: 4, px: x(tA), py: y(l[0]) },
+    { ti: 1, li: 5, px: x(tB), py: y(l[1]) },
+    { ti: 2, li: 6, px: x(tC), py: y(l[2]) },
+    { ti: 3, li: 7, px: x(total), py: y(l[3]) },
+  ];
+  handles.forEach((hd) => {
+    ctx.beginPath();
+    ctx.arc(hd.px, hd.py, 4, 0, Math.PI * 2);
+    ctx.fillStyle = egDrag === hd.ti ? "#fff" : "#87afb2";
+    ctx.fill();
+    ctx.strokeStyle = "#a7cfe2";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  });
+
+  ctx.fillStyle = "#6f7780";
+  ctx.font = "9px system-ui";
+  ctx.fillText("A", x(tA / 2) - 3, h - 2);
+  ctx.fillText("D1", x(tA + t[1] / 2) - 5, h - 2);
+  ctx.fillText("D2", x(tB + t[2] / 2) - 5, h - 2);
+  ctx.fillText("SUS", x(tC + sustain / 2) - 8, h - 2);
+  ctx.fillText("R", x(total - t[3] / 2) - 3, h - 2);
+
+  egGeom = { pad, gw, gh, total, handles };
+}
+
+let egDrag = null;
+egCanvas.addEventListener("pointerdown", (e) => {
+  if (!egGeom) return;
+  const r = egCanvas.getBoundingClientRect();
+  const mx = e.clientX - r.left, my = e.clientY - r.top;
+  let best = null, bestD = 12 * 12;
+  egGeom.handles.forEach((hd) => {
+    const d = (hd.px - mx) ** 2 + (hd.py - my) ** 2;
+    if (d < bestD) { bestD = d; best = hd; }
+  });
+  if (!best) return;
+  egDrag = best.ti;
+  egCanvas.setPointerCapture(e.pointerId);
+  drawEg();
+});
+egCanvas.addEventListener("pointermove", (e) => {
+  if (egDrag === null || !egGeom) return;
+  const r = egCanvas.getBoundingClientRect();
+  const mx = e.clientX - r.left, my = e.clientY - r.top;
+  const { pad, gw, gh, total } = egGeom;
+
+  // Vertical: straight to the level fader.
+  const lev = Math.min(1, Math.max(0, 1 - (my - pad) / gh));
+  opegCells[4 + egDrag].api.set(lev);
+
+  // Horizontal: the handle sits at the END of its segment, so the segment's
+  // own time is the gap between this handle and the previous one.
+  const t = egTimes();
+  const starts = [0, t[0], t[0] + t[1], null];
+  const secs = ((mx - pad) / gw) * total;
+  if (egDrag < 3) {
+    const seg = Math.max(0.001, secs - starts[egDrag]);
+    opegCells[egDrag].api.set(invValue(EG_TIME_SPECS[egDrag], seg));
+  } else {
+    // Release runs from the end of the sustain span to the right edge.
+    const sustainEnd = total - t[3];
+    opegCells[3].api.set(invValue(EG_TIME_SPECS[3], Math.max(0.001, secs - sustainEnd)));
+  }
+  drawEg();
+});
+["pointerup", "pointercancel"].forEach((ev) => egCanvas.addEventListener(ev, (e) => {
+  if (egDrag === null) return;
+  egDrag = null;
+  try { egCanvas.releasePointerCapture(e.pointerId); } catch (_) {}
+  drawEg();
+}));
+
+/* Key-scaling graph, in the idiom of vxn-2's per-op KS panel.
+
+   It answers "what does Key Trk bind to": the operator's OUTPUT LEVEL, scaled
+   against the played key, with an independent depth and curve either side of a
+   break point. A single key-track number cannot say "a little quieter as you
+   go up, a lot quieter as you go down", which is the whole reason FM patches
+   want this. EG rate scaling is the second, differently-pivoted mechanism and
+   gets its own control rather than being folded in.
+
+   Three handles: the break point drags along the key axis, the two end handles
+   drag vertically. Dragging an end handle through the centre line flips that
+   side between cut and boost, so the sign is the gesture rather than a
+   separate switch; the Lin/Exp toggles stay explicit. */
+const ksCanvas = document.getElementById("ks-graph");
+const KS_DB_SPAN = 48;
+let ksGeom = null, ksDrag = null;
+
+function ksDb(op, key) {
+  const k = op.ks;
+  const side = key >= k.bp ? "r" : "l";
+  const depth = (side === "r" ? k.r : k.l) / 99;
+  const isExp = side === "r" ? k.rExp : k.lExp;
+  const boost = side === "r" ? k.rBoost : k.lBoost;
+  const u = Math.min(1, Math.abs(key - k.bp) / 60);
+  const g = isExp ? u * u : u;
+  return (boost ? 1 : -1) * depth * KS_DB_SPAN * g;
+}
+
+function drawKs() {
+  const { ctx, w, h } = fitCanvas(ksCanvas);
+  ctx.clearRect(0, 0, w, h);
+  const op = OPS[selOp];
+  const pad = 10, gw = w - pad * 2, gh = h - pad * 2 - 8;
+  const cy = pad + gh / 2;
+  const xAt = (m) => pad + (m / 127) * gw;
+  const yAt = (db) => cy - (Math.max(-KS_DB_SPAN, Math.min(KS_DB_SPAN, db)) / KS_DB_SPAN) * (gh / 2);
+
+  // Octave rules, so the break point can be read off the graph.
+  ctx.strokeStyle = "#16241d";
+  ctx.lineWidth = 1;
+  for (let oct = 0; oct <= 10; oct++) {
+    const x = xAt(oct * 12);
+    ctx.beginPath(); ctx.moveTo(x, pad); ctx.lineTo(x, pad + gh); ctx.stroke();
+  }
+  ctx.strokeStyle = "#2b4a3a";
+  ctx.beginPath(); ctx.moveTo(pad, cy); ctx.lineTo(w - pad, cy); ctx.stroke();
+
+  ctx.strokeStyle = "#7fe0a8";
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  for (let m = 0; m <= 127; m++) {
+    const x = xAt(m), y = yAt(ksDb(op, m));
+    m === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // Break point.
+  const bx = xAt(op.ks.bp);
+  ctx.setLineDash([3, 3]);
+  ctx.strokeStyle = "#a7cfe2";
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(bx, pad); ctx.lineTo(bx, pad + gh); ctx.stroke();
+  ctx.setLineDash([]);
+
+  const handles = [
+    { id: "bp", px: bx, py: cy },
+    { id: "l", px: xAt(0) + 3, py: yAt(ksDb(op, 0)) },
+    { id: "r", px: xAt(127) - 3, py: yAt(ksDb(op, 127)) },
+  ];
+  handles.forEach((hd) => {
+    ctx.beginPath();
+    ctx.arc(hd.px, hd.py, 4, 0, Math.PI * 2);
+    ctx.fillStyle = ksDrag === hd.id ? "#fff" : "#87afb2";
+    ctx.fill();
+    ctx.strokeStyle = "#a7cfe2";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  });
+
+  ctx.fillStyle = "#6f7780";
+  ctx.font = "9px system-ui";
+  ctx.fillText("C1", xAt(24) - 6, h - 2);
+  ctx.fillText(noteName(op.ks.bp), bx - 8, h - 2);
+  ctx.fillText("C7", xAt(96) - 6, h - 2);
+
+  ksGeom = { pad, gw, gh, cy, xAt, yAt, handles };
+}
+
+ksCanvas.addEventListener("pointerdown", (e) => {
+  if (!ksGeom) return;
+  const r = ksCanvas.getBoundingClientRect();
+  const mx = e.clientX - r.left, my = e.clientY - r.top;
+  let best = null, bestD = 14 * 14;
+  ksGeom.handles.forEach((hd) => {
+    const d = (hd.px - mx) ** 2 + (hd.py - my) ** 2;
+    if (d < bestD) { bestD = d; best = hd; }
+  });
+  if (!best) return;
+  ksDrag = best.id;
+  ksCanvas.setPointerCapture(e.pointerId);
+  drawKs();
+});
+ksCanvas.addEventListener("pointermove", (e) => {
+  if (!ksDrag || !ksGeom) return;
+  const op = OPS[selOp];
+  const r = ksCanvas.getBoundingClientRect();
+  const mx = e.clientX - r.left, my = e.clientY - r.top;
+  const { pad, gw, gh, cy } = ksGeom;
+  if (ksDrag === "bp") {
+    op.ks.bp = Math.max(0, Math.min(127, Math.round(((mx - pad) / gw) * 127)));
+  } else {
+    // Depth from distance off the centre line; which side of it decides
+    // cut vs boost.
+    const db = -((my - cy) / (gh / 2)) * KS_DB_SPAN;
+    const depth = Math.min(99, Math.round((Math.abs(db) / KS_DB_SPAN) * 99));
+    const isExp = ksDrag === "r" ? op.ks.rExp : op.ks.lExp;
+    const u = Math.min(1, Math.abs((ksDrag === "r" ? 127 : 0) - op.ks.bp) / 60);
+    const g = isExp ? u * u : u;
+    const corrected = g > 0.02 ? Math.min(99, Math.round(depth / g)) : depth;
+    if (ksDrag === "r") { op.ks.r = corrected; op.ks.rBoost = db >= 0; }
+    else { op.ks.l = corrected; op.ks.lBoost = db >= 0; }
+  }
+  drawKs();
+  buildKsSide();
+});
+["pointerup", "pointercancel"].forEach((ev) => ksCanvas.addEventListener(ev, (e) => {
+  if (!ksDrag) return;
+  ksDrag = null;
+  try { ksCanvas.releasePointerCapture(e.pointerId); } catch (_) {}
+  drawKs();
+}));
+
+// The graph carries depth, sign and break point; what is left beside it is the
+// per-side curve shape and the separately-pivoted EG rate scaling.
+const ksSide = document.getElementById("ks-side");
+function buildKsSide() {
+  const op = OPS[selOp];
+  ksSide.innerHTML = "";
+  ksSide.append(
+    buttonGroup("Left", ["Lin", "Exp"], op.ks.lExp ? 1 : 0, "row",
+                (i) => { op.ks.lExp = i === 1; drawKs(); }),
+    buttonGroup("Right", ["Lin", "Exp"], op.ks.rExp ? 1 : 0, "row",
+                (i) => { op.ks.rExp = i === 1; drawKs(); }),
+  );
+  // A dial, not a fader: the column beside the graph has no height to spare,
+  // and rate scaling is a set-and-forget amount rather than a performed one.
+  const rate = dial("EG Rate", { min: 0, max: 100, fmt: fmtPct }, op.ks.rate);
+  rate.style.marginTop = "2px";
+  ksSide.append(rate);
+}
+
+/* ═══ Tabs + animation loop ════════════════════════════════════════════════ */
+
+function selectTab(name) {
+  document.querySelectorAll(".tab-btn").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
+  document.querySelectorAll(".tab-pane").forEach((p) => p.classList.toggle("active", p.dataset.tabPane === name));
+}
+document.getElementById("tab-strip").addEventListener("click", (e) => {
+  const btn = e.target.closest(".tab-btn");
+  if (btn) selectTab(btn.dataset.tab);
+});
+// `#mixer` / `#operators` open straight onto a tab, and `#matrix` opens the
+// overlay — handy for screenshotting one surface at a time while iterating.
+function applyHash() {
+  const h = location.hash.slice(1);
+  if (h === "matrix") { selectTab("perform"); setMatrixOpen(true); return; }
+  if (h) { setMatrixOpen(false); selectTab(h); }
+}
+applyHash();
+window.addEventListener("hashchange", applyHash);
+
+const isActive = (name) =>
+  document.querySelector(`[data-tab-pane="${name}"]`).classList.contains("active");
+
+let frame = 0;
+function tick() {
+  frame++;
+  scopePhase = (scopePhase + 0.004) % 1;
+
+  // Meters get a slow wander so the mock reads as live without pretending to
+  // be measuring anything. L and R drift apart slightly — the point of a
+  // stereo pair is that they can.
+  if (isActive("mixer")) {
+    const base = 0.52 + 0.22 * Math.sin(frame / 47) + 0.08 * Math.sin(frame / 11);
+    METERS.forEach((m, i) => {
+      const l = Math.max(0, Math.min(1, base - i * 0.06 + 0.05 * Math.sin(frame / 17 + i)));
+      const r = Math.max(0, Math.min(1, l + 0.06 * Math.sin(frame / 23 + i * 2)));
+      m.tick(l, r);
+    });
+  }
+
+  if (isActive("perform")) drawScope();
+  requestAnimationFrame(tick);
+}
+
+buildMacros();
+buildOpEg();
+buildPmGrid();
+renderOperators();
+drawEg();
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>
