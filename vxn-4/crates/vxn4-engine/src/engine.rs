@@ -49,7 +49,8 @@ use crate::matrix::{
     DestId, Matrix, N_DESTS, N_MACROS, Roster, SourceId, damp_dest_index, out_dest_index,
     pan_dest_index, pm_dest_index, ratio_dest_index, spread_dest_index,
 };
-use crate::patch::{Patch, patch};
+use crate::patch::{Patch, PatchTables, patch};
+use crate::shared::SharedParams;
 
 /// Lanes per bank. 8 is what the sizing sweep found best for `VoiceMajor`; 4
 /// and 16 both measure worse (49.8 / 52.0 / 48.9 voices, dense at 16x).
@@ -269,8 +270,20 @@ fn force_mask(m: &Matrix) -> [[bool; NOPS]; NOPS] {
 pub struct Engine {
     sample_rate: f32,
     quality: Quality,
+    /// Which factory bank entry was last installed wholesale. Identity only —
+    /// nothing renders from it, and once an editor has moved a field it no
+    /// longer describes what is sounding. It survives the inversion because the
+    /// host has a `patch` parameter and a saved project has to be able to name
+    /// what it started from.
     patch_index: usize,
-    patch: Patch,
+    /// The **audio thread's copy** of the patch tables (0382).
+    ///
+    /// Not a [`crate::patch::Patch`]: the authoritative patch lives on the main
+    /// thread in [`SharedParams`], and this is the mirror the render reads.
+    /// Written only by [`Self::load_patch`] (a whole factory entry),
+    /// [`SharedParams::sync`] (values, from the atomics) and the topology drain
+    /// (endpoints and curves, from the ring). Never written back.
+    patch: PatchTables,
 
     waves: WaveBank,
     banks: [VoiceMajor<LANES>; N_BANKS],
@@ -352,7 +365,7 @@ impl Engine {
             patch_index: 0,
             routing: CompiledRouting::compile(&p.routing),
             bus: SumBus::new(&p.ops, &p.routing),
-            patch: p,
+            patch: p.into(),
             waves: WaveBank::new(TABLE_LEN),
             banks: [(); N_BANKS].map(|_| VoiceMajor::<LANES>::new()),
             macros: [0.0; N_MACROS],
@@ -391,8 +404,32 @@ impl Engine {
         self.patch_index
     }
 
+    /// The name of the factory entry [`Self::patch_index`] names.
+    ///
+    /// A label for the index, not for what is sounding: once a field has been
+    /// edited the two have parted company, and the main thread is the only side
+    /// that knows a patch's real name.
     pub fn patch_name(&self) -> &'static str {
-        self.patch.name
+        crate::patch::PATCH_NAMES[self.patch_index % crate::patch::N_PATCHES]
+    }
+
+    /// The audio thread's copy of the modulation table.
+    ///
+    /// Read-only from outside. The mutable half is `pub(crate)` and reachable
+    /// only from the topology drain, which is the structural half of "the audio
+    /// thread reads the model and never owns it" — there is no way to write a
+    /// route from here that does not go through the ring.
+    pub fn matrix(&self) -> &Matrix {
+        &self.patch.matrix
+    }
+
+    /// The audio thread's table, for the topology drain to write one field of.
+    ///
+    /// **Audio thread, [`crate::topology`] only.** Leaves every derived table
+    /// stale; the drain calls [`Self::resync`] once it has applied the whole
+    /// batch.
+    pub(crate) fn matrix_mut(&mut self) -> &mut Matrix {
+        &mut self.patch.matrix
     }
 
     pub fn active_voices(&self) -> usize {
@@ -451,38 +488,58 @@ impl Engine {
         self.panic();
     }
 
-    /// Install a factory patch by index.
+    /// Install a whole factory entry. Does not touch voices — [`Self::set_patch`]
+    /// owns that decision, and construction has none to touch.
     fn load_patch(&mut self, index: usize) {
         self.patch_index = index % crate::patch::N_PATCHES;
         self.install_patch(patch(index));
     }
 
-    /// Install a patch's topology. Does not touch voices — [`Self::set_patch`]
-    /// owns that decision, and construction has none to touch.
+    /// Install a patch that did not come from the factory bank.
     ///
-    /// Split from [`Self::load_patch`] so a patch that did not come from the
-    /// factory bank can be installed: 0383's preset round-trip renders a
-    /// *decoded* patch and compares the samples against the original's, which
-    /// an index-only entry point cannot express. Deliberately not `pub` — who
-    /// owns a live patch is 0382's question, not this one's.
+    /// 0383's preset round-trip renders a *decoded* patch and compares its
+    /// samples against the original's, which an index-only entry point cannot
+    /// express. Deliberately not `pub`: who owns a live patch is the store's
+    /// question, and a caller outside this crate should be going through
+    /// [`crate::SharedParams::install`].
     pub(crate) fn install_patch(&mut self, p: Patch) {
+        self.patch = p.into();
+        self.refresh_patch();
+    }
+
+    /// Rebuild every table derived from [`Self::patch`].
+    ///
+    /// The single point where the flattened patch tables become the things the
+    /// render loop reads — compiled routing, the modulation flags, the pan
+    /// factors, the sum bus, the banks' waveform / phase / damping state and
+    /// the nominal ratios. Whoever wrote the tables (a factory install, a param
+    /// re-sync, a topology drain) calls this once afterwards rather than each
+    /// of them re-deriving a subset and getting the subset wrong.
+    ///
+    /// **Allocation-free and lock-free**, because every caller but
+    /// [`Self::load_patch`] is on the audio thread. `CompiledRouting` is a fixed
+    /// array for exactly this reason.
+    ///
+    /// Does not touch sounding voices. See [`Self::resync`] for the one thing
+    /// that has to reach them.
+    pub(crate) fn refresh_patch(&mut self) {
         // Reserve a lane for every route the matrix can reach, live or not.
         // `sine` authors no PM at all and still has a macro on its feedback
         // diagonal; without the mask that knob would compile away to nothing.
-        let force = force_mask(&p.matrix);
-        self.routing = CompiledRouting::compile_with(&p.routing, &force);
+        let force = force_mask(&self.patch.matrix);
+        self.routing = CompiledRouting::compile_with(&self.patch.routing, &force);
         let live = |s: &vxn_core_matrix::slot::MatrixSlot<SourceId, DestId>| {
             s.is_active() && s.depth != 0.0
         };
-        self.modulated = p.matrix.slots.iter().any(live);
+        let slots = &self.patch.matrix.slots;
+        self.modulated = slots.iter().any(live);
         // Half-open ranges, not `>=`. The damping predicate was
         // `i >= damp_dest_index(0)` while damping was the last family; adding
         // detune and pan after it would have made every one of those routes
         // read as a damping route. `matrix::tests::dest_indices_match_the_enum`
         // pins the family boundaries this relies on.
         let targets = |lo: usize, hi: usize| {
-            p.matrix
-                .slots
+            slots
                 .iter()
                 .any(|s| live(s) && DestId::idx(s.dest).is_some_and(|i| i >= lo && i < hi))
         };
@@ -492,25 +549,83 @@ impl Engine {
         self.spread_routed = targets(spread_dest_index(0), N_DESTS);
 
         for d in 0..NOPS {
-            let theta = (p.ops[d].pan.clamp(-1.0, 1.0) + 1.0) * 0.25 * std::f32::consts::PI;
+            let theta =
+                (self.patch.ops[d].pan.clamp(-1.0, 1.0) + 1.0) * 0.25 * std::f32::consts::PI;
             self.pan_c[d] = theta.cos();
             self.pan_s[d] = theta.sin();
         }
-        self.bus = SumBus::new(&p.ops, &p.routing);
+        self.bus = SumBus::new(&self.patch.ops, &self.patch.routing);
 
         let sr_os = self.sr_os();
         for b in self.banks.iter_mut() {
-            b.set_waves(&p.ops);
-            b.set_phases(&p.ops);
-            b.set_damping(&p.ops, sr_os);
+            b.set_waves(&self.patch.ops);
+            b.set_phases(&self.patch.ops);
+            b.set_damping(&self.patch.ops, sr_os);
         }
-        self.live_ratios = std::array::from_fn(|d| p.ops[d].ratio);
-        self.patch = p;
+        self.live_ratios = std::array::from_fn(|d| self.patch.ops[d].ratio);
         // Macro positions survive a patch change — they are host automation,
         // and a lane that holds macro 1 at 0.7 across a patch switch must not
         // have the new patch snap back to its authored depths for a block.
         self.mod_dirty = true;
         self.apply_modulation();
+    }
+
+    /// [`Self::refresh_patch`], plus the one thing a *live* edit has to push
+    /// into notes already sounding: their phase increments.
+    ///
+    /// This is the difference between an edit and a patch change, and it is
+    /// why an edit needs no [`Self::panic`]. An increment is per lane and was
+    /// cooked from the ratios in force when the note started, so a change to
+    /// `op-N-ratio` — or to a `ratio-N` route, which moves [`Self::live_ratios`]
+    /// the same way — would otherwise reach only the notes played after it,
+    /// leaving a held chord audibly out of tune with the next one.
+    ///
+    /// [`vxn4_dsp::ops::VoiceMajor::set_lane_incs`] rather than `cook_lane`,
+    /// deliberately: `cook_lane` also re-selects the mip from the nominal
+    /// increment, which would reset the hysteresis state on every edit and
+    /// defeat the whole mip scheme. `update_mips` reads `inc` on its own
+    /// schedule and picks the new rate up within a control block.
+    ///
+    /// ## What an edit does *not* reach, and why that is correct
+    ///
+    /// - **`op-N-phase` and `op-N-phase-spread`** are read by `reset_lane`, at
+    ///   note onset. A running oscillator has no start phase left to change;
+    ///   this is the ticket's named example and it is behaviour, not a gap.
+    /// - **`op-N-eg-*`** is cooked into the voice by `Eg::cook` at note-on,
+    ///   against that note's velocity peak, and a running segment's marcher
+    ///   state is derived from that cook. Re-cooking mid-flight would either
+    ///   jump the level or restart the segment, both of which are worse than
+    ///   waiting for the next note. Note that today's alternative is worse
+    ///   still: `set_patch` silences the chord outright.
+    ///
+    /// Everything else is live from the next control tick — at most 32 samples,
+    /// which is the engine's own modulation resolution and therefore the
+    /// finest an edit could meaningfully be.
+    ///
+    /// **No field-level edit needs a voice reset.** The one thing that does is
+    /// a change of *identity* — [`Self::set_patch`] adopting a different bank
+    /// entry — and even there the panic is a choice about what a patch change
+    /// should sound like rather than a correctness requirement. Every
+    /// individual field an edit can move is either bounded (levels, sends,
+    /// pans, depths), self-healing (mips, damping coefficients), or onset-only.
+    pub(crate) fn resync(&mut self) {
+        self.refresh_patch();
+        for slot in 0..N_SLOTS {
+            if self.alloc.voices[slot].is_idle() {
+                continue;
+            }
+            self.repitch(slot);
+        }
+    }
+
+    /// Adopt every patch value from the store. **Audio thread.**
+    ///
+    /// Reads [`crate::params::PATCH_PARAMS`] relaxed atomics into the tables and
+    /// rebuilds. No lock, no spin, no allocation — see [`SharedParams`] for the
+    /// invariant that makes that possible.
+    pub(crate) fn adopt_params(&mut self, shared: &SharedParams) {
+        shared.write_tables(&mut self.patch);
+        self.resync();
     }
 
     /// A macro knob, `0..=7`, in `[0, 1]`. Out-of-range indices are ignored.
@@ -706,6 +821,15 @@ impl Engine {
         if !self.detuned {
             return;
         }
+        self.repitch(slot);
+    }
+
+    /// Re-derive one sounding lane's phase increments from [`Self::live_ratios`].
+    ///
+    /// Guarded by `detuned` on the note-on path ([`Self::restore_detune`]) and
+    /// unguarded on the edit path ([`Self::resync`]) — an edit can move the
+    /// nominal ratios themselves, which no modulation flag describes.
+    fn repitch(&mut self, slot: usize) {
         let hz0 = vxn4_dsp::ops::pitch_to_freq(self.alloc.voices[slot].pitch);
         let (bank, lane) = (slot / LANES, slot % LANES);
         let (ratios, sr_os) = (self.live_ratios, self.sr_os());

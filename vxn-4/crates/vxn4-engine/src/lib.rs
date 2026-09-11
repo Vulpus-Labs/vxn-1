@@ -25,6 +25,17 @@
 //! - [`patch`] — the six hardwired patches, graded by routing density.
 //! - [`matrix`] — the modulation roster: 8 macro sources, 80 destinations.
 //! - [`engine`] — banks, rate plan, limiter.
+//! - [`params`] — the descriptor table: every patch field named and ranged.
+//! - [`shared`] — the authoritative patch, on the main thread.
+//! - [`topology`] — the lock-free channel that carries the rest of it.
+//!
+//! ## Who owns the patch
+//!
+//! **The main thread owns the model; the audio thread reads it and never owns
+//! it. Truth flows main → audio and never back.** [`shared::SharedParams`] is
+//! the authority — scalars in atomics, matrix topology behind a mutex the audio
+//! thread never takes — and [`Engine`] holds only the flattened tables it
+//! renders from. See [`shared`] for the split and why it is shaped that way.
 //!
 //! ## Modulation
 //!
@@ -48,11 +59,15 @@ pub mod matrix;
 pub mod params;
 pub mod patch;
 pub mod preset;
+pub mod shared;
+pub mod topology;
 
 pub use alloc::{Alloc, N_ACTIVE, N_DECLICK, N_SLOTS, Phase, Voice};
 pub use eg::{Eg, EgParams, Stage};
 pub use engine::{Engine, HOST_LATENCY_SAMPLES, MAX_MASTER_GAIN, Quality, latency_samples};
 pub use matrix::{DestId, Matrix, N_DESTS, N_MACROS, N_MATRIX_SLOTS, Roster, SourceId};
 pub use params::{N_PARAMS, PATCH_PARAMS, Param, ParamId, all_ids, desc, id_for_name, patch_ids};
-pub use patch::{N_PATCHES, Patch, patch, patch_names};
+pub use patch::{N_PATCHES, Patch, PatchTables, patch, patch_names};
 pub use preset::{MacroSpec, Macros, Meta, Preset, PresetError, read_preset, write_preset};
+pub use shared::{Drain, SharedParams};
+pub use topology::{SlotEdit, SlotField, TopoMsg};

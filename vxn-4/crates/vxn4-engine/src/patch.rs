@@ -95,6 +95,48 @@ pub struct Patch {
     pub gain: f32,
 }
 
+/// A patch's **numbers**, with its identity dropped — what [`crate::Engine`]
+/// actually renders from (0382).
+///
+/// Deliberately not a [`Patch`]. A `Patch` is a factory-bank entry and carries
+/// a `&'static str` name, which an edited patch has no way to supply without
+/// putting a `String` (and therefore an allocator) on the audio thread. The
+/// renderer never needed the name; splitting it off is what lets the
+/// authoritative patch live on the main thread as a flat table of scalars
+/// ([`crate::shared::SharedParams`]) with the audio thread holding nothing but
+/// this mirror of it.
+///
+/// **A copy, never the authority.** Truth flows main → audio and never back:
+/// nothing in the engine writes a field here expecting the store to learn about
+/// it. The two channels that fill it are the param atomics (every scalar) and
+/// the topology ring ([`crate::topology`], the matrix endpoints and curves).
+#[derive(Clone, Copy, Debug)]
+pub struct PatchTables {
+    pub ops: [OpConfig; NOPS],
+    /// Authored depths — where every route sits with all macros at zero.
+    pub routing: Routing,
+    /// The modulation table. Its **depths** are scalar param state and its
+    /// endpoints, curves and on/off switches are topology; the two reach the
+    /// audio thread down different channels, which is why they are separated
+    /// everywhere they are written rather than only here.
+    pub matrix: Matrix,
+    pub eg: [EgParams; NOPS],
+    /// Master trim, applied at the sum bus. See [`Patch::gain`].
+    pub gain: f32,
+}
+
+impl From<Patch> for PatchTables {
+    fn from(p: Patch) -> Self {
+        Self {
+            ops: p.ops,
+            routing: p.routing,
+            matrix: p.matrix,
+            eg: p.eg,
+            gain: p.gain,
+        }
+    }
+}
+
 /// The set, in order.
 pub const N_PATCHES: usize = 7;
 
@@ -110,16 +152,18 @@ pub fn patch(index: usize) -> Patch {
     }
 }
 
+/// The set's names, in order.
+///
+/// A table rather than a fold over the constructors: a caller that wants a
+/// label — `Engine::patch_name`, a preset browser — should not have to build
+/// seven patches (one of which allocates a 39-slot `Vec`) to read seven
+/// strings. `every_patch_exists_and_is_named` checks it against the
+/// constructors, so the two cannot drift.
+pub const PATCH_NAMES: [&str; N_PATCHES] =
+    ["sine", "epiano", "bell", "saws", "web", "grind", "supersaw"];
+
 pub fn patch_names() -> [&'static str; N_PATCHES] {
-    [
-        sine().name,
-        epiano().name,
-        bell().name,
-        saws().name,
-        web().name,
-        grind().name,
-        supersaw().name,
-    ]
+    PATCH_NAMES
 }
 
 /// Silent operator: no output, no level. The base every patch builds from, so
