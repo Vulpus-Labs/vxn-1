@@ -5,7 +5,7 @@ title: "vxn4-app: ParamModel implementation and controller wiring"
 priority: high
 created: 2026-09-10
 epic: E052
-depends: ["0382"]
+depends: ["0382", "0384"]
 ---
 
 ## Summary
@@ -31,7 +31,10 @@ lock-free crossing"*.
       the [0381](0381-vxn4-patch-descriptor-table.md) table.
 - [ ] `snapshot_bytes` / `restore_from_bytes` delegate to the
       [0384](0384-vxn4-clap-state-v2.md) blob, so the controller serves host
-      save/load without knowing the format.
+      save/load without knowing the format. **This is why 0384 gates this
+      ticket** — running the two together would have one of them inventing a
+      blob format the other then replaces. E052's planned-ticket list originally
+      recorded 0382 as the only dependency, which was wrong.
 - [ ] Per-synth state that does not fit the `(id, f32)` shape — waveform
       selections, route enables, matrix topology — rides a vxn-4 extension
       trait, as the shared model doc prescribes, and reaches the audio thread

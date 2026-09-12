@@ -131,8 +131,19 @@ control says "planned, not yet"; an absent one says "never".
 
 0381 gates everything. 0382 and 0383 are independent of each other and can run in
 parallel once 0381 lands. 0387 is mostly an asset port and can start immediately,
-in parallel with the whole engine half — it only needs 0386 to show real values.
+in parallel with the whole engine half — it only needs 0388 to show real values.
 0384 needs both 0382 and 0383. 0389 needs 0385 and 0388.
+
+**0386 needs 0384, not just 0382.** This list first recorded 0382 as its only
+dependency, which was wrong: 0386's `snapshot_bytes` / `restore_from_bytes`
+delegate to 0384's blob, so running them together means one inventing a format
+the other replaces. Corrected after 0381–0383 landed.
+
+The batches that fall out of that: **0381** alone; then **0382 + 0383**; then
+**0384 + 0385 + 0387** (0385 touches only `vxn4-engine`, and 0384 and 0387 touch
+disjoint regions of the CLAP shell); then **0386** alone, because it rewires the
+shell those two just touched and is the point at which 0382's inversion first
+becomes load-bearing; then **0388**, then **0389**.
 
 ## Risks
 
