@@ -4,6 +4,7 @@
 
 use vxn3_engine::engine::Engine;
 use vxn3_engine::engines::make;
+use vxn3_engine::flavour::colour_override;
 use vxn3_engine::io::{EngineCommand, PlayheadState};
 use vxn3_engine::track_engine::EngineKind;
 use vxn3_engine::transport::Transport;
@@ -321,6 +322,51 @@ fn hit_keyed_attributes_address_one_of_several_hits_in_a_slot() {
     assert_eq!((p.hits()[0].probability, p.hits()[0].note), (1.0, 36.0));
     assert_eq!((p.hits()[1].probability, p.hits()[1].note), (0.25, 50.0));
     assert_eq!(p.hits()[1].velocity, 0.4);
+}
+
+/// AC (0355): the palette's edits cross to the audio thread like any other lane
+/// edit, and the channels that arrive are the ones the arcs were dragged to — the
+/// editor's luminance floor is a display rule and has no representation here.
+///
+/// Two hits in one slot again, because the palette is hit-keyed: the arcs edit the
+/// diamond that was shift-clicked, not whatever else shares its subdivision.
+#[test]
+fn the_colour_verbs_cross_to_the_audio_thread_unaltered() {
+    let mut engine = Engine::new(SR, 512);
+    let io = engine.io();
+    for f in [0.0_f32, 0.5] {
+        assert!(io.edits.push(EngineCommand::AddHit {
+            track: 0, beat: 0, sub: 0, f, nudge: 0, y: 0.5, note: 36.0, velocity: 1.0,
+        }));
+    }
+    // Black on one, a tuned triple on the other. Black is the interesting one: it is
+    // an invisible diamond the editor has to floor to draw, and a macro vector that
+    // sends zero to all three slots.
+    assert!(io.edits.push(EngineCommand::SetHitColour {
+        track: 0,
+        hit: 0,
+        rgb: [0.0, 0.0, 0.0],
+    }));
+    assert!(io.edits.push(EngineCommand::SetHitColour {
+        track: 0,
+        hit: 1,
+        rgb: [1.0, 0.0, 0.5],
+    }));
+    let _ = play_block(&mut engine, 0.0, 64);
+    {
+        let p = &engine.track_mut(0).pattern;
+        assert_eq!(p.hits()[0].rgb, [0.0, 0.0, 0.0]);
+        assert_eq!(colour_override(p.hits()[0].rgb), Some([0.0; 3]), "black sends zero");
+        assert_eq!(colour_override(p.hits()[1].rgb), Some([1.0, 0.0, 0.5]));
+    }
+
+    // Clearing is its own verb, and lands somewhere else entirely: the slots fall
+    // back to the p-lock/base rather than being driven to zero.
+    assert!(io.edits.push(EngineCommand::ClearHitColour { track: 0, hit: 0 }));
+    let _ = play_block(&mut engine, 0.0, 64);
+    let p = &engine.track_mut(0).pattern;
+    assert_eq!(colour_override(p.hits()[0].rgb), None);
+    assert_eq!(colour_override(p.hits()[1].rgb), Some([1.0, 0.0, 0.5]));
 }
 
 /// An over-capacity add drops rather than allocating — the audio thread's half of

@@ -80,6 +80,16 @@ pub enum EngineCommand {
     SetHitProbability { track: u8, hit: u16, probability: f32 },
     /// Set a hit's retrig macro (hit-keyed form of [`Self::SetRetrig`]).
     SetHitRetrig { track: u8, hit: u16, retrig: Retrig },
+    /// Paint a hit's colour — its **macro vector** (ADR 0007 §7, ticket 0355).
+    /// Channels are normalised `0.00–1.00`, the form the macro slots take; there is
+    /// no `0–255` anywhere on this path.
+    ///
+    /// Distinct from [`Self::ClearHitColour`] rather than folded into it with a
+    /// sentinel triple, because the two mean opposite things at trig time: black is a
+    /// colour that sends zero to all three slots, and no colour sends nothing.
+    SetHitColour { track: u8, hit: u16, rgb: [f32; 3] },
+    /// Strip a hit's colour, handing its macro slots back to the p-lock/base.
+    ClearHitColour { track: u8, hit: u16 },
     /// Quantise a hit toward its nearest subdivision marker, `amount ∈ [0, 1]`.
     QuantiseHitX { track: u8, hit: u16, amount: f32 },
     /// Quantise a hit toward the groove's Y-centre curve. Separate from
@@ -189,6 +199,8 @@ impl EngineCommand {
             | Self::SetHitNote { track, .. }
             | Self::SetHitProbability { track, .. }
             | Self::SetHitRetrig { track, .. }
+            | Self::SetHitColour { track, .. }
+            | Self::ClearHitColour { track, .. }
             | Self::QuantiseHitX { track, .. }
             | Self::QuantiseHitY { track, .. }
             | Self::SetGridBeats { track, .. }
@@ -278,6 +290,11 @@ pub fn apply_pattern_command(pattern: &mut Pattern, cmd: EngineCommand) -> bool 
         EngineCommand::SetHitRetrig { hit, retrig, .. } => {
             pattern.set_hit_retrig(hit as usize, retrig)
         }
+        // The palette's two verbs (0355). Stored as sent: the editor's display floors
+        // a dark colour to keep the diamond visible, and that floor stays in the
+        // editor — what reaches the slots is what the user dialled.
+        EngineCommand::SetHitColour { hit, rgb, .. } => pattern.set_colour(hit as usize, rgb),
+        EngineCommand::ClearHitColour { hit, .. } => pattern.clear_colour(hit as usize),
         EngineCommand::QuantiseHitX { hit, amount, .. } => {
             pattern.quantise_x(hit as usize, amount);
         }
@@ -786,6 +803,8 @@ mod tests {
             },
             EngineCommand::QuantiseHitX { track: 0, hit: 2, amount: 1.0 },
             EngineCommand::SetHitProbability { track: 0, hit: 0, probability: 0.25 },
+            // A colour is not a position, so it must not re-sort the list either.
+            EngineCommand::SetHitColour { track: 0, hit: 2, rgb: [1.0, 0.0, 0.5] },
         ];
         for c in cmds {
             assert!(store.apply(c), "{c:?} is a lane edit");
@@ -903,6 +922,47 @@ mod tests {
         assert_eq!(store.get(0).grid().sub_override(1), None);
     }
 
+    /// AC (0355): the palette's verbs are lane edits like any other, and the raw
+    /// channels reach the model untouched — black stays black, and "no colour" stays
+    /// a different thing from it all the way to the macro vector.
+    #[test]
+    fn the_colour_verbs_carry_raw_channels_into_the_model() {
+        let store = PatternStore::new();
+        for beat in [0_u16, 1] {
+            assert!(store.apply(EngineCommand::AddHit {
+                track: 0, beat, sub: 0, f: 0.0, nudge: 0, y: 0.5, note: 36.0, velocity: 1.0,
+            }));
+        }
+        // A fresh hit is uncoloured, which is not black: it overrides nothing.
+        assert_eq!(crate::flavour::colour_override(store.get(0).hits()[0].rgb), None);
+
+        assert!(store.apply(EngineCommand::SetHitColour {
+            track: 0,
+            hit: 0,
+            rgb: [0.0, 0.0, 0.0],
+        }));
+        assert!(store.apply(EngineCommand::SetHitColour {
+            track: 0,
+            hit: 1,
+            rgb: [1.0, 0.0, 0.5],
+        }));
+        let p = store.get(0);
+        assert_eq!(p.hits()[0].rgb, [0.0, 0.0, 0.0], "black is stored as black");
+        assert_eq!(crate::flavour::colour_override(p.hits()[0].rgb), Some([0.0; 3]));
+        // Exactly the triple the arcs were dragged to — the three channels are
+        // independent, so a value path that rounded or renormalised them would make
+        // the middle arc unaddressable.
+        assert_eq!(crate::flavour::colour_override(p.hits()[1].rgb), Some([1.0, 0.0, 0.5]));
+
+        assert!(store.apply(EngineCommand::ClearHitColour { track: 0, hit: 0 }));
+        assert_eq!(crate::flavour::colour_override(store.get(0).hits()[0].rgb), None);
+        // Clearing one hit's colour leaves its neighbour's alone.
+        assert_eq!(
+            crate::flavour::colour_override(store.get(0).hits()[1].rgb),
+            Some([1.0, 0.0, 0.5])
+        );
+    }
+
     /// Mix, macro and master verbs are not lane edits: they belong to `Track` and
     /// the master bus, and the model must not claim them.
     #[test]
@@ -929,6 +989,11 @@ mod tests {
     fn command_track_routing_covers_the_vocabulary() {
         assert_eq!(EngineCommand::RemoveHit { track: 5, hit: 0 }.track(), Some(5));
         assert_eq!(EngineCommand::LoadPattern { track: 7 }.track(), Some(7));
+        assert_eq!(
+            EngineCommand::SetHitColour { track: 3, hit: 0, rgb: [0.0; 3] }.track(),
+            Some(3)
+        );
+        assert_eq!(EngineCommand::ClearHitColour { track: 4, hit: 0 }.track(), Some(4));
         assert_eq!(EngineCommand::SetMute { track: 2, muted: true }.track(), Some(2));
         assert_eq!(EngineCommand::SetMasterVolume { value: 1.0 }.track(), None);
         assert_eq!(EngineCommand::SetDelaySyncBeats { beats: 0.5 }.track(), None);
