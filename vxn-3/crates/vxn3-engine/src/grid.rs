@@ -35,6 +35,14 @@
 //! of that guarantee: `MIN_SLOT` is absolute, so a clamp against it only separates
 //! two markers while it is larger than an ulp of them.
 //!
+//! **The Y-centre curve rides those same markers** (ADR 0007 §6, ticket 0350): one
+//! control point per beat marker, [`Grid::y_at`] interpolating between them with
+//! clamped tangents. It lives here rather than beside the hits because a control point
+//! has no position of its own — it *is* its marker's — so every path that moves,
+//! splits or merges a marker carries its control point along for free, and there is no
+//! second array to hold in step. [`Grid::y_point`] states where this is expected to end
+//! up once the groove object of ADR 0007 §8 (ticket 0352) exists.
+//!
 //! Pure data and math: no scheduler, no UI, **no allocation on any query path**, and
 //! storage is fixed-capacity arrays sized from [`MAX_BEATS`] / [`MAX_SUBS`] so the
 //! whole grid is `Copy` and audio-thread safe. Marker *editing* semantics (a drag
@@ -95,6 +103,23 @@ pub const MAX_LEN_BEATS: f64 = (1u32 << 16) as f64;
 const _: () = assert!(
     MAX_LEN_BEATS * f64::EPSILON < (MIN_SLOT / MAX_SUBS as f64) * f32::EPSILON as f64
 );
+
+/// The middle of the lane strip, and the zero of both Y quantities (ADR 0007 §6).
+///
+/// It is one constant doing two jobs, and they are the same job seen from either end:
+///
+/// - a **control point** at `Y_CENTRE` is the flat default curve, down the middle of
+///   the strip;
+/// - a **hit's stored `y`** at `Y_CENTRE` is a hit sitting *on* the curve, wherever the
+///   curve happens to be.
+///
+/// So a hit's `y` is 0348's offset-from-the-curve carried in lane coordinates rather
+/// than as a signed number around zero, and the shift is what makes the flat default
+/// behaviour-preserving: with every control point at `Y_CENTRE`,
+/// `y_at(t) + (y - Y_CENTRE)` is exactly `y`, so a lane nobody has drawn a contour on
+/// behaves precisely as it did before the curve existed. It also leaves `y`'s stored
+/// range `[0, 1]` and its default alone, which is what the faceplate already sends.
+pub const Y_CENTRE: f32 = 0.5;
 
 /// Shape of the swing warp `w`. Minimal set (0347): straight plus the classic
 /// piecewise-linear MPC pull. Widen behind this enum without a format break — the
@@ -300,6 +325,10 @@ pub struct Grid {
     /// held equal to the end marker so the derived `PartialEq` compares two grids by
     /// their geometry and not by leftovers from how they were built.
     markers: [f64; MAX_MARKERS],
+    /// Y-centre control points, one per beat marker (ADR 0007 §6). Same live extent
+    /// and same padding rule as `markers` — the tail is held equal to the last live
+    /// point so two grids with the same curve compare equal however they were built.
+    y_points: [f32; MAX_MARKERS],
     /// Live beat count, always `1..=MAX_BEATS`.
     n_beats: usize,
     /// Lane-wide subdivision count, always `1..=MAX_SUBS`.
@@ -337,6 +366,11 @@ impl Grid {
         markers[n] = len; // pinned exactly, rather than left as n · step
         Self {
             markers,
+            // Flat down the middle of the strip. Every control point equal makes every
+            // secant zero, hence every tangent zero, hence `y_at` exactly `Y_CENTRE`
+            // everywhere — so a fresh lane's curve contributes nothing and a hit's
+            // effective Y is its stored `y`, bit-for-bit as before 0350.
+            y_points: [Y_CENTRE; MAX_MARKERS],
             n_beats: n,
             default_subs: subs.clamp(1, MAX_SUBS),
             sub_override: [0; MAX_BEATS],
@@ -363,6 +397,144 @@ impl Grid {
     #[inline]
     pub fn beat_marker(&self, i: usize) -> f64 {
         self.markers[i.min(self.n_beats)]
+    }
+
+    /// The Y-centre control point on beat marker `i`, in lane coordinates `[0, 1]`
+    /// (ADR 0007 §6). `i` clamps into `0..=n_beats`, as [`Grid::beat_marker`] does.
+    ///
+    /// **Where these live is a decision this ticket had to make and 0352 inherits.**
+    /// ADR 0007 §8 puts the control points in the *groove* — beat markers, sub-counts,
+    /// swing and Y-centre points as one pooled, swappable object — but the groove type
+    /// is 0352 and does not exist yet, so they had to land somewhere in the meantime.
+    /// They are here, on [`Grid`], for three reasons and not merely for want of
+    /// anywhere else:
+    ///
+    /// - A control point has **no position of its own**. It is at its marker, which is
+    ///   exactly the property ADR 0007 §6 wants ("they move when markers move and need
+    ///   no independent position storage"). Storing it next to the thing that defines
+    ///   its position is what makes that true by construction instead of by
+    ///   maintenance.
+    /// - Every marker mutation is already here and already clamped —
+    ///   [`Grid::set_beat_marker`], [`Grid::insert_beat_marker`],
+    ///   [`Grid::delete_beat_marker`], [`Grid::set_n_beats`], [`Grid::set_len_beats`].
+    ///   A parallel array anywhere else would have to shadow all five, and the failure
+    ///   mode of missing one is a control point silently belonging to the wrong marker.
+    /// - [`Grid`] is `Copy` and fixed-capacity, so `[f32; MAX_MARKERS]` costs 68 bytes
+    ///   and no allocation, and rides the audio-thread swap boundary unchanged.
+    ///
+    /// When 0352 lifts the geometry into a `Groove`, this array goes with it as one
+    /// more field of the same struct — the move is a rename, not a redesign, because
+    /// §8's groove is precisely "the marker geometry plus this".
+    #[inline]
+    pub fn y_point(&self, i: usize) -> f32 {
+        self.y_points[i.min(self.n_beats)]
+    }
+
+    /// The Y-centre curve sampled at beat position `t` (ADR 0007 §6), in lane
+    /// coordinates. Positions outside `[m[0], m[n_beats]]` — and non-finite ones —
+    /// clamp to the end control points.
+    ///
+    /// **Catmull-Rom with clamped tangents**, which here means: the centred-difference
+    /// tangent Catmull-Rom takes (in its non-uniform form, since beat markers are not
+    /// evenly spaced), then the Fritsch–Carlson limiter — zero at a local extremum,
+    /// otherwise no steeper than three times the shallower of the two adjacent secants.
+    /// That is the standard sufficient condition for a monotone piecewise cubic, so
+    /// **each segment stays between its own two control points** and the whole curve
+    /// therefore stays inside the lane. Unclamped Catmull-Rom does not: a steep
+    /// adjacent pair makes it overshoot, and an overshoot here is a modulation value
+    /// outside its declared range being handed to [`crate::flavour::resolve`], which
+    /// clamps it *silently* — so the symptom is "the curve does nothing over here",
+    /// not an error.
+    ///
+    /// The tangent clamp is the whole of the bound; there is deliberately **no mop-up
+    /// clamp here** for it to hide behind, which is what lets the property test mean
+    /// something. The residue is that a value may sit a float ulp or two outside the
+    /// segment it is in — rounding, not overshoot — and
+    /// [`crate::sequencer::Pattern::effective_y`] clamps to the lane anyway, because
+    /// the hit's own offset can leave it regardless.
+    ///
+    /// The cost of the clamp is that the curve has no wiggle: it cannot bulge past a
+    /// control point on the way to the next. That is the right trade for a modulation
+    /// contour, where every value on the curve is one the user is claiming to want.
+    ///
+    /// A bounded scan of at most [`MAX_BEATS`] markers plus a cubic. Allocation-free
+    /// and called once per resolved trig, never per sample.
+    pub fn y_at(&self, t: f64) -> f32 {
+        let n = self.n_beats;
+        // NaN alone, not `!is_finite()`: an infinity is an out-of-range *position* and
+        // belongs to the end it is at, exactly as in `Grid::locate`. Folding it in with
+        // NaN would answer `+∞` with the curve's **start** value.
+        if t.is_nan() || t <= self.markers[0] {
+            return self.y_points[0];
+        }
+        if t >= self.markers[n] {
+            return self.y_points[n];
+        }
+        let mut i = n - 1;
+        for j in 0..n {
+            if t < self.markers[j + 1] {
+                i = j;
+                break;
+            }
+        }
+        let h = self.markers[i + 1] - self.markers[i];
+        // `MIN_SLOT` makes a zero-width beat slot unreachable; the guard is what keeps
+        // a degenerate array from dividing by zero on the audio thread.
+        #[allow(clippy::neg_cmp_op_on_partial_ord, reason = "the negation is the NaN guard")]
+        if !(h > 0.0) {
+            return self.y_points[i];
+        }
+        let u = ((t - self.markers[i]) / h) as f32;
+        let h = h as f32;
+        // Tangents are slopes in value-per-beat; the Hermite basis wants them per unit
+        // of the segment's own parameter, hence the `· h`.
+        hermite(
+            self.y_points[i],
+            self.y_points[i + 1],
+            self.tangent(i) * h,
+            self.tangent(i + 1) * h,
+            u,
+        )
+    }
+
+    /// Secant slope of beat slot `i`, in lane units per beat.
+    #[inline]
+    fn y_secant(&self, i: usize) -> f32 {
+        let h = (self.markers[i + 1] - self.markers[i]) as f32;
+        if h > 0.0 {
+            (self.y_points[i + 1] - self.y_points[i]) / h
+        } else {
+            0.0
+        }
+    }
+
+    /// The clamped tangent at control point `i` — see [`Grid::y_at`] for what the
+    /// clamp buys. The endpoints take the one-sided secant, which is already inside
+    /// the limiter's bound (a ratio of exactly 1).
+    fn tangent(&self, i: usize) -> f32 {
+        let n = self.n_beats;
+        if i == 0 {
+            return self.y_secant(0);
+        }
+        if i >= n {
+            return self.y_secant(n - 1);
+        }
+        let (d0, d1) = (self.y_secant(i - 1), self.y_secant(i));
+        // A sign change is a local extremum and a zero is a flat neighbour; either way
+        // a non-zero tangent here would push the cubic past the control point it is
+        // aimed at. `<=` covers both, and covers an underflowed product too — which is
+        // the safe direction, since a zero tangent cannot overshoot.
+        if d0 * d1 <= 0.0 {
+            return 0.0;
+        }
+        let h0 = (self.markers[i] - self.markers[i - 1]) as f32;
+        let h1 = (self.markers[i + 1] - self.markers[i]) as f32;
+        // Catmull-Rom's centred difference, non-uniform: the secant of the chord across
+        // both neighbours. It shares the sign of `d0` and `d1`, so a symmetric clamp is
+        // the whole of the limiter.
+        let m = (self.y_points[i + 1] - self.y_points[i - 1]) / (h0 + h1);
+        let lim = 3.0 * d0.abs().min(d1.abs());
+        m.clamp(-lim, lim)
     }
 
     /// Subdivision count for `beat`: the per-beat override if set, else the lane
@@ -509,6 +681,11 @@ impl Grid {
     /// feel continuous. The outer markers are pinned to the pattern bounds and ignore
     /// this entirely — move the end with [`Grid::set_len_beats`]. Non-finite input is
     /// a no-op, so a NaN can never enter the array and poison every later query.
+    ///
+    /// The marker's Y-centre control point is not touched, which is exactly how it
+    /// **moves with the marker**: the point is stored against the index and read at the
+    /// index's position, so the contour follows the drag with nothing to update. The
+    /// no-crossing clamp is also what keeps the curve single-valued in time.
     pub fn set_beat_marker(&mut self, i: usize, pos: f64) -> f64 {
         if i == 0 || i >= self.n_beats {
             return self.beat_marker(i);
@@ -526,9 +703,35 @@ impl Grid {
         v
     }
 
+    /// Set the Y-centre control point on beat marker `i`, clamped to the lane strip
+    /// `[0, 1]`. Interior *and* outer markers: the pinning of ADR 0007 §2 is about
+    /// marker **positions**, and the curve has to be defined at the pattern bounds.
+    ///
+    /// Non-finite input takes [`Y_CENTRE`] rather than being ignored, matching
+    /// [`crate::sequencer::Pattern::set_hit_y`] — a NaN in this array would spread
+    /// through the tangents into every segment either side of it.
+    ///
+    /// This is the door ticket 0356 drags through; it clamps rather than refuses for
+    /// the same reason [`Grid::set_beat_marker`] does.
+    pub fn set_y_point(&mut self, i: usize, y: f32) {
+        if i > self.n_beats {
+            return;
+        }
+        let v = if y.is_finite() { y.clamp(0.0, 1.0) } else { Y_CENTRE };
+        self.y_points[i] = v;
+        if i == self.n_beats {
+            self.canonicalise_tail();
+        }
+    }
+
     /// Set the pattern length — the pinned end marker — rescaling the interior markers
     /// proportionally so the lane's feel survives a length change, then re-establishing
     /// [`MIN_SLOT`]. Returns the length actually taken (at least `n_beats · MIN_SLOT`).
+    ///
+    /// The Y-centre control points need no rescale for the same reason a marker drag
+    /// needs no update: they are indexed by marker, so a proportional stretch of the
+    /// markers stretches the curve with them and the contour survives the length change
+    /// exactly as the feel does.
     pub fn set_len_beats(&mut self, len_beats: f64) -> f64 {
         let n = self.n_beats;
         let len = sane_len(len_beats, n);
@@ -567,6 +770,13 @@ impl Grid {
     /// [`crate::sequencer::Pattern::insert_beat_marker`]'s half, and reaching this
     /// through `edit_grid` instead applies the relative rule a *drag* follows — the
     /// opposite gesture.
+    ///
+    /// The new marker gets a Y-centre control point, and it takes **the value the curve
+    /// already had at `pos`** — sampled before the split. That is the same rule the
+    /// hits follow across an insert: splitting a slot changes nothing the user can see.
+    /// The curve is not bit-identical afterwards (a new knot changes its neighbours'
+    /// tangents), but it still passes through every old control point *and* through the
+    /// point the user split at, which is the strongest form the shape allows.
     pub fn insert_beat_marker(&mut self, i: usize, pos: f64) -> Option<usize> {
         if self.n_beats >= MAX_BEATS || i == 0 || i > self.n_beats || !pos.is_finite() {
             return None;
@@ -579,13 +789,26 @@ impl Grid {
         if self.markers[i] - self.markers[i - 1] < 2.0 * MIN_SLOT {
             return None;
         }
+        // Sampled before anything moves — after the shift the curve is a different one —
+        // and at the position the marker will actually **take**, not the one asked for.
+        // `pos` is only required to be inside the pattern, so it can be outside the slot
+        // being split, and `set_beat_marker` below clamps it into that slot's interior.
+        // Sampling the request instead would hand the new marker the curve's value from
+        // somewhere else entirely, which is the one thing this inheritance is for.
+        let lo = self.markers[i - 1] + MIN_SLOT;
+        let hi = self.markers[i] - MIN_SLOT;
+        // `hi.max(lo)` for the same reason `set_beat_marker` has it: the width test above
+        // is in beats and this is in floats, and `clamp` panics on `min > max`.
+        let y = self.y_at(pos.clamp(lo, hi.max(lo)));
         for j in (i..=self.n_beats).rev() {
             self.markers[j + 1] = self.markers[j];
+            self.y_points[j + 1] = self.y_points[j];
         }
         for j in (i..self.n_beats).rev() {
             self.sub_override[j + 1] = self.sub_override[j];
         }
         self.sub_override[i] = self.sub_override[i - 1];
+        self.y_points[i] = y;
         self.n_beats += 1;
         self.markers[i] = self.markers[i - 1]; // overwritten by the clamped write below
         self.set_beat_marker(i, pos);
@@ -606,7 +829,9 @@ impl Grid {
     /// also means a one-beat lane has nothing to delete.
     ///
     /// The merged slot keeps the **left** beat's sub-count, the one whose marker
-    /// survives. A delete can only widen a slot, so no clamp can bind here.
+    /// survives. A delete can only widen a slot, so no clamp can bind here. The deleted
+    /// marker's Y-centre control point goes with it — a control point exists only as
+    /// its marker's — so the curve now runs straight from `i - 1` to `i + 1`.
     ///
     /// Geometry only, exactly as [`Grid::insert_beat_marker`] — hits keep their
     /// absolute times through [`crate::sequencer::Pattern::delete_beat_marker`].
@@ -618,12 +843,13 @@ impl Grid {
         true
     }
 
-    /// Shift marker `i` and every sub-count override past it down one place. The body
-    /// of a delete, and the exact inverse of the shift an insert makes — which is what
-    /// lets a refused insert roll itself back.
+    /// Shift marker `i`, its Y-centre control point, and every sub-count override past
+    /// it down one place. The body of a delete, and the exact inverse of the shift an
+    /// insert makes — which is what lets a refused insert roll itself back.
     fn drop_marker(&mut self, i: usize) {
         for j in i..self.n_beats {
             self.markers[j] = self.markers[j + 1];
+            self.y_points[j] = self.y_points[j + 1];
         }
         for j in i..self.n_beats - 1 {
             self.sub_override[j] = self.sub_override[j + 1];
@@ -634,11 +860,16 @@ impl Grid {
 
     /// Hold the storage past the live geometry at its canonical value, so two grids
     /// with the same geometry compare equal however they were built: marker padding
-    /// equal to the end marker, no override on a beat that is not live.
+    /// equal to the end marker, control-point padding equal to the end control point,
+    /// no override on a beat that is not live.
     fn canonicalise_tail(&mut self) {
         let end = self.markers[self.n_beats];
         for m in self.markers.iter_mut().skip(self.n_beats + 1) {
             *m = end;
+        }
+        let y_end = self.y_points[self.n_beats];
+        for y in self.y_points.iter_mut().skip(self.n_beats + 1) {
+            *y = y_end;
         }
         for o in self.sub_override.iter_mut().skip(self.n_beats) {
             *o = 0;
@@ -652,11 +883,35 @@ impl Grid {
     /// "4 beats, not 3" control means. [`Grid::insert_beat_marker`] and
     /// [`Grid::delete_beat_marker`] are the marker-preserving pair, where every other
     /// marker holds its position and only one slot changes shape.
+    ///
+    /// The Y-centre control points are the one thing not thrown away: they are
+    /// **resampled** off the old curve at the new marker positions, because the contour
+    /// is a shape in time and the lane is (almost always) still the same length.
+    /// Re-laying the markers is a statement about the grid, not about the feel drawn
+    /// over it, and flattening the curve on a beat-count change would lose work the
+    /// control never touched.
+    ///
+    /// "Almost always" is [`sane_len`]: growing to a beat count the current length
+    /// cannot hold stretches the lane, and the resample then reads the old curve past
+    /// its end, where it holds its final value. The contour bunches into the part of the
+    /// new lane the old one covered. That needs a lane shorter than `n · MIN_SLOT` — a
+    /// beat slot at the floor — and no sane resampling exists there anyway, because most
+    /// of the new lane has no old curve to resample.
     pub fn set_n_beats(&mut self, n_beats: usize) {
         let n = n_beats.clamp(1, MAX_BEATS);
         let len = sane_len(self.markers[self.n_beats], n);
         let fresh = Self::uniform(n, len, self.default_subs);
+        // Off the *old* curve, so this has to run before the markers are replaced.
+        let mut y = [Y_CENTRE; MAX_MARKERS];
+        for (i, v) in y.iter_mut().enumerate().take(n + 1) {
+            *v = self.y_at(fresh.markers[i]);
+        }
+        let y_end = y[n];
+        for v in y.iter_mut().skip(n + 1) {
+            *v = y_end;
+        }
         self.markers = fresh.markers;
+        self.y_points = y;
         self.n_beats = n;
         // Drop overrides on beats that are no longer live, for the same reason the
         // marker tail is canonicalised: a shrink must not leave a value that springs
@@ -720,6 +975,28 @@ impl Grid {
             }
         }
     }
+}
+
+/// One segment of a cubic Hermite spline: endpoints `p0`, `p1` with tangents `m0`,
+/// `m1` expressed per unit of `u ∈ [0, 1]`.
+///
+/// Written as a **displacement from `p0`** rather than as the four-term basis sum, and
+/// with the endpoints branched out, so that a segment which should be flat is flat
+/// bit-for-bit: with `p0 == p1` and both tangents zero every added term is exactly
+/// zero. The basis sum is only flat to within rounding, and "flat" is the case that has
+/// to be exact — it is the default lane, where 0348's stored `y` must survive the curve
+/// untouched. Same obligation, same answer as [`Swing::w`]'s explicit endpoints.
+#[inline]
+fn hermite(p0: f32, p1: f32, m0: f32, m1: f32, u: f32) -> f32 {
+    if u <= 0.0 || u.is_nan() {
+        return p0;
+    }
+    if u >= 1.0 {
+        return p1;
+    }
+    let u2 = u * u;
+    let u3 = u2 * u;
+    p0 + (3.0 * u2 - 2.0 * u3) * (p1 - p0) + (u3 - 2.0 * u2 + u) * m0 + (u3 - u2) * m1
 }
 
 /// A pattern length that can actually hold `n` beat slots: finite, at least
@@ -1809,6 +2086,353 @@ mod tests {
             assert_eq!(g.sub_pos(b, i % 4), i as f64 * crate::sequencer::SIXTEENTH);
         }
     }
+
+    // ── Y-centre curve (ADR 0007 §6, ticket 0350) ─────────────────────────────
+
+    /// Float-rounding slack for a curve value in `[0, 1]`. Roughly an `f32` ulp of 1,
+    /// with a little room — small enough that a real cubic overshoot cannot hide in it.
+    const EPS: f32 = 1e-6;
+
+    /// Dense sample positions across a grid, including every marker exactly.
+    fn sweep(g: &Grid, steps: usize) -> Vec<f64> {
+        let len = g.len_beats();
+        let mut ts: Vec<f64> = (0..=steps).map(|i| i as f64 / steps as f64 * len).collect();
+        ts.extend((0..=g.n_beats()).map(|i| g.beat_marker(i)));
+        ts
+    }
+
+    /// AC: a flat curve reproduces the pre-0350 behaviour — and it does so *exactly*,
+    /// not to within an epsilon, because a hit's effective Y is built by adding to
+    /// this and the default lane must be bit-for-bit unchanged.
+    #[test]
+    fn the_default_curve_is_flat_at_y_centre_exactly() {
+        let mut g = Grid::uniform(5, 5.0, 3);
+        g.set_swing(Swing::mpc(0.7));
+        g.set_beat_marker(2, 1.3);
+        for t in sweep(&g, 500) {
+            assert_eq!(g.y_at(t), Y_CENTRE, "t={t}");
+        }
+        // And at any flat value, not only the default one.
+        for i in 0..=g.n_beats() {
+            g.set_y_point(i, 0.125);
+        }
+        for t in sweep(&g, 500) {
+            assert_eq!(g.y_at(t), 0.125, "t={t}");
+        }
+    }
+
+    /// The curve interpolates: it passes through every control point exactly, so a
+    /// point the user placed is a value the lane actually produces.
+    #[test]
+    fn the_curve_passes_through_every_control_point() {
+        let mut g = Grid::uniform(4, 4.0, 4);
+        let want = [0.0_f32, 0.9, 0.2, 1.0, 0.45];
+        for (i, &v) in want.iter().enumerate() {
+            g.set_y_point(i, v);
+        }
+        for (i, &v) in want.iter().enumerate() {
+            assert_eq!(g.y_point(i), v, "point {i}");
+            assert_eq!(g.y_at(g.beat_marker(i)), v, "curve at marker {i}");
+        }
+        // Outside the pattern the curve holds its end values rather than extrapolating
+        // — an extrapolated tangent is the one way a clamped spline can still leave the
+        // lane.
+        for t in [-9.0, -0.001, f64::NEG_INFINITY, f64::NAN] {
+            assert_eq!(g.y_at(t), want[0], "t={t}");
+        }
+        for t in [4.0, 40.0, f64::INFINITY] {
+            assert_eq!(g.y_at(t), want[4], "t={t}");
+        }
+    }
+
+    /// AC: the sampled value never leaves the lane bounds, over randomised control
+    /// points — and the assertion is the *tighter* one that actually makes it true.
+    ///
+    /// Lane bounds alone would pass on a version that mopped up with a `clamp`, which
+    /// would silently flatten the top of an overshooting curve rather than fix it. So
+    /// the property pinned here is the clamped tangents' real guarantee: **each
+    /// segment stays within its own two control points**. Lane bounds then follow,
+    /// and are asserted too.
+    ///
+    /// Randomised over the geometry as well as the values, because a non-uniform knot
+    /// spacing is exactly what makes an unclamped centred tangent overshoot.
+    #[test]
+    fn the_curve_never_overshoots_its_control_points() {
+        let mut rng = Rng(0x0350_C0DE);
+        for _ in 0..400 {
+            let n = 1 + rng.below(MAX_BEATS as u32) as usize;
+            let len = 1.0 + rng.unit() * 15.0;
+            let mut g = Grid::uniform(n, len, 1 + rng.below(MAX_SUBS));
+            for i in 1..n {
+                // Deliberately unclamped requests, so the geometry ends up genuinely
+                // uneven — including neighbouring markers pinned MIN_SLOT apart.
+                g.set_beat_marker(i, rng.unit() * len);
+            }
+            for i in 0..=n {
+                // A quarter of the points at an extreme, so steep adjacent pairs — the
+                // shape unclamped Catmull-Rom overshoots on — come up often.
+                let v = match rng.below(4) {
+                    0 => 0.0,
+                    1 => 1.0,
+                    _ => rng.unit() as f32,
+                };
+                g.set_y_point(i, v);
+            }
+            for t in sweep(&g, 300) {
+                let y = g.y_at(t);
+                assert!(y.is_finite(), "t={t}: {y}");
+                // `EPS` and not zero, and the size of it is the claim: the curve leaves
+                // the lane by at most a float ulp of a value in `[0, 1]`, which is
+                // rounding in the Hermite sum rather than the cubic bulging. An
+                // overshoot is a percent of the lane, not a hundred-millionth of it.
+                assert!((-EPS..=1.0 + EPS).contains(&y), "t={t}: {y} left the lane");
+                let at = g.locate(t);
+                let (a, b) = (g.y_point(at.beat), g.y_point(at.beat + 1));
+                let (lo, hi) = (a.min(b), a.max(b));
+                assert!(
+                    y >= lo - EPS && y <= hi + EPS,
+                    "t={t}: {y} overshot segment {} of [{lo}, {hi}]",
+                    at.beat
+                );
+            }
+        }
+    }
+
+    /// The clamp is not vacuous: on a steep adjacent pair, plain Catmull-Rom's centred
+    /// tangent *does* leave the lane, and this is the case it is stopped on.
+    ///
+    /// Pinned as its own test because the property test above can only ever show that
+    /// nothing overshoots — it cannot show that something would have.
+    #[test]
+    fn an_unclamped_tangent_would_overshoot_where_this_one_does_not() {
+        let mut g = Grid::uniform(3, 3.0, 4);
+        // A cliff followed by a plateau: the centred tangent at marker 2 inherits the
+        // cliff's slope and drives the next segment above 1.0.
+        for (i, v) in [0.0_f32, 0.0, 1.0, 1.0].iter().enumerate() {
+            g.set_y_point(i, *v);
+        }
+        // Unclamped, the tangent at marker 2 is (p3 - p1) / (m3 - m1) = 1/2 per beat,
+        // and the Hermite segment [2, 3] with m0 = 0.5, m1 = 0 peaks above p1 = 1.
+        let unclamped = hermite(1.0, 1.0, 0.5, 0.0, 0.5);
+        assert!(unclamped > 1.0, "the overshoot this test is about did not happen");
+        for t in sweep(&g, 400) {
+            assert!((0.0..=1.0).contains(&g.y_at(t)), "t={t}");
+        }
+        // The plateau is genuinely flat, not merely in-range: a monotone clamp zeroes
+        // the tangent at a point whose neighbours are equal.
+        for t in sweep(&g, 100).into_iter().filter(|t| *t >= 2.0) {
+            assert_eq!(g.y_at(t), 1.0, "t={t}");
+        }
+    }
+
+    /// The curve is continuous everywhere, beat markers included — the property that
+    /// makes a horizontal drag across a marker safe (ADR 0007 §6). Sampled either side
+    /// of every interior marker at shrinking distance; the gap has to shrink with it.
+    #[test]
+    fn the_curve_is_continuous_across_every_beat_marker() {
+        let mut g = Grid::uniform(4, 4.0, 4);
+        g.set_beat_marker(1, 0.6);
+        g.set_beat_marker(2, 2.7);
+        for (i, v) in [0.1_f32, 0.95, 0.0, 0.6, 0.3].iter().enumerate() {
+            g.set_y_point(i, *v);
+        }
+        for i in 1..g.n_beats() {
+            let m = g.beat_marker(i);
+            let mut prev = f32::INFINITY;
+            for k in 1..=12 {
+                let d = 0.1 / (1u32 << k) as f64;
+                let gap = (g.y_at(m + d) - g.y_at(m - d)).abs();
+                // The curve is C¹ at a marker, so the gap is ~2·d·slope and halves with
+                // `d` — until it reaches the float noise floor and stops meaning
+                // anything, which is what the `EPS` alternative lets it do.
+                assert!(gap < EPS || gap <= prev * 0.75, "marker {i}: gap {gap} at d={d}");
+                prev = gap;
+            }
+            assert!(prev < EPS, "marker {i}: gap did not converge, {prev}");
+        }
+    }
+
+    /// AC: moving a beat marker moves its control point with it, and the curve stays
+    /// single-valued in time.
+    #[test]
+    fn a_marker_drag_carries_its_control_point() {
+        let mut g = Grid::uniform(4, 4.0, 4);
+        for (i, v) in [0.2_f32, 0.8, 0.4, 0.9, 0.1].iter().enumerate() {
+            g.set_y_point(i, *v);
+        }
+        for pos in [1.5, 0.3, 2.9, 1.0] {
+            let taken = g.set_beat_marker(2, pos);
+            assert_eq!(g.y_point(2), 0.4, "the drag changed the control point's value");
+            assert_eq!(g.y_at(taken), 0.4, "the control point did not follow its marker");
+            // Single-valued: markers cannot cross, so each sample position has exactly
+            // one enclosing segment and the sweep is well defined throughout.
+            for i in 0..g.n_beats() {
+                assert!(g.beat_marker(i) < g.beat_marker(i + 1), "markers crossed");
+            }
+            for t in sweep(&g, 200) {
+                assert!(g.y_at(t).is_finite() && (0.0..=1.0).contains(&g.y_at(t)), "t={t}");
+            }
+        }
+    }
+
+    /// AC: adding or removing a beat marker adds or removes its control point. The new
+    /// point takes the value the curve already had there, so a split moves nothing the
+    /// user can see; a delete drops the point along with its marker.
+    #[test]
+    fn insert_and_delete_add_and_remove_a_control_point() {
+        let mut g = Grid::uniform(3, 3.0, 4);
+        for (i, v) in [0.1_f32, 0.9, 0.2, 0.7].iter().enumerate() {
+            g.set_y_point(i, *v);
+        }
+        let pos = 1.4;
+        let before = g.y_at(pos);
+        assert_eq!(g.insert_beat_marker(2, pos), Some(2));
+        assert_eq!(g.n_beats(), 4);
+        assert_eq!(g.y_point(2), before, "the split point did not inherit the curve");
+        assert_eq!(g.y_at(pos), before, "the curve moved at the point it was split");
+        // The surviving points kept their markers.
+        for (i, v) in [(0, 0.1_f32), (1, 0.9), (3, 0.2), (4, 0.7)] {
+            assert_eq!(g.y_point(i), v, "point {i}");
+            assert_eq!(g.y_at(g.beat_marker(i)), v, "curve at marker {i}");
+        }
+        assert!(g.delete_beat_marker(2));
+        assert_eq!(g.n_beats(), 3);
+        for (i, v) in [0.1_f32, 0.9, 0.2, 0.7].iter().enumerate() {
+            assert_eq!(g.y_point(i), *v, "point {i} after the delete");
+        }
+    }
+
+    /// An insert whose position is **clamped** inherits the curve where the marker
+    /// actually lands, not where it was asked for.
+    ///
+    /// `insert_beat_marker` only requires `pos` to be inside the pattern, so it can name
+    /// a position in a different slot entirely; the write goes through
+    /// `set_beat_marker`, which clamps into the slot being split. Sampling the request
+    /// hands the new marker a value from wherever the caller pointed — half a lane away,
+    /// in the case below — which is the opposite of inheriting the curve.
+    #[test]
+    fn a_clamped_insert_inherits_the_curve_where_the_marker_lands() {
+        let mut g = Grid::uniform(3, 3.0, 4);
+        for (i, v) in [0.0_f32, 0.3, 0.9, 1.0].iter().enumerate() {
+            g.set_y_point(i, *v);
+        }
+        // Splitting slot 1 (`[1, 2]`), but pointing at 0.1 — inside slot 0.
+        let want = g.y_at(1.0 + MIN_SLOT);
+        assert_eq!(g.insert_beat_marker(2, 0.1), Some(2));
+        let landed = g.beat_marker(2);
+        assert!((landed - (1.0 + MIN_SLOT)).abs() < 1e-12, "landed at {landed}");
+        assert_eq!(g.y_point(2), want, "the point came from the request, not the landing");
+        assert!(
+            (g.y_point(2) - g.y_at(0.1)).abs() > 0.1,
+            "the test no longer distinguishes the two positions"
+        );
+    }
+
+    /// A refused insert leaves the grid bit-for-bit as it was — control points
+    /// included, since the roll-back is a shift back down the array.
+    #[test]
+    fn a_refused_insert_restores_the_control_points() {
+        let mut g = Grid::uniform(MAX_BEATS, MAX_BEATS as f64, 4);
+        let mut rng = Rng(0x0350_0F35);
+        for i in 0..=MAX_BEATS {
+            g.set_y_point(i, rng.unit() as f32);
+        }
+        let before = g;
+        // At MAX_BEATS every insert is refused.
+        assert_eq!(g.insert_beat_marker(3, 3.5), None);
+        assert_eq!(g, before, "a refused insert changed the grid");
+    }
+
+    /// The control-point padding is canonicalised exactly as the marker padding is, so
+    /// two grids with the same curve compare equal however they were built.
+    #[test]
+    fn control_point_padding_does_not_break_equality() {
+        let mut a = Grid::uniform(4, 4.0, 4);
+        let mut b = Grid::uniform(2, 4.0, 4);
+        // `b` grows into the shape `a` was built with, dragging stale points through
+        // the tail on the way.
+        for i in 0..=4 {
+            a.set_y_point(i, 0.25 * i as f32);
+        }
+        for i in 0..=2 {
+            b.set_y_point(i, 0.9);
+        }
+        b.set_n_beats(4);
+        for i in 0..=4 {
+            b.set_y_point(i, 0.25 * i as f32);
+        }
+        assert_eq!(a, b, "identical curves compared unequal");
+        // And a point written on a marker that is later shrunk away must not survive in
+        // the padding — that is the value which would otherwise spring back on a regrow
+        // *and* make two identical curves compare unequal here.
+        let mut c = Grid::uniform(4, 4.0, 4);
+        for i in 0..=4 {
+            c.set_y_point(i, 0.25 * i as f32);
+        }
+        let mut d = c;
+        d.set_n_beats(2);
+        d.set_n_beats(4);
+        for i in 0..=4 {
+            d.set_y_point(i, 0.25 * i as f32);
+        }
+        assert_eq!(d, c, "a shrink left a stale control point in the padding");
+        // A write past the live end marker is refused outright, not stored in the tail.
+        let mut e = c;
+        e.set_y_point(MAX_BEATS, 0.0);
+        assert_eq!(e, c, "a write past the end marker reached the padding");
+    }
+
+    /// `set_n_beats` re-lays the markers, and resamples the contour onto them rather
+    /// than flattening it — the lane is the same length, so the shape in time survives.
+    #[test]
+    fn a_beat_count_change_resamples_the_contour() {
+        let mut g = Grid::uniform(4, 4.0, 4);
+        for (i, v) in [0.0_f32, 0.5, 1.0, 0.5, 0.0].iter().enumerate() {
+            g.set_y_point(i, *v);
+        }
+        let want: Vec<f32> = (0..=8).map(|i| g.y_at(i as f64 * 0.5)).collect();
+        g.set_n_beats(8);
+        assert_eq!(g.n_beats(), 8);
+        for (i, w) in want.iter().enumerate() {
+            assert_eq!(g.y_point(i), *w, "point {i}");
+        }
+        assert!(g.y_point(4) > 0.9, "the peak did not survive the re-lay");
+    }
+
+    /// A length change stretches the curve with the markers, because the points ride
+    /// them — nothing rescales the values, so the contour's shape is length-invariant.
+    #[test]
+    fn a_length_change_stretches_the_curve_with_the_markers() {
+        let mut g = Grid::uniform(4, 4.0, 4);
+        for (i, v) in [0.0_f32, 1.0, 0.5, 0.25, 0.75].iter().enumerate() {
+            g.set_y_point(i, *v);
+        }
+        let before: Vec<f32> = (0..=40).map(|i| g.y_at(i as f64 * 0.1)).collect();
+        g.set_len_beats(8.0);
+        for (i, w) in before.iter().enumerate() {
+            let t = i as f64 * 0.2; // the same proportional position
+            assert!((g.y_at(t) - w).abs() < 1e-5, "t={t}: {} vs {w}", g.y_at(t));
+        }
+    }
+
+    /// Non-finite and out-of-range control points clamp on the way in, which is what
+    /// lets `y_at` promise an in-lane value with no clamp of its own.
+    #[test]
+    fn control_points_clamp_on_the_way_in() {
+        let mut g = Grid::uniform(2, 2.0, 4);
+        g.set_y_point(0, f32::NAN);
+        assert_eq!(g.y_point(0), Y_CENTRE);
+        g.set_y_point(1, 9.0);
+        assert_eq!(g.y_point(1), 1.0);
+        g.set_y_point(2, -9.0);
+        assert_eq!(g.y_point(2), 0.0);
+        g.set_y_point(0, f32::NEG_INFINITY);
+        assert_eq!(g.y_point(0), Y_CENTRE);
+        for t in sweep(&g, 200) {
+            assert!((0.0..=1.0).contains(&g.y_at(t)), "t={t}");
+        }
+    }
+
 }
 
 // ── Global subdivision indexing (ticket 0348) ─────────────────────────────────
