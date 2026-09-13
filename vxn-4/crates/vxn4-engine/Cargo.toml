@@ -21,3 +21,9 @@ vxn-core-app = { workspace = true }
 vxn-preset = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+
+[dev-dependencies]
+# Real directories for the user-preset filesystem tests (0385). The path-escape
+# guard and the folder operations are only meaningfully testable against a live
+# tree, and they must not touch the developer's own preset directory.
+tempfile = "3"

@@ -26,6 +26,8 @@
 //! - [`matrix`] — the modulation roster: 8 macro sources, 80 destinations.
 //! - [`engine`] — banks, rate plan, limiter.
 //! - [`params`] — the descriptor table: every patch field named and ranged.
+//! - [`preset`] — the sparse-TOML codec; [`preset_io`] — the user preset
+//!   directory, the file ops, and the shared controller's `PresetStore`.
 //! - [`shared`] — the authoritative patch, on the main thread.
 //! - [`topology`] — the lock-free channel that carries the rest of it.
 //!
@@ -59,6 +61,7 @@ pub mod matrix;
 pub mod params;
 pub mod patch;
 pub mod preset;
+pub mod preset_io;
 pub mod shared;
 pub mod topology;
 
@@ -69,5 +72,6 @@ pub use matrix::{DestId, Matrix, N_DESTS, N_MACROS, N_MATRIX_SLOTS, Roster, Sour
 pub use params::{N_PARAMS, PATCH_PARAMS, Param, ParamId, all_ids, desc, id_for_name, patch_ids};
 pub use patch::{N_PATCHES, Patch, PatchTables, patch, patch_names};
 pub use preset::{MacroSpec, Macros, Meta, Preset, PresetError, read_preset, write_preset};
+pub use preset_io::{EnginePresetStore, UserFolder, UserPreset, ensure_user_dir, user_preset_dir};
 pub use shared::{Drain, SharedParams};
 pub use topology::{SlotEdit, SlotField, TopoMsg};
