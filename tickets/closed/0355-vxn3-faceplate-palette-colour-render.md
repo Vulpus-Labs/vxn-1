@@ -84,3 +84,71 @@ The bound param name in the tooltip comes from the flavour's binding table
 ([`flavour.rs`](../../vxn-3/crates/vxn3-engine/src/flavour.rs)) and so changes
 with the flavour — same flavour-aware dispatch discipline as `value_to_text`
 (ticket 0172).
+
+## Close-out (2026-09-12)
+
+- **The palette's value path.** Two new hit-keyed verbs,
+  [`EngineCommand::SetHitColour` / `ClearHitColour`](../../vxn-3/crates/vxn3-engine/src/io.rs#L82),
+  routed in `EngineCommand::track` and applied through the one
+  `apply_pattern_command` both the model and the audio copy run. Separate verbs on
+  purpose: black drives all three slots to zero, no colour hands them back.
+  Opcodes `set_hit_colour` / `clear_hit_colour` in
+  [`parse_custom_ui`](../../vxn-3/crates/vxn3-ui-web/src/lib.rs#L427), with
+  `rgb_at` clamping into the normalised `0.00–1.00` domain — below it lies
+  `NO_COLOUR`, a different meaning rather than a worse value. Tests:
+  `io::tests::the_colour_verbs_carry_raw_channels_into_the_model`,
+  `faceplate_io::the_colour_verbs_cross_to_the_audio_thread_unaltered`,
+  `tests::parses_the_palette_vocabulary`.
+- **Three arcs, in place.** Shift-click on a diamond blooms three 120° arcs
+  (8° apart, one per macro slot) hung off the track row — the strip clips its own
+  contents — in [`openPalette`](../../vxn-3/crates/vxn3-ui-web/assets/app.js#L935).
+  Shift-clicking the same diamond takes the gesture back, which is also how a hit
+  leaves a multi-selection. Pinned by
+  `tests::the_palette_opens_in_place_and_occludes_no_lane`.
+- **Exactly one channel per arc.** `setChannel` copies the triple and writes one
+  index; nothing recomputes the other two, so they hold to the bit. Asserted over
+  three successive drags in
+  `tests::an_arc_moves_one_macro_slot_and_leaves_the_others_alone` (`to_bits`
+  equality) and structurally over the shipped JS.
+- **Black is visible *and* sends zero**, both in
+  `tests::black_is_drawn_above_the_floor_and_still_sends_zero`: the opcode →
+  command → model → `colour_override` path yields `[0, 0, 0]`, while the page
+  floors *display* luminance from
+  [`MIN_DISPLAY_LUMA`](../../vxn-3/crates/vxn3-ui-web/src/lib.rs#L72), shipped in
+  the config. The dark end is compressed onto `[MIN_LUMA, 0.5]` rather than
+  clamped, so two dark vectors still draw differently.
+- **The floor is render-only**, and that is asserted rather than asserted-to-be:
+  `tests::the_luminance_floor_never_reaches_the_value_path` extracts the bodies of
+  `sendColour` / `sendClearColour` / `setChannel` from the shipped `app.js` and
+  requires that none of them reaches `displayRgb` or `MIN_LUMA`, that the floor has
+  one implementation and one call site, and that `* 255` appears only where a CSS
+  colour string is written.
+- **The redundant non-colour channel.** Every coloured diamond wears a
+  three-segment ring — one segment per slot, length `2px + value`, on three fixed
+  edges filling clockwise from the top vertex, in fixed-contrast strokes; the
+  fourth edge stays bare to mark where the ring starts. One painter,
+  `paintHitColour`, and
+  `tests::the_redundant_ring_is_in_every_render_path` requires every render path
+  (`renderHits`, `renderPaletteBar`, `renderSwatches`) to go through it. The
+  selection ring takes the accent on a coloured hit so it cannot wash the segments
+  out.
+- **Readouts, numeric entry and swatches** live in a bar above the rack, so
+  nothing that carries data is ever covered: three `0.00–1.00` number fields that
+  drive the same `setChannel` the arcs do, a swatch row applied to the whole
+  selection, Save, and None. `tests::the_numeric_panel_sets_the_same_values_normalised`,
+  `tests::swatches_are_saved_and_applied_to_a_selection`.
+- **Framing.** Arc tooltips and bar labels read `macro A · <bound param>`,
+  resolved through the lane's assigned voice's binding table (`macroLabel`), so the
+  name follows the flavour — the `value_to_text` discipline of 0172. No control in
+  the page names a channel by colour: `tests::the_palette_names_macro_slots_not_colours`.
+- Verified by driving the shipped `app.js` under a throwaway DOM shim (39 checks:
+  arc drags, numeric entry, swatch apply/save, uncolour, every palette-close path).
+  `cargo test --workspace` green (105 suites), `vxn3-xtask bundle` builds.
+  **Not verified visually — there is no browser or screenshot tool in this
+  environment; the arc proportions, the ring's legibility at 11px and the floor's
+  contrast against the strip still want a human eye.**
+- Out of scope, deliberately: swatches are in-page only (a swatch is a working
+  convenience, not part of the pattern, and the page has no preferences store); the
+  arcs and numeric fields edit the one focused hit while the swatch row is the bulk
+  verb; and while a palette is open its grab band cannot be clicked through to a
+  diamond underneath it.
