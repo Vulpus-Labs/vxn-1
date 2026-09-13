@@ -56,6 +56,23 @@ pub const EDITOR_HEIGHT: u32 = 530;
 /// rather than rejecting.
 const DEFAULT_NOTE: f32 = 36.0;
 
+/// Minimum **display** luminance for a hit's colour (ADR 0007 §7, ticket 0355).
+///
+/// `rgb = [0, 0, 0]` is a legitimate macro vector — it drives all three slots to zero
+/// — and also an invisible diamond on a dark strip. The page lifts a colour toward
+/// white until it clears this floor, so a dark hit can still be seen and its ring
+/// read.
+///
+/// **Render only, and that is the whole point.** It is shipped to the page and
+/// consulted where a colour is *drawn*; nothing on the value path may see it, or the
+/// user would dial one number and the macros would receive another. It lives here in
+/// the view crate rather than beside [`vxn3_engine::flavour::NO_COLOUR`] precisely so
+/// that a `resolve` on the audio thread cannot reach it.
+///
+/// Rec. 709 relative luminance, matching `displayRgb` in `app.js` — `f64` because it
+/// is shipped to and consumed by the page, where every number is one.
+pub const MIN_DISPLAY_LUMA: f64 = 0.32;
+
 const HTML_TEMPLATE: &str = include_str!("../assets/index.html");
 const APP_JS: &str = include_str!("../assets/app.js");
 const STYLE_CSS: &str = include_str!("../assets/style.css");
@@ -189,6 +206,9 @@ pub fn build_html(model: &[Pattern]) -> String {
         "ticks_per_beat": TICKS_PER_BEAT,
         "max_nudge_ticks": MAX_NUDGE_TICKS,
         "y_centre": Y_CENTRE,
+        // Display rule, shipped rather than hard-coded twice (0355). It reaches the
+        // page's *drawing* only; see [`MIN_DISPLAY_LUMA`].
+        "min_luma": MIN_DISPLAY_LUMA,
         "engines": [
             engine_json("kick", "Kick", EngineKind::KickTone),
             engine_json("metal", "Metal", EngineKind::Metal),
@@ -247,6 +267,34 @@ fn flavour_curve_of(s: &str) -> Curve {
         "exp" => Curve::Exp,
         _ => Curve::Linear,
     }
+}
+
+/// A hit's colour off the wire: three normalised `0.00–1.00` channels (0355).
+///
+/// Clamped into that domain rather than trusted, because out of it lies a *different
+/// meaning* — [`vxn3_engine::flavour::NO_COLOUR`] is a negative channel, so a payload
+/// that overshot below zero would arrive as "this hit has no colour", which is not a
+/// slightly-wrong edit but the opposite one. Uncolouring is its own opcode.
+///
+/// A payload that is not three finite numbers is rejected outright: half a macro
+/// vector has no meaning.
+fn rgb_at(v: &Json) -> Option<[f32; 3]> {
+    let a = v.get("rgb")?.as_array()?;
+    if a.len() != 3 {
+        return None;
+    }
+    let mut out = [0.0_f32; 3];
+    for (o, x) in out.iter_mut().zip(a) {
+        // Clamped in `f64`, before the narrowing: a value too large for an `f32` is
+        // still an overshooting channel and clamps to 1.0, rather than becoming an
+        // infinity that has to be rejected as if the payload were malformed.
+        let c = x.as_f64()?;
+        if !c.is_finite() {
+            return None;
+        }
+        *o = c.clamp(0.0, 1.0) as f32;
+    }
+    Some(out)
 }
 
 fn f32_array(v: &Json, key: &str) -> Vec<f32> {
@@ -385,6 +433,22 @@ fn parse_custom_ui(op: &str, v: &Json) -> Option<UiEvent> {
                     curve: curve_of(v.get("curve").and_then(|c| c.as_str()).unwrap_or("even")),
                     vel_end: f32_at(v, "vel_end").unwrap_or(1.0),
                 },
+            }));
+        }
+        // The palette's two verbs (0355). Separate opcodes, because "black" and "no
+        // colour" are separate edits: one drives every macro slot to zero, the other
+        // hands them back to the p-lock/base.
+        "set_hit_colour" => {
+            return Some(edit(EngineCommand::SetHitColour {
+                track,
+                hit: u16_at(v, "hit")?,
+                rgb: rgb_at(v)?,
+            }));
+        }
+        "clear_hit_colour" => {
+            return Some(edit(EngineCommand::ClearHitColour {
+                track,
+                hit: u16_at(v, "hit")?,
             }));
         }
         "quantise_hit_x" => {
@@ -584,6 +648,43 @@ mod tests {
 
     fn obj(s: &str) -> Json {
         serde_json::from_str(s).unwrap()
+    }
+
+    /// The [`EngineCommand`] an opcode parses to, for the tests that care about the
+    /// value rather than the variant.
+    fn cmd(op: &str, json: &str) -> EngineCommand {
+        match parse_custom_ui(op, &obj(json)).expect("opcode parses") {
+            UiEvent::Custom(b) => match *b.downcast::<Vxn3UiCustom>().unwrap() {
+                Vxn3UiCustom::Edit(c) => c,
+                _ => panic!("not an edit"),
+            },
+            _ => panic!("not custom"),
+        }
+    }
+
+    /// The config JSON the page is constructed from, parsed back out of the HTML.
+    fn config_of(html: &str) -> Json {
+        serde_json::from_str(
+            html.split("window.__VXN3_CONFIG__ = ")
+                .nth(1)
+                .and_then(|s| s.split(";\n").next())
+                .expect("config spliced"),
+        )
+        .expect("config parses")
+    }
+
+    /// The source of one top-level `app.js` function: its signature through to the
+    /// first line closing at the file's top-level indentation.
+    ///
+    /// The page has no test suite and no build step to hang one off (and vxn-3 has no
+    /// wasm), so the structural properties this ticket turns on — where the luminance
+    /// floor may be reached from, which render paths draw the redundant ring — are
+    /// pinned from the Rust side, over the JS that actually ships.
+    fn js_fn(sig: &str) -> &'static str {
+        let start = APP_JS.find(sig).unwrap_or_else(|| panic!("app.js has no {sig}"));
+        let rest = &APP_JS[start..];
+        let end = rest.find("\n  }").unwrap_or_else(|| panic!("{sig} never closes")) + 4;
+        &rest[..end]
     }
 
     #[test]
@@ -991,6 +1092,211 @@ mod tests {
         assert!(APP_JS.contains("function editPreservingTimes("), "…and the absolute door");
         for op in ["drag_beat_marker", "insert_beat_marker", "delete_beat_marker", "set_swing"] {
             assert!(APP_JS.contains(op), "the page sends {op}");
+        }
+    }
+
+    /// The palette's vocabulary (0355): paint a hit's macro vector, or strip it.
+    #[test]
+    fn parses_the_palette_vocabulary() {
+        assert_eq!(
+            cmd("set_hit_colour", r#"{"track":2,"hit":5,"rgb":[1.0,0.0,0.5]}"#),
+            EngineCommand::SetHitColour { track: 2, hit: 5, rgb: [1.0, 0.0, 0.5] }
+        );
+        assert_eq!(
+            cmd("clear_hit_colour", r#"{"track":2,"hit":5}"#),
+            EngineCommand::ClearHitColour { track: 2, hit: 5 }
+        );
+        // Below the normalised domain lies a different *meaning*, not a worse value:
+        // a negative channel is the `NO_COLOUR` sentinel. Clamping is what stops an
+        // overshooting payload arriving as "this hit has no colour".
+        assert_eq!(
+            cmd("set_hit_colour", r#"{"track":0,"hit":0,"rgb":[-2.0,4.0,0.25]}"#),
+            EngineCommand::SetHitColour { track: 0, hit: 0, rgb: [0.0, 1.0, 0.25] }
+        );
+        // …including past what an `f32` can hold: that is still an overshooting
+        // channel, not a malformed payload.
+        assert_eq!(
+            cmd("set_hit_colour", r#"{"track":0,"hit":0,"rgb":[1e39,-1e39,0.5]}"#),
+            EngineCommand::SetHitColour { track: 0, hit: 0, rgb: [1.0, 0.0, 0.5] }
+        );
+        // Half a macro vector has no meaning, so a malformed triple is rejected rather
+        // than filled in — unlike `add_hit`, nothing has been drawn on the strip yet.
+        for bad in [
+            r#"{"track":0,"hit":0,"rgb":[0.5,0.5]}"#,
+            r#"{"track":0,"hit":0,"rgb":[0.5,0.5,0.5,0.5]}"#,
+            r#"{"track":0,"hit":0,"rgb":"crimson"}"#,
+            r#"{"track":0,"hit":0}"#,
+        ] {
+            assert!(parse_custom_ui("set_hit_colour", &obj(bad)).is_none(), "{bad}");
+        }
+    }
+
+    /// AC (0355): a hit at `rgb = [0, 0, 0]` is **clearly visible on the strip** and
+    /// **sends zero to all three macro slots** — both halves asserted together,
+    /// because the tempting fix for either one breaks the other. Floor the value and
+    /// the macros stop receiving the zero the user dialled; leave the display alone
+    /// and the hit is the colour of the strip it sits on.
+    #[test]
+    fn black_is_drawn_above_the_floor_and_still_sends_zero() {
+        // The value half, end to end: opcode → command → model → macro vector.
+        let c = cmd("set_hit_colour", r#"{"track":0,"hit":0,"rgb":[0,0,0]}"#);
+        assert_eq!(c, EngineCommand::SetHitColour { track: 0, hit: 0, rgb: [0.0; 3] });
+        let mut p = Pattern::default();
+        p.insert(Hit::at(0, 0));
+        assert!(vxn3_engine::io::apply_pattern_command(&mut p, c));
+        assert_eq!(p.hits()[0].rgb, [0.0, 0.0, 0.0], "stored exactly as dialled");
+        assert_eq!(colour_override(p.hits()[0].rgb), Some([0.0; 3]), "…and sends zero");
+
+        // The render half: the page floors *display* luminance, from a constant this
+        // crate owns and ships, so the diamond cannot be the colour of the strip.
+        assert!(MIN_DISPLAY_LUMA > 0.0, "a floor of zero floors nothing");
+        assert_eq!(config_of(&build_html(&[]))["min_luma"], serde_json::json!(MIN_DISPLAY_LUMA));
+        assert!(js_fn("function displayRgb(").contains("MIN_LUMA"));
+        assert!(APP_JS.contains("var MIN_LUMA = CFG.min_luma"), "the page uses the shipped floor");
+        // …and it wears the ring besides, which is legible without the fill at all.
+        assert!(js_fn("function renderHits(").contains("paintHitColour(d, t, h.rgb)"));
+    }
+
+    /// AC (0355): the luminance floor exists **only** in the render path. This pins
+    /// the one way that could stop being true — a floored colour finding its way into
+    /// the functions that put a value on the wire.
+    #[test]
+    fn the_luminance_floor_never_reaches_the_value_path() {
+        // One implementation of the floor, so there is one thing to keep track of.
+        assert_eq!(APP_JS.matches("function displayRgb(").count(), 1);
+        // The value path: what the arcs, the numeric fields and the swatches send.
+        for f in ["function sendColour(", "function sendClearColour(", "function setChannel("] {
+            let body = js_fn(f);
+            assert!(!body.contains("displayRgb"), "{f} consults the display floor");
+            assert!(!body.contains("MIN_LUMA"), "{f} consults the display floor");
+        }
+        // The floor is a drawing rule, and is reached from the drawing helper only.
+        assert!(js_fn("function cssRgb(").contains("displayRgb("));
+        assert_eq!(APP_JS.matches("displayRgb(").count(), 2, "declared once, called once");
+        // Nor is there a 0–255 representation on the value path: the only place the
+        // page multiplies by 255 is where it writes a CSS colour string.
+        assert_eq!(
+            APP_JS.matches("* 255").count(),
+            js_fn("function cssRgb(").matches("* 255").count(),
+            "0–255 belongs to CSS, not to the macro slots"
+        );
+    }
+
+    /// AC (0355): the redundant non-colour channel is present in **every** render
+    /// path. This is the criterion most likely to be dropped as polish, and it is not
+    /// polish: colour is the only encoding otherwise, red/green is the worst possible
+    /// pair to make load-bearing, and a lane encoded in hue alone cannot be read at
+    /// all by a red/green-deficient user.
+    #[test]
+    fn the_redundant_ring_is_in_every_render_path() {
+        // One painter, so there is only one place it could go missing from…
+        assert_eq!(APP_JS.matches("function paintHitColour(").count(), 1);
+        let paint = js_fn("function paintHitColour(");
+        assert!(paint.contains("\"ch ch\" + c"), "one ring segment per macro slot");
+        assert!(
+            paint.contains("(2 + clamp(rgb[c], 0, 1) * (HIT_PX - 2))"),
+            "the segment is an offset length, so 0 reads as a value and 0.1 still reads shorter than 0.2"
+        );
+        // …and every path that draws a hit goes through it: the strip, the palette's
+        // own preview, and the swatch buttons.
+        for f in [
+            "function renderHits(",
+            "function renderPaletteBar(",
+            "function renderSwatches(",
+        ] {
+            assert!(js_fn(f).contains("paintHitColour("), "{f} draws a hit without the ring");
+        }
+        // The segments sit on fixed edges in fixed-contrast strokes: the reading is
+        // length and position, and needs no colour discrimination whatsoever.
+        for c in ["ch0", "ch1", "ch2"] {
+            assert!(STYLE_CSS.contains(&format!(".hit .{c}")), "no CSS for segment {c}");
+        }
+    }
+
+    /// AC (0355): each arc moves **exactly one** channel; the other two are unchanged
+    /// to `f32` equality. They are carried across rather than recomputed, which is the
+    /// property three orthogonal arcs exist to have and a hue-based widget cannot.
+    #[test]
+    fn an_arc_moves_one_macro_slot_and_leaves_the_others_alone() {
+        let mut p = Pattern::default();
+        p.insert(Hit::at(0, 0));
+        // Three arc drags in a row, as the page sends them: the whole triple, with one
+        // channel replaced.
+        for (payload, want) in [
+            (r#"{"track":0,"hit":0,"rgb":[1.0,0,0]}"#, [1.0_f32, 0.0, 0.0]),
+            (r#"{"track":0,"hit":0,"rgb":[1.0,0,0.5]}"#, [1.0, 0.0, 0.5]),
+            (r#"{"track":0,"hit":0,"rgb":[1.0,0.3,0.5]}"#, [1.0, 0.3, 0.5]),
+        ] {
+            assert!(vxn3_engine::io::apply_pattern_command(
+                &mut p,
+                cmd("set_hit_colour", payload)
+            ));
+            let got = p.hits()[0].rgb;
+            for i in 0..3 {
+                assert_eq!(got[i].to_bits(), want[i].to_bits(), "channel {i} after {payload}");
+            }
+        }
+        // The page's half of the same property: one index written, the rest copied.
+        let set = js_fn("function setChannel(");
+        assert!(set.contains("h.rgb.slice()"), "the other two channels are copied, not rebuilt");
+        assert!(set.contains("rgb[c] = f32(clamp(v, 0, 1));"), "…and exactly one index is written");
+    }
+
+    /// AC (0355): the selector opens **in place** — the arcs bloom on the diamond,
+    /// hung off the track row because the strip clips its own contents, and everything
+    /// that has to be read lives in a bar above the rack. No popover occludes a lane.
+    #[test]
+    fn the_palette_opens_in_place_and_occludes_no_lane() {
+        assert!(js_fn("function openPalette(").contains("trackRowEls[t]"));
+        assert!(APP_JS.contains("rack.parentNode.insertBefore(palBar, rack)"), "the bar is above the rack");
+        assert!(STYLE_CSS.contains(".palbar"));
+        // Three arcs of 120°, each its own sweep with a gap between them.
+        assert!(APP_JS.contains("var ARC_SPAN = 120 - ARC_GAP;"));
+        assert!(js_fn("function openPalette(").contains("for (var c = 0; c < 3; c++)"));
+    }
+
+    /// AC (0355): a numeric three-field panel sets the same values, and every readout
+    /// is normalised `0.00–1.00` — what the matrix takes.
+    #[test]
+    fn the_numeric_panel_sets_the_same_values_normalised() {
+        let build = js_fn("function buildPaletteBar(");
+        assert!(build.contains("num.type = \"number\""));
+        assert!(build.contains("num.min = 0; num.max = 1; num.step = 0.01;"));
+        assert!(build.contains("setChannel(c,"), "the fields drive the same edit as the arcs");
+        assert!(APP_JS.contains("function fmtChannel(v) { return clamp(v, 0, 1).toFixed(2); }"));
+        assert!(js_fn("function renderPaletteBar(").contains("fmtChannel(rgb[c])"));
+    }
+
+    /// AC (0355): a swatch is a tuned triple made reusable, saved from the palette and
+    /// applied to a **selection** — which is also how a user works without
+    /// discriminating fine colour differences at all.
+    #[test]
+    fn swatches_are_saved_and_applied_to_a_selection() {
+        assert!(APP_JS.contains("var swatches = ["));
+        let apply = js_fn("function applyToSelection(");
+        assert!(apply.contains("selection[i]"), "a swatch lands on every selected hit");
+        assert!(apply.contains("sendColour(") && apply.contains("sendClearColour("));
+        assert!(js_fn("function buildPaletteBar(").contains("swatches.push("), "…and can be saved");
+        assert!(js_fn("function renderSwatches(").contains("applyToSelection(s.rgb)"));
+    }
+
+    /// AC (0355): the arcs name the macro slot and the param the lane's **flavour**
+    /// binds it to — which changes with the flavour, the same dispatch discipline
+    /// `value_to_text` has (0172). Never "red": the user is setting three modulation
+    /// values, and colour is how they read back off the strip.
+    #[test]
+    fn the_palette_names_macro_slots_not_colours() {
+        let render = js_fn("function renderPalette(");
+        assert!(render.contains("macroLabel(t, c)"), "the arc tooltip names the bound param");
+        assert!(render.contains("SLOT_LETTERS[c]"));
+        let bar = js_fn("function renderPaletteBar(");
+        assert!(bar.contains("macroLabel(t, c)"));
+        // `macroLabel` resolves through the lane's assigned voice's binding table, so
+        // the name follows the flavour instead of being baked into the widget.
+        assert!(js_fn("function macroLabel(t, slot)").contains("macroName(v.flavour"));
+        assert!(APP_JS.contains("var SLOT_LETTERS = [\"A\", \"B\", \"C\"];"));
+        for banned in ["\"red\"", "\"Red\"", "\"green\"", "\"blue\""] {
+            assert!(!APP_JS.contains(banned), "the palette must not label a slot {banned}");
         }
     }
 

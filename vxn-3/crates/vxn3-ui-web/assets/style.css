@@ -339,3 +339,91 @@ input[type="range"]:disabled::-webkit-slider-thumb { background: var(--dim); box
 .bind-tgt, .bind-curve { background: var(--panel-hi); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; font-size: 11px; }
 .bind-rm { background: transparent; color: var(--dim); border: none; cursor: pointer; font-size: 12px; }
 .bind-rm:hover { color: #ff8a8a; }
+
+/* ── Per-hit colour = the hit's macro vector (ADR 0007 §7, 0355) ──
+   Colour carries data here, so it is never the *only* encoding. Every coloured
+   diamond also wears three ring segments — one per macro slot, length = value, on
+   three fixed edges, filling clockwise from the top vertex; the fourth edge stays
+   bare to mark where the ring starts. Fixed-contrast strokes, no hue discrimination
+   required: red/green is the worst possible pair to make load-bearing, and a lane
+   encoded in hue alone is unreadable for a red/green-deficient user.
+
+   The diamond's fill is the same vector floored to a minimum luminance in JS, so a
+   hit at [0, 0, 0] — a real macro vector that sends zero — is still visible. That
+   floor is a drawing rule and lives nowhere near the value path. */
+.hit > * { pointer-events: none; }
+.hit .ch {
+  position: absolute;
+  background: #eef3fb;
+  box-shadow: 0 0 0 1px #0e1015;
+}
+.hit .ch0 { top: -3px; left: 0; height: 3px; }    /* slot A — top edge, left → right */
+.hit .ch1 { top: 0; right: -3px; width: 3px; }    /* slot B — right edge, top → bottom */
+.hit .ch2 { bottom: -3px; right: 0; height: 3px; } /* slot C — bottom edge, right → left */
+/* Filling a diamond with its colour would wipe out the hollow-vs-solid cue that says
+   whether a hit is welded, so a *placed* coloured hit keeps a strip-coloured core
+   inside its colour. */
+.hit:not(.welded):not(.uncoloured)::before {
+  content: ""; position: absolute; inset: 3px; background: var(--panel-hi);
+}
+/* The selection ring is white, and so are the ring segments it sits against. On a
+   coloured diamond — which shift-click always selects — it takes the accent instead,
+   so the redundant channel stays legible on the hit being edited. */
+.hit.sel:not(.uncoloured) { box-shadow: 0 0 0 2px var(--accent); }
+
+/* ── The three-arc palette ──
+   Anchored on the diamond (a zero-size point; the arcs are drawn around it) and
+   hung off the track row rather than the strip, which clips its own contents. */
+.track { position: relative; }
+/* Rows are opaque and paint in document order, so a row whose arcs reach past it is
+   lifted above its neighbours for as long as it holds a palette. */
+.track.has-palette { z-index: 7; }
+.palette { position: absolute; width: 0; height: 0; z-index: 6; }
+/* The svg box is 64px square and mostly empty; only the grab arcs below take the
+   pointer, so the diamond under the middle of it stays draggable. */
+.pal-arcs { position: absolute; left: -26px; top: -26px; overflow: visible; pointer-events: none; }
+.pal-track { fill: none; stroke: #39435a; stroke-width: 4.5; }
+.pal-val { fill: none; stroke-width: 4.5; }
+.pal-knob { stroke: #0e1015; stroke-width: 1.5; }
+/* A wide transparent copy of each arc is the actual pointer target: a 5px stroke is
+   not something to aim at, and widening the visible one would crowd the lane. */
+.pal-grab { fill: none; stroke: transparent; stroke-width: 10; pointer-events: stroke; cursor: pointer; }
+
+/* ── The palette bar: readouts, numeric entry, swatches ──
+   Above the rack, never over it — the arcs are the in-context gesture, and anything
+   that has to be *read* sits where it cannot cover a lane. */
+.palbar {
+  display: flex; align-items: center; gap: 10px;
+  margin: 6px 8px 0; padding: 5px 10px;
+  background: var(--panel); border: 1px solid var(--accent-dim); border-radius: 6px;
+}
+.pb-legend { color: var(--accent); font-size: 9px; letter-spacing: 1.5px; }
+.pb-where { color: var(--dim); font-size: 10px; }
+.pb-preview { position: relative; width: 22px; height: 22px; flex: none; }
+.pb-preview .hit, .pb-sw .hit { left: 50%; top: 50%; cursor: default; }
+.pb-slot { display: flex; align-items: center; gap: 5px; }
+.pb-dot { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.pb-name {
+  color: var(--text); font-size: 10px; max-width: 96px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pb-num {
+  width: 56px; padding: 2px 4px; font-size: 11px;
+  background: var(--panel-hi); color: var(--accent);
+  border: 1px solid var(--line); border-radius: 3px;
+  font-variant-numeric: tabular-nums;
+}
+.pb-swatches { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+.pb-sw {
+  position: relative; width: 22px; height: 22px; padding: 0; flex: none;
+  background: var(--panel-hi); border: 1px solid var(--line); border-radius: 3px; cursor: pointer;
+}
+.pb-sw:hover { border-color: var(--accent); }
+.pb-btn {
+  background: var(--panel-hi); color: var(--text);
+  border: 1px solid var(--line); border-radius: 4px;
+  padding: 3px 9px; cursor: pointer; font-size: 10px;
+}
+.pb-btn:hover { border-color: var(--accent); color: var(--accent); }
+.pb-close { background: transparent; color: var(--dim); border: none; cursor: pointer; font-size: 12px; }
+.pb-close:hover { color: var(--accent); }

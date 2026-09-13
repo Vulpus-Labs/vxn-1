@@ -25,6 +25,21 @@
   var Y_CENTRE = CFG.y_centre != null ? CFG.y_centre : 0.5;
   var PROBS = [1.0, 0.75, 0.5, 0.25];
   var CURVES = ["linear", "exp"];
+  // A hit's colour *is* its macro vector (ADR 0007 §7, 0355). What the user edits is
+  // three modulation values — slots A, B and C — and colour is how they read back off
+  // the strip. Naming them for the channels would invite tuning the picture and
+  // getting macro values nobody chose.
+  var SLOT_LETTERS = ["A", "B", "C"];
+  // The widget's own tints, one per channel. Fixed: they say which arc is which, not
+  // what its value is.
+  var CH_TINT = ["#ff6a6a", "#4ed07a", "#5fa2ff"];
+  // Display-only luminance floor — see `displayRgb`. Shipped by the Rust side, which
+  // is where the rule is documented, so the two cannot drift.
+  var MIN_LUMA = CFG.min_luma != null ? CFG.min_luma : 0.32;
+  // The length of one diamond edge in px: `.hit` is 11px border-box with a 1px
+  // border, so its padding box — what the ring segments are positioned against, and
+  // laid just outside — is 9px a side.
+  var HIT_PX = 9;
 
   function send(op, extra) {
     var msg = Object.assign({ op: op }, extra || {});
@@ -626,6 +641,7 @@
 
   // ── Pattern tab: the rack ────────────────────────────────────────────────────
   var rack = document.getElementById("rack");
+  var trackRowEls = [];   // trackRowEls[t] — the whole row; the palette hangs off it
   var stripEls = [];      // stripEls[t] — the lane strip
   var markerEls = [];     // markerEls[t] — its marker layer
   var hitLayerEls = [];   // hitLayerEls[t] — its diamond layer
@@ -649,6 +665,88 @@
   function isSelected(h) { return selection.indexOf(h) >= 0; }
   function setStatus(msg) { if (statusEl) statusEl.textContent = msg || ""; }
 
+  // ── drawing a hit's colour (0355) ───────────────────────────────────────────
+  // **Render and value are decoupled, in one direction only.** Everything below
+  // transforms a macro vector into pixels; nothing below is ever read back into one.
+  // The two rules that make that necessary:
+  //
+  //  1. `[0, 0, 0]` is a legitimate, useful vector — it sends zero to all three
+  //     slots — and an invisible diamond. So the *display* floors luminance. If that
+  //     floor leaked into the value path the user would dial zero and the engine
+  //     would receive a third, which is the one bug this whole widget must not have.
+  //  2. Colour cannot be the only encoding. Red and green are the worst possible
+  //     pair to make load-bearing, and a lane whose only signal is hue is unreadable
+  //     for a red/green-deficient user. So every coloured diamond also wears a
+  //     three-segment ring — one segment per slot, length = value, fixed-contrast,
+  //     on fixed edges — which is legible with no colour discrimination at all.
+
+  // Rec. 709 relative luminance, the weights the floor is stated in.
+  function luma(rgb) { return 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]; }
+
+  // RENDER ONLY. Lift a dark colour toward white until it clears `MIN_LUMA`.
+  //
+  // The dark end is **compressed, not clamped**: luminance below `LUMA_KNEE` is
+  // remapped onto `[MIN_LUMA, LUMA_KNEE]` rather than pinned at the floor. A hard
+  // floor would draw every colour under it as the same grey — `[0,0,0]` and
+  // `[0.1,0.1,0.1]` are different macro vectors and have to look different. Above the
+  // knee a colour is drawn exactly as it is.
+  //
+  // The lift is toward white rather than a flat offset so the mapping is monotonic in
+  // luminance, and black lands on a grey instead of on the strip's own background.
+  var LUMA_KNEE = 0.5;
+  function displayRgb(rgb) {
+    var r = clamp(rgb[0], 0, 1), g = clamp(rgb[1], 0, 1), b = clamp(rgb[2], 0, 1);
+    var l = luma([r, g, b]);
+    if (l >= LUMA_KNEE) return [r, g, b];
+    var want = MIN_LUMA + l * (LUMA_KNEE - MIN_LUMA) / LUMA_KNEE;
+    // The Rec. 709 weights sum to 1, so lerping toward white by `k` lands the result
+    // at luminance `l + k(1 - l)` exactly — hence `k` solving for `want`.
+    var k = (want - l) / (1 - l); // l < LUMA_KNEE < 1, so never a divide by zero
+    return [r + (1 - r) * k, g + (1 - g) * k, b + (1 - b) * k];
+  }
+  function cssRgb(rgb) {
+    var d = displayRgb(rgb);
+    return "rgb(" + Math.round(d[0] * 255) + "," + Math.round(d[1] * 255) + "," + Math.round(d[2] * 255) + ")";
+  }
+  // Normalised, always — 0.00–1.00 is what the macro slots take. No byte-valued
+  // representation of a channel exists anywhere in this editor.
+  function fmtChannel(v) { return clamp(v, 0, 1).toFixed(2); }
+  function colourTitle(t, rgb) {
+    if (rgb == null) return "no colour — this hit leaves the macro slots to the knobs";
+    var parts = [];
+    for (var c = 0; c < 3; c++) parts.push(SLOT_LETTERS[c] + " " + macroLabel(t, c) + " " + fmtChannel(rgb[c]));
+    return parts.join(" · ");
+  }
+
+  // The **one** place a hit's colour is drawn: the strip, the palette's preview and
+  // every swatch button all come through here, so the redundant ring cannot be
+  // present in one render path and quietly missing from another.
+  function paintHitColour(node, t, rgb) {
+    while (node.firstChild) node.removeChild(node.firstChild);
+    node.title = colourTitle(t, rgb);
+    if (rgb == null) {
+      // Uncoloured is not black: the diamond keeps the stock fill and wears no ring,
+      // because there is no macro vector to report.
+      node.classList.add("uncoloured");
+      node.style.background = "";
+      return;
+    }
+    node.classList.remove("uncoloured");
+    node.style.background = cssRgb(rgb);
+    // Three consecutive edges of the diamond, filling clockwise from the top vertex;
+    // the fourth edge stays bare, which is what marks where the ring starts. The
+    // length is `2px` at zero rising to the full edge at one — an offset rather than
+    // a floor, so a slot at 0 reads as a value while 0.1 still reads shorter than 0.2.
+    for (var c = 0; c < 3; c++) {
+      var len = (2 + clamp(rgb[c], 0, 1) * (HIT_PX - 2)).toFixed(2) + "px";
+      var seg = el("span", "ch ch" + c);
+      if (c === 0) seg.style.width = len;        // top edge, left → right
+      else if (c === 1) seg.style.height = len;  // right edge, top → bottom
+      else seg.style.width = len;                // bottom edge, right → left
+      node.appendChild(seg);
+    }
+  }
+
   function renderHits(t) {
     var lane = lanes[t], layer = hitLayerEls[t];
     layer.innerHTML = "";
@@ -664,8 +762,13 @@
       // Welded hits read differently from placed ones — `f = 0` is the stored form
       // that survives a groove edit, and it is worth being able to see which is which.
       if (h.f === 0 && h.nudge === 0) d.classList.add("welded");
+      // The macro vector, as fill *and* as a ring the colour is not needed to read.
+      paintHitColour(d, t, h.rgb);
       layer.appendChild(d);
     }
+    // The arcs bloom on a diamond, so they follow it: a probability cycle, a groove
+    // edit or a neighbour's drag all redraw this layer under an open palette.
+    positionPalette();
   }
   function renderMarkers(t) {
     var lane = lanes[t], g = lane.g, layer = markerEls[t];
@@ -783,6 +886,9 @@
     box.title = voiceLabel(v);
     box.className = "voice-box " + eng.id;
     for (var slot = 0; slot < NSLOT; slot++) macroLabelEls[t][slot].textContent = macroLabel(t, slot);
+    // The palette names its slots from the same binding table, so a reassignment
+    // relabels its arcs rather than leaving them naming the old voice's params.
+    if (palette && palette.track === t) renderPalette();
   }
 
   function makeKnob(label, min, max, step, value, oninput) {
@@ -909,6 +1015,10 @@
     if (ev.target && ev.target.classList.contains("hit")) {
       idx = Array.prototype.indexOf.call(hitLayerEls[t].children, ev.target);
     }
+    // Shift-click on a diamond is the palette's gesture and the only one that leaves
+    // it open; anything else — a placement, a drag, a delete — invalidates what it is
+    // anchored to or moves the user's attention off it.
+    if (!(ev.shiftKey && idx >= 0)) closePalette();
     if (idx < 0) {
       // Empty strip: place a hit where the pointer is.
       var p = pointerAt(t, ev);
@@ -949,9 +1059,25 @@
       return;
     }
     if (ev.shiftKey) {
-      if (isSelected(hit)) selection = selection.filter(function (x) { return x !== hit; });
-      else selection.push(hit);
-    } else if (!isSelected(hit)) {
+      // Bloom the three arcs on this diamond (0355) and take it into the selection,
+      // so a swatch tuned here can be applied to several hits at once. No drag is
+      // started: the gesture that opens the palette must not also move the hit.
+      //
+      // Shift-clicking the diamond the arcs are already on **takes the gesture back**
+      // — they close and the hit leaves the selection. That is deliberate: it is the
+      // only way to drop one hit from a selection rather than all of them, which the
+      // old shift-toggle did and the quantise verbs still need.
+      if (palette && palette.hit === hit) {
+        closePalette();
+        selection = selection.filter(function (x) { return x !== hit; });
+      } else {
+        if (!isSelected(hit)) selection.push(hit);
+        openPalette(t, hit);
+      }
+      renderAllHits();
+      return;
+    }
+    if (!isSelected(hit)) {
       selection = [hit];
     }
     drag = { track: t, hit: hit };
@@ -1232,6 +1358,340 @@
       applyMarkerInsert(t, i, pos, ovr);
     });
     setStatus("Marker deleted — the hits either side did not move.");
+
+  // ── the palette: three arcs, one per macro slot (ADR 0007 §7, 0355) ──────────
+  // Shift-click a diamond and three 120° arcs bloom around it, each tinted its
+  // channel and dragged on its own.
+  //
+  // Three arcs rather than a colour picker, and that is a constraint rather than a
+  // taste: three degrees of freedom do not fit in two dimensions, and these are
+  // modulation sources, so the user has to be able to reach `A = 1.0, B = 0, C = 0.5`
+  // deliberately. Every hue-based widget — wheel, triangle, corner-on cube — moves
+  // two or three channels per gesture, which leaves no slot independently
+  // addressable; ADR 0007 §7 rejects them on exactly that. Arcs are compact, sit on
+  // the diamond, occlude no lane, and are orthogonal by construction.
+  //
+  // The readouts, the numeric fields and the swatches live in a bar above the rack
+  // rather than in a popover, so nothing that carries data is ever covered up.
+
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  // Radius from the diamond's centre. Small on purpose: the grab arcs below take the
+  // pointer, so the ring they trace is a band in which a *neighbouring* diamond
+  // cannot be grabbed while a palette is open. At 16px the band clears the next
+  // subdivision of a 16ths lane, which is the tightest spacing the strip draws.
+  var ARC_R = 16;
+  var ARC_GAP = 8;              // degrees of blank between neighbouring arcs
+  var ARC_SPAN = 120 - ARC_GAP; // each channel's usable sweep
+  function arcStart(c) { return ARC_GAP / 2 + c * 120; }
+  function svgEl(tag, attrs) {
+    var e = document.createElementNS(SVG_NS, tag);
+    for (var k in attrs) e.setAttribute(k, attrs[k]);
+    return e;
+  }
+  // Screen coordinates, y down: 0° is 12 o'clock and angles run clockwise, which is
+  // the direction the arcs fill in and the direction the diamond's ring reads in.
+  function arcXY(a) {
+    var r = a * Math.PI / 180;
+    return [(ARC_R * Math.sin(r)).toFixed(2), (-ARC_R * Math.cos(r)).toFixed(2)];
+  }
+  function arcPath(a0, a1) {
+    var p0 = arcXY(a0), p1 = arcXY(a1);
+    // A zero-length sweep is a valid path that draws nothing — which is what a
+    // channel at 0 should draw, its knob apart. `ARC_SPAN < 180`, so the large-arc
+    // flag is always 0.
+    if (a1 - a0 < 0.05) return "M" + p0[0] + " " + p0[1];
+    return "M" + p0[0] + " " + p0[1] + "A" + ARC_R + " " + ARC_R + " 0 0 1 " + p1[0] + " " + p1[1];
+  }
+
+  var palette = null;   // { track, hit, node, svg, val[], knob[], grab[], tip[] }
+  var paletteDrag = -1; // channel under the pointer, or -1
+  // Factory swatches: the axes and the diagonal of the macro cube, named for what
+  // they do. A saved one appends here. In-page only — a swatch is a working
+  // convenience, not part of the pattern, and the page has no preferences store.
+  var swatches = [
+    { name: "A only", rgb: [1, 0, 0] },
+    { name: "B only", rgb: [0, 1, 0] },
+    { name: "C only", rgb: [0, 0, 1] },
+    { name: "A + B", rgb: [1, 1, 0] },
+    { name: "all up", rgb: [1, 1, 1] },
+    { name: "all half", rgb: [0.5, 0.5, 0.5] },
+    { name: "all zero", rgb: [0, 0, 0] },
+  ];
+
+  // ── the value path ──────────────────────────────────────────────────────────
+  // The raw channels, exactly as dialled. `displayRgb` is not called from here and
+  // must not be: the luminance floor is how a dark macro vector is *drawn*, never
+  // what it is worth, and a floor that leaked in here would send the engine numbers
+  // the user did not choose. `f32` narrowing is the same discipline every other
+  // stored value on this page gets — it keeps the page's copy equal to the engine's.
+  function sendColour(t, h, rgb) {
+    var lane = lanes[t], idx = lane ? lane.hits.indexOf(h) : -1;
+    if (idx < 0) return false;
+    h.rgb = [f32(clamp(rgb[0], 0, 1)), f32(clamp(rgb[1], 0, 1)), f32(clamp(rgb[2], 0, 1))];
+    send("set_hit_colour", { track: t, hit: idx, rgb: h.rgb });
+    return true;
+  }
+  // Uncolouring is its own verb rather than black: it hands the slots back to the
+  // lane's knobs, where black drives all three to zero.
+  function sendClearColour(t, h) {
+    var lane = lanes[t], idx = lane ? lane.hits.indexOf(h) : -1;
+    if (idx < 0) return false;
+    h.rgb = null;
+    send("clear_hit_colour", { track: t, hit: idx });
+    return true;
+  }
+  // One arc, one slot. The other two channels are copied across untouched — this is
+  // the property three arcs exist to have, and it holds to `f32` equality because
+  // nothing recomputes them.
+  function setChannel(c, v) {
+    if (!palette) return;
+    var h = palette.hit, rgb = h.rgb ? h.rgb.slice() : [0, 0, 0];
+    rgb[c] = f32(clamp(v, 0, 1));
+    // A pointer parked past the end of an arc re-reports the same angle on every
+    // mousemove, and an edit that changes nothing is still a queue slot. The one way
+    // the model and the audio copy can come apart is a *dropped* command, so this
+    // path does not spend slots on no-ops — the same guard the hit drag has.
+    if (h.rgb && rgb[c] === h.rgb[c]) return;
+    if (!sendColour(palette.track, h, rgb)) { closePalette(); return; }
+    renderPalette();
+    renderHits(palette.track);
+  }
+  // A swatch is a tuned triple made reusable, and the way to work without
+  // discriminating fine colour differences at all: pick the named one and apply it to
+  // however many hits are selected. `null` clears instead.
+  function applyToSelection(rgb) {
+    for (var t = 0; t < NT; t++) {
+      var touched = false;
+      for (var i = 0; i < selection.length; i++) {
+        var h = selection[i];
+        if (lanes[t].hits.indexOf(h) < 0) continue;
+        touched = (rgb == null ? sendClearColour(t, h) : sendColour(t, h, rgb)) || touched;
+      }
+      if (touched) renderHits(t);
+    }
+    renderPalette();
+  }
+
+  // ── the arcs ────────────────────────────────────────────────────────────────
+  function openPalette(t, h) {
+    closePalette();
+    var row = trackRowEls[t];
+    if (!row) return; // the row is the arcs' positioning frame; there is no other
+    var node = el("div", "palette");
+    var svg = svgEl("svg", { class: "pal-arcs", viewBox: "-26 -26 52 52", width: "52", height: "52" });
+    palette = { track: t, hit: h, node: node, svg: svg, val: [], knob: [], grab: [], tip: [] };
+    for (var c = 0; c < 3; c++) {
+      (function (c) {
+        var a0 = arcStart(c), a1 = a0 + ARC_SPAN;
+        svg.appendChild(svgEl("path", { class: "pal-track", d: arcPath(a0, a1) }));
+        var val = svgEl("path", { class: "pal-val", d: arcPath(a0, a0), stroke: CH_TINT[c] });
+        var knob = svgEl("circle", { class: "pal-knob", r: "3.2", fill: CH_TINT[c], cx: "0", cy: "0" });
+        // A wider transparent copy of the arc is what the pointer actually grabs: a
+        // 4.5px stroke is not a target, and widening the visible one would crowd the
+        // lane below it.
+        var grab = svgEl("path", { class: "pal-grab", d: arcPath(a0, a1) });
+        var tip = svgEl("title", {});
+        grab.appendChild(tip);
+        grab.addEventListener("mousedown", function (ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          paletteDrag = c;
+          setChannel(c, valueFromAngle(c, angleAt(ev)));
+        });
+        svg.appendChild(val);
+        svg.appendChild(grab);
+        svg.appendChild(knob);
+        palette.val[c] = val; palette.knob[c] = knob; palette.grab[c] = grab; palette.tip[c] = tip;
+      })(c);
+    }
+    node.appendChild(svg);
+    palette.row = row;
+    // The arcs reach a little past the row they belong to, and the rows below are
+    // opaque and paint later — so the row holding a palette is lifted above its
+    // siblings for as long as it holds one.
+    row.classList.add("has-palette");
+    row.appendChild(node);
+    positionPalette();
+    renderPalette();
+    // The swatch glyphs read out *this* lane's slot names, so they are rebuilt for
+    // the lane the palette opened on rather than the one it last opened on.
+    renderSwatches();
+  }
+  function closePalette() {
+    if (!palette) return;
+    if (palette.node.parentNode) palette.node.parentNode.removeChild(palette.node);
+    if (palette.row) palette.row.classList.remove("has-palette");
+    palette = null;
+    paletteDrag = -1;
+    if (palBar) palBar.classList.add("hidden");
+  }
+  // The arcs are anchored to a diamond, so they follow it through every redraw — and
+  // a hit that is no longer in the lane takes its palette with it.
+  function positionPalette() {
+    if (!palette) return;
+    var t = palette.track, lane = lanes[t], s = stripEls[t];
+    if (!lane || !s || lane.hits.indexOf(palette.hit) < 0) { closePalette(); return; }
+    var h = palette.hit;
+    var x = s.offsetLeft + (s.clientLeft || 0) + (fireBeat(lane.g, h) / lane.g.len_beats) * s.clientWidth;
+    var y = s.offsetTop + (s.clientTop || 0) + (1 - clamp(h.y, 0, 1)) * s.clientHeight;
+    palette.node.style.left = x.toFixed(2) + "px";
+    palette.node.style.top = y.toFixed(2) + "px";
+  }
+  // A hit with no colour has no vector to show, so the arcs read zero — the point a
+  // first drag starts from. It stays *uncoloured* until one of them moves.
+  function currentRgb() {
+    return palette && palette.hit.rgb ? palette.hit.rgb : [0, 0, 0];
+  }
+  function renderPalette() {
+    if (!palette) return;
+    var t = palette.track, rgb = currentRgb();
+    for (var c = 0; c < 3; c++) {
+      var a0 = arcStart(c), v = clamp(rgb[c], 0, 1);
+      var end = arcXY(a0 + v * ARC_SPAN);
+      palette.val[c].setAttribute("d", arcPath(a0, a0 + v * ARC_SPAN));
+      // The knob is drawn at every value, zero included: its position round the arc
+      // is the reading, and it does not depend on seeing the tint.
+      palette.knob[c].setAttribute("cx", end[0]);
+      palette.knob[c].setAttribute("cy", end[1]);
+      // Names the slot and the param this lane's flavour binds it to, never the
+      // channel's colour name: what is being set is a modulation value.
+      palette.tip[c].textContent = "macro " + SLOT_LETTERS[c] + " · " + macroLabel(t, c)
+        + " — " + fmtChannel(v) + (palette.hit.rgb ? "" : " (unset)");
+    }
+    renderPaletteBar();
+  }
+  function angleAt(ev) {
+    var r = palette.svg.getBoundingClientRect();
+    var dx = ev.clientX - (r.left + r.width / 2), dy = ev.clientY - (r.top + r.height / 2);
+    return (Math.atan2(dx, -dy) * 180 / Math.PI + 360) % 360;
+  }
+  // Clamped into the arc's own sweep rather than wrapped: a pointer that slips past
+  // one end holds there instead of springing to the other.
+  function valueFromAngle(c, a) {
+    var d = (a - arcStart(c) + 360) % 360;
+    if (d <= ARC_SPAN) return d / ARC_SPAN;
+    return (d - ARC_SPAN) < (360 - d) ? 1 : 0;
+  }
+  function onPaletteMove(ev) {
+    if (paletteDrag < 0 || !palette) return;
+    ev.preventDefault();
+    setChannel(paletteDrag, valueFromAngle(paletteDrag, angleAt(ev)));
+  }
+  function onPaletteUp() { paletteDrag = -1; }
+
+  // ── the palette bar: readouts, numeric entry, swatches ──────────────────────
+  // Above the rack, not over it. The arcs are the in-context gesture; everything
+  // that has to be *read* — three normalised values, the slot names, the swatch row —
+  // sits where it cannot cover a lane.
+  var palBar = null, palGlyph = null, palWhere = null, palSwatchEls = null;
+  var palNums = [], palNames = [];
+
+  function buildPaletteBar() {
+    palBar = el("div", "palbar hidden");
+    palBar.appendChild(el("span", "pb-legend", "MACRO SLOTS"));
+    var preview = el("div", "pb-preview");
+    palGlyph = el("div", "hit welded");
+    preview.appendChild(palGlyph);
+    palBar.appendChild(preview);
+    palWhere = el("span", "pb-where", "");
+    palBar.appendChild(palWhere);
+
+    for (var c = 0; c < 3; c++) {
+      (function (c) {
+        var slotEl = el("div", "pb-slot");
+        var dot = el("span", "pb-dot");
+        dot.style.background = CH_TINT[c];
+        slotEl.appendChild(dot);
+        var name = el("span", "pb-name", SLOT_LETTERS[c]);
+        palNames[c] = name;
+        slotEl.appendChild(name);
+        // The precise-entry path, and the readout at the same time: normalised
+        // 0.00–1.00, which is what the matrix takes.
+        var num = document.createElement("input");
+        num.type = "number";
+        num.className = "pb-num";
+        num.min = 0; num.max = 1; num.step = 0.01; num.value = "0.00";
+        num.addEventListener("change", function () {
+          var v = isFinite(parseFloat(num.value)) ? clamp(parseFloat(num.value), 0, 1) : 0;
+          // Written back here rather than left to the redraw: `change` fires with the
+          // field still focused, and the redraw skips a focused field so as not to
+          // fight someone mid-type. Without this, typing `5` would store 1.00 and go
+          // on showing `5`.
+          num.value = fmtChannel(v);
+          setChannel(c, v);
+        });
+        palNums[c] = num;
+        slotEl.appendChild(num);
+        palBar.appendChild(slotEl);
+      })(c);
+    }
+
+    palSwatchEls = el("div", "pb-swatches");
+    palBar.appendChild(palSwatchEls);
+
+    var save = el("button", "pb-btn", "＋ Save");
+    save.title = "save these three values as a reusable swatch";
+    save.addEventListener("click", function () {
+      if (!palette) return;
+      var rgb = currentRgb().slice();
+      swatches.push({
+        name: fmtChannel(rgb[0]) + " · " + fmtChannel(rgb[1]) + " · " + fmtChannel(rgb[2]),
+        rgb: rgb,
+      });
+      renderSwatches();
+    });
+    palBar.appendChild(save);
+
+    var none = el("button", "pb-btn", "None");
+    none.title = "clear the colour on every selected hit — their macro slots fall back to the lane's knobs";
+    none.addEventListener("click", function () { applyToSelection(null); });
+    palBar.appendChild(none);
+
+    var shut = el("button", "pb-close", "✕");
+    shut.title = "close the palette";
+    shut.addEventListener("click", closePalette);
+    palBar.appendChild(shut);
+
+    rack.parentNode.insertBefore(palBar, rack);
+    renderSwatches();
+  }
+  function renderSwatches() {
+    if (!palSwatchEls) return;
+    palSwatchEls.innerHTML = "";
+    var t = palette ? palette.track : 0;
+    swatches.forEach(function (s) {
+      var b = el("button", "pb-sw");
+      var glyph = el("div", "hit welded");
+      // The same glyph the strip draws, ring and all: a swatch has to be
+      // identifiable without telling two hues apart, or it is no use to the users it
+      // is there for.
+      paintHitColour(glyph, t, s.rgb);
+      b.appendChild(glyph);
+      b.title = s.name + " · " + colourTitle(t, s.rgb) + " — apply to the selection";
+      // The glyph is inside the button and its own tooltip would win over the
+      // button's, so it carries the same text rather than a shorter one.
+      glyph.title = b.title;
+      b.addEventListener("click", function () { applyToSelection(s.rgb); });
+      palSwatchEls.appendChild(b);
+    });
+  }
+  function renderPaletteBar() {
+    if (!palBar) return;
+    if (!palette) { palBar.classList.add("hidden"); return; }
+    palBar.classList.remove("hidden");
+    var t = palette.track, lane = lanes[t];
+    var idx = lane.hits.indexOf(palette.hit), rgb = currentRgb();
+    palWhere.textContent = "track " + (t + 1) + " · hit " + (idx + 1) + " of " + lane.hits.length
+      + (palette.hit.rgb ? "" : " · not coloured yet")
+      + (selection.length > 1 ? " · " + selection.length + " selected" : "");
+    paintHitColour(palGlyph, t, palette.hit.rgb);
+    for (var c = 0; c < 3; c++) {
+      palNames[c].textContent = SLOT_LETTERS[c] + " · " + macroLabel(t, c);
+      palNames[c].title = "macro slot " + SLOT_LETTERS[c] + " drives "
+        + macroLabel(t, c) + " on this lane's voice";
+      // Not while it is being typed into, or the reformat would fight the user.
+      if (document.activeElement !== palNums[c]) palNums[c].value = fmtChannel(rgb[c]);
+    }
   }
 
   // ── quantise: two independent verbs, applied to the selection ───────────────
@@ -1315,7 +1775,7 @@
     bar.appendChild(statusEl);
 
     var hint = el("span", "rb-hint",
-      "strip: click places · drag moves · alt deletes · ctrl cycles probability · dbl toggles retrig · shift selects");
+      "strip: click places · drag moves · alt deletes · ctrl cycles probability · dbl toggles retrig · shift opens the macro palette (again to drop it)");
     bar.appendChild(hint);
     // The rail's gestures read differently from the strip's and are worth naming
     // apart: a marker drag carries its hits, an insert or a delete leaves them.
@@ -1327,6 +1787,9 @@
 
   function buildTrack(t) {
     var row = el("div", "track");
+    // The palette's arcs bloom *around* a diamond and so reach past the strip, which
+    // clips its own contents; they hang off the row instead, which does not.
+    trackRowEls[t] = row;
 
     // Voice box — shows the assigned voice; click opens the voice browser.
     var box = el("button", "voice-box");
@@ -1442,21 +1905,25 @@
   }
 
   buildRackBar();
+  buildPaletteBar(); // after the rack bar, so it sits between that and the rack
   for (var t2 = 0; t2 < NT; t2++) buildTrack(t2);
   document.addEventListener("mousemove", function (ev) {
     if (mdrag) { onMarkerDragMove(ev); return; }
     if (sdrag) { onSubsDragMove(ev); return; }
+    onPaletteMove(ev);
     onDragMove(ev);
   });
   document.addEventListener("mouseup", function () {
     if (mdrag) onMarkerDragUp();
     if (sdrag) onSubsDragUp();
+    onPaletteUp();
     onDragUp();
   });
   // Undo, for the geometry gestures. A marker drag is the case that needs it: one
   // grab moves every hit in two slots, and putting them back by hand is not a thing
   // a user can do.
   document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Escape") { closePalette(); return; }
     if (!(ev.ctrlKey || ev.metaKey) || ev.shiftKey) return;
     if ((ev.key || "").toLowerCase() !== "z") return;
     // Not while a field has focus: the page has text boxes (voice and macro names)
@@ -1735,10 +2202,12 @@
     lane.hits = next.hits;
     // Any index a gesture is holding named the *old* list, so no gesture survives —
     // and neither does an undo record, whose whole content is a position in a
-    // geometry this lane no longer has.
+    // geometry this lane no longer has — the palette included, which is anchored
+    // to a hit object this replaced.
     if (drag && drag.track === t) drag = null;
     if (mdrag && mdrag.track === t) mdrag = null;
     if (sdrag && sdrag.track === t) sdrag = null;
+    if (palette && palette.track === t) closePalette();
     if (swingEls[t]) swingEls[t].cancel();
     dropUndo(t);
     // The selection holds hit *objects*; the ones this replaced are now in no lane
