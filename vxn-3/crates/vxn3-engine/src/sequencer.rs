@@ -28,8 +28,15 @@
 //! hit — they have no base to revert to. Continuous params that *do* have a base
 //! are p-locked, and a lock now belongs to a **hit** rather than to a grid cell
 //! (ADR 0001 §3a's split is not revisited). `rgb` — the hit's colour — *is* its macro
-//! vector, consumed at trig time by [`crate::lane`] (0351); `y` is stored and not yet
-//! consumed (0350).
+//! vector, consumed at trig time by [`crate::lane`] (0351).
+//!
+//! **`y` is not stored like `f`** (ADR 0007 §6, ticket 0350). X is a fraction of a
+//! discrete slot; Y is an **offset from a continuous curve** — the Y-centre control
+//! points on the beat markers, interpolated by [`Grid::y_at`] and sampled at the hit's
+//! resolved fire time ([`Pattern::effective_y`]). The asymmetry is what buys direct
+//! manipulation: a per-slot Y would make a horizontal drag across a beat marker jump
+//! vertically, so a hit's height on screen could not be its height in the model. Y's
+//! destination is velocity, scaled multiplicatively by [`Pattern::y_velocity_scale`].
 
 use crate::grid::{Grid, GridPos, MIN_SLOT};
 
@@ -195,7 +202,15 @@ pub struct Hit {
     /// Absolute offset in [`TICKS_PER_BEAT`] ticks, clamped to ±[`MAX_NUDGE_TICKS`].
     /// **Unscaled** by swing — a flam is an absolute quantity.
     pub nudge: i16,
-    /// The lane's modulation axis (ADR 0007 §6). Stored, not yet consumed (0350).
+    /// The hit's offset from the groove's Y-centre curve (ADR 0007 §6), in lane
+    /// coordinates `[0, 1]` with [`Y_CENTRE`] as its zero — so `Y_CENTRE` is *on* the
+    /// curve and the distance from it is the offset. Its effective value is
+    /// [`Pattern::effective_y`], and its destination is velocity (0350).
+    ///
+    /// Not stored symmetrically with `f`, deliberately: X is a fraction of a discrete
+    /// slot, Y is an offset from a continuous curve. Symmetry would cost direct
+    /// manipulation — a Y stored per-slot would make a horizontal drag across a beat
+    /// marker jump vertically.
     pub y: f32,
     /// Per-hit macro vector — the hit's **colour** (ADR 0007 §7). Normalised
     /// `0.00–1.00` per channel; drives the track's three macro slots at trig time
@@ -863,12 +878,12 @@ const F_MAX: f32 = 1.0 - f32::EPSILON;
 // records that it got there by quantising rather than by being dropped on the
 // marker.
 
-/// The lane's Y-centre while the groove carries no control points.
+/// The middle of the lane strip, and the zero a hit's `y` is an offset from — see
+/// [`crate::grid::Y_CENTRE`], where the control points that make the curve live.
 ///
-/// ADR 0007 §6 puts Y-centre points on the beat markers and interpolates between
-/// them; 0350 stores them and 0356 edits them. Until then the curve is flat, so Y
-/// reads as absolute-in-lane and a quantise-Y pulls to the middle of the strip.
-pub const Y_CENTRE: f32 = 0.5;
+/// Re-exported here rather than moved, because a hit's `y` is the other half of the
+/// same constant and this is where hits are.
+pub use crate::grid::Y_CENTRE;
 
 impl Pattern {
     /// Move hit `index` to `(beat, sub)` with in-slot offset `(f, nudge)`,
@@ -945,29 +960,124 @@ impl Pattern {
     /// Independent of [`Pattern::quantise_x`], and deliberately so: X and Y are not
     /// stored symmetrically (ADR 0007 §6), so they are not corrected together. No
     /// re-sort — Y cannot move a hit in time.
+    ///
+    /// The target is [`Y_CENTRE`] and **not** [`Pattern::y_centre`], which looks like
+    /// the wrong constant and is the right one: `y` is the hit's offset *from* the
+    /// curve, so "on the curve" is `y == Y_CENTRE` wherever the curve happens to run.
+    /// That is the whole benefit of storing Y relative — quantise-Y does not need to
+    /// know where the curve is, and pulling a hit onto the contour cannot move it in
+    /// time or need re-running when the contour is edited.
     pub fn quantise_y(&mut self, index: usize, amount: f32) {
         if index >= self.n_hits {
             return;
         }
         let a = if amount.is_finite() { amount.clamp(0.0, 1.0) } else { 0.0 };
         let y = self.hits[index].y;
-        let c = self.y_centre(index);
-        self.hits[index].y = y + (c - y) * a;
+        self.hits[index].y = y + (Y_CENTRE - y) * a;
     }
 
-    /// The groove's Y-centre curve sampled at hit `index` (ADR 0007 §6). Flat at
-    /// [`Y_CENTRE`] until 0350 puts control points on the beat markers — every
-    /// reader goes through here so that lands as one change.
+    /// The groove's Y-centre curve sampled at hit `index`'s **resolved fire time**
+    /// (ADR 0007 §6, ticket 0350) — [`crate::grid::Grid::y_at`] over the control points
+    /// on the beat markers.
+    ///
+    /// Sampled at the fire time, after `f` and `nudge` have been applied, rather than
+    /// at the hit's grid position. That is what makes the curve indifferent to which
+    /// slot a hit belongs to, and it is what makes dragging a hit across a beat marker
+    /// continuous in Y: the hit's X moves smoothly, so its sample of the curve moves
+    /// smoothly, and there is no boundary at which the value can step.
+    ///
+    /// An index past the end of the lane answers [`Y_CENTRE`], not the curve's start —
+    /// `fire_beat` answers `0.0` for one, and reading the contour at the pattern origin
+    /// for a hit that does not exist would make [`Pattern::effective_y`] and this
+    /// disagree about the same non-hit.
     #[inline]
-    pub fn y_centre(&self, _index: usize) -> f32 {
-        Y_CENTRE
+    pub fn y_centre(&self, index: usize) -> f32 {
+        if index >= self.n_hits {
+            return Y_CENTRE;
+        }
+        self.grid.y_at(self.fire_beat(index))
     }
 
-    /// Set a hit's position on the lane's modulation axis, clamped to the strip.
+    /// Hit `index`'s **effective** position on the lane's modulation axis: the curve at
+    /// its fire time plus its own offset from that curve, clamped to the strip
+    /// (ADR 0007 §6).
+    ///
+    /// `curve(t) + hit.y` in the ADR's terms, with the offset carried in lane
+    /// coordinates around [`Y_CENTRE`] rather than around zero — see [`Y_CENTRE`] for
+    /// why. On the flat default curve that reduces to `hit.y` exactly, bit-for-bit.
+    ///
+    /// The clamp is the lane's own bound, not a fix for the curve: [`Grid::y_at`] is
+    /// already in range by construction, and it is the *hit's* offset that can push the
+    /// sum out of the strip.
+    #[inline]
+    pub fn effective_y(&self, index: usize) -> f32 {
+        if index >= self.n_hits {
+            return Y_CENTRE;
+        }
+        let y = self.hits[index].y;
+        let c = self.y_centre(index);
+        // The flat-curve identity is written out rather than left to `c - Y_CENTRE`
+        // cancelling: `y + (c - Y_CENTRE)` is `y` only to within rounding, and this is
+        // the case that has to stay exact.
+        if c == Y_CENTRE {
+            return y.clamp(0.0, 1.0);
+        }
+        (c + (y - Y_CENTRE)).clamp(0.0, 1.0)
+    }
+
+    /// [`Pattern::effective_y`] at a **global** hit index. The curve belongs to the
+    /// pattern, so it is the same on every pass and the local index is what samples it.
+    #[inline]
+    pub fn effective_y_at(&self, global: i64) -> f32 {
+        if self.n_hits == 0 {
+            return Y_CENTRE;
+        }
+        self.effective_y(global.rem_euclid(self.n_hits as i64) as usize)
+    }
+
+    /// The lane's Y contour as a **velocity scale** for the hit at global index
+    /// `global` — Y's destination, fixed at velocity for now (ADR 0007 §6/§Consequences,
+    /// ticket 0350 Notes; per-lane routable Y is a future ADR).
+    ///
+    /// Multiplicative and centred on [`Y_CENTRE`], which is ADR 0006's two-layer
+    /// velocity rule retained by ADR 0007: `hit.velocity` is the *compositional* accent
+    /// the user wrote, and the contour is the lane's *feel* scaling it. A hit on the
+    /// curve scales by exactly 1, so a lane nobody has contoured sounds as it did.
+    ///
+    /// Reaching the strip's ceiling therefore needs headroom in `hit.velocity`; a hit
+    /// already at 1.0 saturates on the way up. That is the honest consequence of
+    /// velocity being bounded, and it is the one direction the user can always recover
+    /// by lowering the hit — unlike an additive contour, which caps the same way *and*
+    /// stops scaling quiet hits.
+    #[inline]
+    pub fn y_velocity_scale(&self, global: i64) -> f32 {
+        self.effective_y_at(global) / Y_CENTRE
+    }
+
+    /// Set a hit's offset from the Y-centre curve, clamped to the strip. `Y_CENTRE`
+    /// puts the hit **on** the curve; the distance from `Y_CENTRE` is the offset.
     pub fn set_hit_y(&mut self, index: usize, y: f32) {
         if index < self.n_hits {
             self.hits[index].y = if y.is_finite() { y.clamp(0.0, 1.0) } else { Y_CENTRE };
         }
+    }
+
+    /// The Y-centre control point on beat marker `i` (ADR 0007 §6).
+    #[inline]
+    pub fn y_point(&self, i: usize) -> f32 {
+        self.grid.y_point(i)
+    }
+
+    /// Move the Y-centre control point on beat marker `i`, clamped to the strip.
+    ///
+    /// Goes straight at the grid rather than through [`Pattern::edit_grid`], and that
+    /// is not a bypass of the rule that door exists for: `edit_grid` re-establishes
+    /// fire order because a geometry edit **re-times** the hits, and a control point is
+    /// the one piece of geometry that carries no time at all. Nothing to re-sort.
+    ///
+    /// The editing surface for this is ticket 0356; this is the model's door.
+    pub fn set_y_point(&mut self, i: usize, y: f32) {
+        self.grid.set_y_point(i, y);
     }
 
     /// Set a hit's note + velocity. Hit-keyed, unlike [`Pattern::set`]: reassigning
@@ -1746,6 +1856,195 @@ mod tests {
                     prev = t;
                 }
             }
+        }
+    }
+
+    // ── Y-centre curve (ADR 0007 §6, ticket 0350) ─────────────────────────────
+
+    /// A lane whose contour rises across the bar, so the curve is a real function of
+    /// time rather than a constant that any wrong sampling would still pass.
+    fn contoured() -> Pattern {
+        let mut p = Pattern::default();
+        for (i, v) in [0.1_f32, 0.4, 0.5, 0.8, 0.9].iter().enumerate() {
+            p.set_y_point(i, *v);
+        }
+        p
+    }
+
+    /// AC: a flat curve reproduces today's behaviour — a hit's effective Y is its
+    /// stored `y`, exactly, for any `y` and anywhere in the lane.
+    #[test]
+    fn on_a_flat_curve_the_effective_y_is_the_stored_y() {
+        let mut rng = Rng(0x0350_F1A7);
+        let mut p = Pattern::default();
+        p.edit_grid(|g| g.set_swing(Swing::mpc(0.8)));
+        for i in 0..12 {
+            let y = rng.unit() as f32;
+            p.insert(Hit { y, f: rng.unit() as f32 * F_MAX, ..Hit::at(i / 4, (i % 4) as u8) });
+        }
+        for i in 0..p.len() {
+            assert_eq!(p.effective_y(i), p.hits()[i].y, "hit {i}");
+            assert_eq!(p.y_centre(i), Y_CENTRE, "hit {i}");
+            assert_eq!(p.y_velocity_scale(i as i64), p.hits()[i].y / Y_CENTRE, "hit {i}");
+        }
+        // And a hit sitting on the flat curve neither lifts nor cuts its velocity.
+        p.set_hit_y(0, Y_CENTRE);
+        assert_eq!(p.y_velocity_scale(0), 1.0);
+    }
+
+    /// AC: a hit's effective Y is the curve at its **resolved fire time** plus its own
+    /// offset from the curve.
+    ///
+    /// The claim with teeth is *where* the curve is sampled: at the fire time, after `f`
+    /// and `nudge`, and not at the hit's grid position. So the assertions that matter
+    /// are the ones separating those two — three hits sharing one subdivision marker at
+    /// different in-slot offsets must read three different centres, and none of them the
+    /// marker's. Restating `effective_y`'s own formula would pass whatever it sampled.
+    #[test]
+    fn the_effective_y_is_the_curve_at_the_fire_time_plus_the_offset() {
+        let mut p = contoured();
+        p.insert(Hit { y: 0.3, f: 0.0, ..Hit::at(1, 0) });
+        p.insert(Hit { y: 0.3, f: 0.45, ..Hit::at(1, 0) });
+        p.insert(Hit { y: 0.3, f: 0.9, ..Hit::at(1, 0) });
+        // All three hang off marker (1, 0), which is beat marker 1 — control point 0.4.
+        assert_eq!(p.grid().sub_pos(1, 0), p.grid().beat_marker(1));
+        assert_eq!(p.y_centre(0), 0.4, "the welded hit is on its control point");
+        for i in 1..3 {
+            assert!(
+                p.y_centre(i) > p.y_centre(i - 1),
+                "hit {i} shares a marker with hit {} and reads the same centre — the \
+                 curve is sampled at the grid position, not the fire time",
+                i - 1
+            );
+        }
+        // The offset is added to *that* sample: `y` is a displacement from the curve, so
+        // a hit `d` below centre sits `d` below the curve and moving it `2d` up moves
+        // its effective Y by `2d` — wherever the curve happens to be.
+        let centre = p.y_centre(1);
+        assert!((p.effective_y(1) - (centre - 0.2)).abs() < 1e-6, "0.3 is 0.2 below centre");
+        p.set_hit_y(1, 0.7);
+        assert!((p.effective_y(1) - (centre + 0.2)).abs() < 1e-6, "0.7 is 0.2 above it");
+        // And a hit sitting on the curve reads the curve itself, whatever it is doing,
+        // which is what carries into velocity.
+        p.set_hit_y(1, Y_CENTRE);
+        assert_eq!(p.effective_y(1), centre);
+        assert_eq!(p.y_velocity_scale(1), centre * 2.0);
+    }
+
+    /// AC: dragging a hit horizontally across a beat marker changes its effective Y
+    /// only by the curve's own continuous variation — sampled either side of the
+    /// marker at shrinking distance, the difference converges to zero.
+    ///
+    /// This is the load-bearing property of ADR 0007 §6 and the reason Y is not stored
+    /// per-slot: a step function here would leave a fixed gap no matter how small the
+    /// drag, so the user would move X and watch Y jump.
+    #[test]
+    fn a_drag_across_a_beat_marker_does_not_step_in_y() {
+        let mut p = contoured();
+        p.edit_grid(|g| {
+            g.set_swing(Swing::mpc(0.5));
+            g.set_beat_marker(2, 2.4);
+        });
+        for b in 1..p.grid().n_beats() {
+            // Either side of the marker: the last slot of beat `b - 1` at `f → 1`, and
+            // the first slot of beat `b` at `f → 0`. Different slots, different beats.
+            let k_before = p.grid().subs(b - 1) - 1;
+            let mut prev = f32::INFINITY;
+            for e in 1..=20 {
+                let f = 1.0 - 0.5_f32.powi(e);
+                let mut c = p;
+                c.insert(Hit { y: 0.7, f, ..Hit::at((b - 1) as u16, k_before as u8) });
+                let before = c.effective_y(c.len() - 1);
+                let mut c = p;
+                c.insert(Hit { y: 0.7, f: (1.0 - f) * 0.5, ..Hit::at(b as u16, 0) });
+                let after = c.effective_y(c.len() - 1);
+                let gap = (after - before).abs();
+                assert!(gap < 1e-6 || gap <= prev * 0.9, "marker {b}: gap {gap} at f={f}");
+                prev = gap;
+            }
+            assert!(prev < 1e-6, "marker {b}: Y stepped across the marker by {prev}");
+        }
+    }
+
+    /// AC: adding or removing a beat marker adds or removes its control point, and the
+    /// surviving points stay on their own markers.
+    ///
+    /// The insert preserves hits' absolute times (0349) and the curve's value at the
+    /// split, but **not** the curve everywhere: a new knot changes its neighbours'
+    /// tangents, so the segments either side of it reshape. That is inherent to an
+    /// interpolating spline and not worth fighting — what has to hold is that every
+    /// control point the user placed is still hit exactly, which is what a hit welded
+    /// to a surviving marker tests here.
+    #[test]
+    fn a_marker_edit_carries_the_control_points_and_leaves_the_hits_alone() {
+        let mut p = contoured();
+        for k in 0..4 {
+            p.set(k, 36.0, 1.0);
+            p.set(4 + k, 36.0, 1.0);
+        }
+        let times: Vec<f64> = (0..p.len()).map(|i| p.fire_beat(i)).collect();
+        let split = p.grid().y_at(1.5);
+
+        assert_eq!(p.insert_beat_marker(2, 1.5), Some(2));
+        assert_eq!(p.grid().n_beats(), 5);
+        assert_eq!(p.y_point(2), split, "the split did not inherit the curve");
+        assert_eq!(p.grid().y_at(1.5), split, "the curve moved where it was split");
+        for (i, was) in times.iter().enumerate() {
+            assert!((p.fire_beat(i) - was).abs() < 1e-9, "hit {i} moved in time");
+        }
+        // Hits 0 and 4 are welded to markers 0 and 1, which the insert did not touch.
+        assert_eq!(p.effective_y(0), 0.1, "hit welded to marker 0 came off its point");
+        assert_eq!(p.effective_y(4), 0.4, "hit welded to marker 1 came off its point");
+
+        assert!(p.delete_beat_marker(2));
+        assert_eq!(p.grid().n_beats(), 4);
+        for (i, v) in [0.1_f32, 0.4, 0.5, 0.8, 0.9].iter().enumerate() {
+            assert_eq!(p.y_point(i), *v, "control point {i} did not survive the merge");
+        }
+    }
+
+    /// Moving a beat marker sweeps the contour with it — the whole lane's shape as one
+    /// gesture (ADR 0007 §6), not just the marker's own neighbourhood.
+    ///
+    /// Two halves, and both are needed: a hit **welded** to the dragged marker stays on
+    /// its control point (the point moved with the marker), while a hit *between*
+    /// markers reads a different curve afterwards (the segment either side reshaped).
+    /// Only the first would pass on an implementation where the points were pinned to
+    /// absolute positions instead of to markers.
+    #[test]
+    fn a_marker_drag_sweeps_the_contour() {
+        let mut p = contoured();
+        p.set(4, 36.0, 1.0); // welded to beat 1, and on the curve (`y` defaults centred)
+        p.set(9, 36.0, 1.0); // mid-lane, at t = 2.25, between markers 2 and 3
+        assert_eq!(p.effective_y(0), 0.4, "a welded hit reads its own control point");
+        let mid_before = p.effective_y(1);
+
+        p.drag_beat_marker(1, 0.25);
+        assert_eq!(p.y_point(1), 0.4, "the control point's value changed on a drag");
+        assert_eq!(p.fire_beat(0), 0.25, "the welded hit did not follow its marker");
+        assert_eq!(p.effective_y(0), 0.4, "the hit came off its own control point");
+        assert_eq!(p.fire_beat(1), 2.25, "the far hit should not have moved in time");
+        assert!(
+            (p.effective_y(1) - mid_before).abs() > 1e-4,
+            "the drag did not sweep the contour past its own marker: {mid_before}"
+        );
+    }
+
+    /// The curve is out-of-range-proof at the model's edge: an empty lane and an index
+    /// past the end answer with the centre rather than reading off the end of an array.
+    #[test]
+    fn effective_y_is_defined_off_the_end_of_the_lane() {
+        let p = contoured();
+        assert!(p.is_empty());
+        assert_eq!(p.effective_y(0), Y_CENTRE);
+        assert_eq!(p.effective_y_at(-3), Y_CENTRE);
+        assert_eq!(p.y_velocity_scale(7), 1.0);
+        let mut p = p;
+        p.set(0, 36.0, 1.0);
+        assert_eq!(p.effective_y(9), Y_CENTRE);
+        // Global indices wrap onto the single hit, every pass alike.
+        for g in [-9_i64, -1, 0, 1, 8] {
+            assert_eq!(p.effective_y_at(g), p.effective_y(0), "pass {g}");
         }
     }
 }

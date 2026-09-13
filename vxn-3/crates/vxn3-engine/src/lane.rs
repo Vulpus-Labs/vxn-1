@@ -46,6 +46,11 @@ use crate::track_engine::TrigMod;
 pub struct TrigEvent {
     pub frame: usize,
     pub note: f32,
+    /// The hit's velocity **after** the lane's Y contour has scaled it (ADR 0007 §6,
+    /// 0350) — the resolved value, not the stored one. Applied at resolve time because
+    /// the contour is sampled at the fire time, and by the time this reaches
+    /// [`crate::track::Track::render_with_hits`] that is a frame offset in a block the
+    /// hit may not have resolved in.
     pub velocity: f32,
     /// This trig's own modulation (ADR 0007 §7): the hit's colour as a macro vector,
     /// and where it landed in its swung slot. `TrigMod::default()` for a trig with no
@@ -459,14 +464,21 @@ impl LaneState {
                 }
                 if self.fires(hit.probability) {
                     let modulation = trig_mod(pattern, &hit, fire, index);
+                    // The lane's Y contour, sampled at this hit's resolved fire time
+                    // and folded into velocity here rather than at the trig (ADR 0007
+                    // §6, 0350). Here because this is where the fire time exists: the
+                    // curve is a function of *when* the hit landed, and by the time a
+                    // `Pending` reaches `track.rs` that is a frame offset in some later
+                    // block. Resolved once per hit, never per sample.
+                    let y_scale = pattern.y_velocity_scale(index);
                     if hit.retrig.is_retrig() {
                         let span = pattern.retrig_span(index, hit.retrig.m);
-                        self.expand_retrig(&hit, fire, span, modulation);
+                        self.expand_retrig(&hit, fire, span, modulation, y_scale);
                     } else {
                         self.window.push(Pending {
                             beat: fire,
                             note: hit.note,
-                            velocity: hit.velocity,
+                            velocity: (hit.velocity * y_scale).clamp(0.0, 1.0),
                             modulation,
                             from_retrig: false,
                         });
@@ -494,7 +506,19 @@ impl LaneState {
     /// Every sub-hit carries the parent hit's `modulation` unchanged: a retrig is one
     /// hit's expansion, so its colour and its in-slot position are the *hit's*
     /// properties, not each sub-hit's. Only velocity ramps.
-    fn expand_retrig(&mut self, hit: &Hit, origin: f64, span: f64, modulation: TrigMod) {
+    ///
+    /// `y_scale` is the parent hit's Y contour, and it scales the ramp rather than
+    /// being resampled per sub-hit — for the same reason. A burst is one hit's height
+    /// on the lane, so the contour sets the burst's level and `vel_end` still shapes it
+    /// within that.
+    fn expand_retrig(
+        &mut self,
+        hit: &Hit,
+        origin: f64,
+        span: f64,
+        modulation: TrigMod,
+        y_scale: f32,
+    ) {
         self.window.drop_retrig_tail();
         let n = hit.retrig.n as u32;
         for j in 0..n {
@@ -506,12 +530,17 @@ impl LaneState {
             // `is_retrig()` gates `n >= 2`, but `Retrig.n` is public data and the
             // guard costs nothing — without it `n == 1` divides by zero and
             // velocity comes out NaN.
-            let velocity = if n <= 1 {
+            let ramp = if n <= 1 {
                 hit.velocity
             } else {
                 let f = j as f32 / (n - 1) as f32;
-                (hit.velocity + (hit.retrig.vel_end - hit.velocity) * f).clamp(0.0, 1.0)
+                hit.velocity + (hit.retrig.vel_end - hit.velocity) * f
             };
+            // One clamp, and after the contour: clamping the ramp first and then scaling
+            // it would let a hit's own headroom disappear before the contour could use
+            // it. It bounds the *range*, not the input — a `Hit` is public data and a
+            // stored NaN velocity still arrives as NaN, exactly as before 0350.
+            let velocity = (ramp * y_scale).clamp(0.0, 1.0);
             let u = j as f64 / n as f64;
             self.window.push(Pending {
                 beat: origin + hit.retrig.curve.position(u) * span,
@@ -1084,5 +1113,91 @@ mod tests {
         assert!(late > 0.5, "the nudge must show in the resolved fraction: {late}");
         // ½ MIN_SLOT into a 16th slot: 1/128 of a beat over a 1/4-beat slot.
         assert!((late - (0.5 + (1.0 / 128.0) / 0.25)).abs() < 1e-6, "{late}");
+    }
+
+    // ── Y contour → velocity (ADR 0007 §6, ticket 0350) ──────────────────────
+
+    /// AC: a flat curve reproduces today's behaviour — a lane nobody has contoured
+    /// fires at exactly the velocities it stores, bit-for-bit.
+    ///
+    /// The `assert_eq!` is the point. Every lane test in this file and every rendered
+    /// block in `tests/` is downstream of this scale factor, so "near enough" would
+    /// mean the contour quietly re-dithers every velocity in the product.
+    #[test]
+    fn a_flat_lane_fires_at_the_velocities_it_stores() {
+        let mut pat = Pattern::default();
+        for (i, s) in [0usize, 4, 8, 12].iter().enumerate() {
+            pat.set(*s, 36.0, 0.2 + 0.25 * i as f32);
+        }
+        let got = trigs(&pat, 4);
+        assert_eq!(got.len(), 4);
+        for (i, h) in got.iter().enumerate() {
+            assert_eq!(h.velocity, 0.2 + 0.25 * i as f32, "trig {i}");
+        }
+    }
+
+    /// A hit's height on the lane scales its velocity, multiplicatively and centred on
+    /// `Y_CENTRE` (ADR 0007 §6, and ADR 0006's two-layer velocity rule retained): the
+    /// stored velocity is the compositional accent, the contour is the feel over it.
+    #[test]
+    fn y_scales_the_trig_velocity_about_the_lane_centre() {
+        use crate::sequencer::Y_CENTRE;
+        let mut pat = Pattern::default();
+        for s in [0, 4, 8] {
+            pat.set(s, 36.0, 0.5);
+        }
+        pat.set_hit_y(0, Y_CENTRE); // on the curve
+        pat.set_hit_y(1, 0.25); // half a lane below it
+        pat.set_hit_y(2, 1.0); // the top of the strip
+        let got = trigs(&pat, 3);
+        assert_eq!(got.len(), 3);
+        assert_eq!(got[0].velocity, 0.5, "a hit on the curve is untouched");
+        assert_eq!(got[1].velocity, 0.25);
+        assert_eq!(got[2].velocity, 1.0);
+        // The ceiling saturates rather than wrapping or going silent — a hit already at
+        // full velocity has no headroom to lift into.
+        pat.set_hit_note(2, 36.0, 1.0);
+        assert_eq!(trigs(&pat, 3)[2].velocity, 1.0);
+    }
+
+    /// The **curve** reaches the trig, not only the hit's own offset: two identical
+    /// hits under a rising contour fire at different velocities.
+    #[test]
+    fn the_centre_curve_reaches_the_trig_velocity() {
+        let mut pat = Pattern::default();
+        for s in [0, 4, 8, 12] {
+            pat.set(s, 36.0, 0.5);
+        }
+        for (i, v) in [0.2_f32, 0.4, 0.6, 0.8, 1.0].iter().enumerate() {
+            pat.set_y_point(i, *v);
+        }
+        let got = trigs(&pat, 4);
+        assert_eq!(got.len(), 4);
+        for w in got.windows(2) {
+            assert!(w[1].velocity > w[0].velocity, "the contour did not rise: {got:?}");
+        }
+        // Welded hits sit on their own control points, and a stored velocity of exactly
+        // `Y_CENTRE` makes the scale cancel — so the emitted velocity *is* the point.
+        for (i, v) in [0.2_f32, 0.4, 0.6, 0.8].iter().enumerate() {
+            assert!((got[i].velocity - v).abs() < 1e-6, "trig {i}: {}", got[i].velocity);
+        }
+    }
+
+    /// A retrig is one hit's expansion, so the parent's contour scales the whole burst
+    /// and `vel_end` still shapes it within that — the ramp is not resampled per
+    /// sub-hit, which would make a burst climb the contour of its own accord.
+    #[test]
+    fn the_contour_scales_a_retrig_burst_without_reshaping_it() {
+        let mut pat = Pattern::default();
+        pat.set(0, 36.0, 1.0);
+        pat.set_retrig(0, Retrig { n: 4, m: 2, curve: RetrigCurve::Even, vel_end: 0.2 });
+        let flat = trigs(&pat, 2);
+        pat.set_hit_y(0, 0.25); // half the contour
+        let cut = trigs(&pat, 2);
+        assert_eq!(flat.len(), 4);
+        assert_eq!(cut.len(), 4);
+        for (i, (a, b)) in flat.iter().zip(&cut).enumerate() {
+            assert!((b.velocity - a.velocity * 0.5).abs() < 1e-6, "sub-hit {i}");
+        }
     }
 }

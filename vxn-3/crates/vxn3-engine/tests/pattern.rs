@@ -480,3 +480,101 @@ fn marker_edits_are_allocation_free() {
     assert_eq!(allocs, 0, "a marker edit allocated");
     assert!(taken.is_finite() && !p.is_empty());
 }
+
+/// Draw a Y-centre contour on every lane and scatter the hits off it (ADR 0007 §6,
+/// 0350), so no two hits sample the curve at the same place.
+fn contour(engine: &mut Engine) {
+    for t in 0..vxn3_engine::N_TRACKS {
+        for s in 0..16 {
+            engine.pattern_mut(t).set(s, 36.0, 1.0);
+        }
+        let p = engine.pattern_mut(t);
+        for i in 0..=p.grid().n_beats() {
+            p.set_y_point(i, ((i * 7 + t) % 11) as f32 / 10.0);
+        }
+        for i in 0..p.len() {
+            // Off the marker as well as off the curve: a hit on a marker would sample
+            // the curve at a control point, which is the one place the interpolation
+            // does no work.
+            p.set_offset(i, 0.37, 0);
+            p.set_hit_y(i, ((i * 3) % 10) as f32 / 10.0);
+        }
+    }
+}
+
+/// AC: the Y-centre curve is evaluated **at trig resolution and allocation-free**.
+///
+/// The worst case on purpose, for the same reason the colour trap picks one: every
+/// lane carries a non-flat contour and every hit sits off both its marker and the
+/// curve, so each trig runs a real segment lookup and a real cubic. A flat curve would
+/// prove nothing — it short-circuits.
+#[test]
+fn y_curve_resolution_is_allocation_free() {
+    let mut engine = Engine::new(SR, 512);
+    contour(&mut engine);
+    let bps = BPM / 60.0 / SR as f64;
+    let mut l = vec![0.0_f32; 512];
+    let mut r = vec![0.0_f32; 512];
+    engine.set_transport(Transport { playing: true, tempo_bpm: BPM, song_pos_beats: Some(0.0) });
+    engine.process_block(&mut l, &mut r); // prime
+
+    let mut energy = 0.0_f64;
+    let allocs = alloc_trap::count_allocs(|| {
+        for b in 1..300 {
+            engine.set_transport(Transport {
+                playing: true,
+                tempo_bpm: BPM,
+                song_pos_beats: Some((b * 512) as f64 * bps),
+            });
+            engine.process_block(&mut l, &mut r);
+            for &x in l.iter() {
+                energy += (x as f64) * (x as f64);
+            }
+        }
+    });
+    assert_eq!(allocs, 0, "the Y-centre curve allocated on the audio path");
+    assert!(energy > 1e-3, "the contoured lanes kept sounding, energy={energy}");
+    assert!(l.iter().chain(r.iter()).all(|x| x.is_finite()), "finite output");
+}
+
+/// End to end: the contour is *heard*. The same hits at the same velocities, differing
+/// only in the curve drawn over them, render differently — Y's destination is velocity
+/// (ADR 0007 §6 / ticket 0350 Notes), and this is the claim that it arrives.
+#[test]
+fn the_y_contour_changes_what_the_lane_sounds_like() {
+    fn render_bar(contoured: bool) -> Vec<f32> {
+        let mut engine = Engine::new(SR, 512);
+        for t in 0..vxn3_engine::N_TRACKS {
+            for s in 0..16 {
+                engine.pattern_mut(t).set(s, 36.0, 1.0);
+            }
+            if contoured {
+                let p = engine.pattern_mut(t);
+                for i in 0..=p.grid().n_beats() {
+                    p.set_y_point(i, i as f32 / p.grid().n_beats() as f32 * 0.5);
+                }
+            }
+        }
+        let bps = BPM / 60.0 / SR as f64;
+        let (mut l, mut r) = (vec![0.0_f32; 512], vec![0.0_f32; 512]);
+        let mut out = Vec::new();
+        for b in 0..96 {
+            engine.set_transport(Transport {
+                playing: true,
+                tempo_bpm: BPM,
+                song_pos_beats: Some((b * 512) as f64 * bps),
+            });
+            engine.process_block(&mut l, &mut r);
+            out.extend_from_slice(&l);
+        }
+        out
+    }
+    let plain = render_bar(false);
+    let shaped = render_bar(true);
+    let diff: f64 = plain
+        .iter()
+        .zip(&shaped)
+        .map(|(a, b)| ((a - b) as f64).abs())
+        .sum();
+    assert!(diff > 1e-3, "the contour changed nothing audible, diff={diff}");
+}
