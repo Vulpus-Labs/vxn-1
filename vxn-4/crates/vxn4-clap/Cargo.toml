@@ -35,3 +35,7 @@ clack-extensions = { workspace = true, features = [
 # In-process lifecycle test: drives the plugin through the real CLAP calls via
 # clack-host without dlopen, so a panic surfaces with a backtrace.
 clack-host = { workspace = true }
+# Re-declared with `clack-host` so the *host* side of the extensions compiles
+# for the smoke test — `PluginState::save`/`load` is how the state round trip
+# (0384) goes through the real CLAP calls rather than around them.
+clack-extensions = { workspace = true, features = ["state", "clack-host"] }

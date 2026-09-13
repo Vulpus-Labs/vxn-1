@@ -7,7 +7,7 @@
 //!
 //! Structurally the smallest of the four shells. vxn-2 and vxn-3 carry a
 //! controller, a view-event pump and a dirty bitset because they have pages to
-//! drive; vxn-4 has a param cache and an engine.
+//! drive; vxn-4 has a param cache, a patch store and an engine.
 //!
 //! ## Where parameters are applied
 //!
@@ -44,7 +44,7 @@ use std::io::Write as _;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use vxn_core_clap::{EngineNotes, batch_range, dispatch_notes};
-use vxn4_engine::{Engine, HOST_LATENCY_SAMPLES};
+use vxn4_engine::{Engine, HOST_LATENCY_SAMPLES, SharedParams};
 
 pub mod params;
 pub mod state;
@@ -81,6 +81,7 @@ impl DefaultPluginFactory for VxnPlugin {
     fn new_shared(_host: HostSharedHandle) -> Result<VxnShared, PluginError> {
         Ok(VxnShared {
             params: ParamCache::new(),
+            store: SharedParams::new(),
             sample_rate: AtomicU32::new(48_000.0_f32.to_bits()),
         })
     }
@@ -93,16 +94,25 @@ impl DefaultPluginFactory for VxnPlugin {
     }
 }
 
-/// Cross-thread state: the host-facing parameter values, and the activated
-/// sample rate.
+/// Cross-thread state: the host-facing parameter values, the authoritative
+/// patch, and the activated sample rate.
 ///
-/// The cache is the seam between threads. The audio thread writes it as
-/// automation lands; the main thread reads it for `get_value` and state save,
-/// and writes it on an inactive flush — which `activate` then replays into a
-/// fresh engine, so automation set while the plugin was inactive is in effect
+/// The cache is the seam for the **eleven host params**. The audio thread writes
+/// it as automation lands; the main thread reads it for `get_value` and state
+/// save, and writes it on an inactive flush — which `activate` then replays into
+/// a fresh engine, so automation set while the plugin was inactive is in effect
 /// from the first block rather than the first event.
+///
+/// The store is the seam for the **patch** (0382): the main thread owns it, the
+/// audio thread reads it through [`SharedParams::sync`] and never writes it.
+/// Nothing in this shell edits a patch field yet — the faceplate is 0387 and the
+/// controller 0386 — so today it is written only by `clap.state` restore and
+/// read only by `clap.state` save. [`crate::state`] carries the decision about
+/// which side owns the patch index, which is the question having both of these
+/// raises.
 pub struct VxnShared {
     params: ParamCache,
+    store: SharedParams,
     sample_rate: AtomicU32, // f32 bits
 }
 
@@ -255,6 +265,15 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
         shared.sample_rate.store(sr.to_bits(), Ordering::Relaxed);
         let mut engine = Engine::new(sr);
         seed_from_cache(&mut engine, shared);
+        // And the patch the store holds, which after a `clap.state` restore is
+        // not the factory entry a fresh engine built itself. A no-op when the
+        // two already agree, which is every activate but the first after a
+        // project load.
+        //
+        // The consumer side of the store, run here rather than on the audio
+        // thread — which does not exist yet, so the single-consumer discipline
+        // the ring rests on is not in question.
+        shared.store.sync(&mut engine);
         Ok(Self {
             engine,
             shared,
@@ -273,6 +292,12 @@ impl<'a> PluginAudioProcessor<'a, VxnShared, VxnMainThread<'a>> for VxnAudioProc
         mut audio: Audio,
         events: Events,
     ) -> Result<ProcessStatus, PluginError> {
+        // Adopt anything the main thread has published since the last block:
+        // the topology ring first, then the values it implies. Wait-free and
+        // allocation-free on every path, and a single relaxed load in the
+        // common case where there is nothing to say.
+        self.shared.store.sync(&mut self.engine);
+
         let mut output_port = audio
             .output_port(0)
             .ok_or(PluginError::Message("No output port"))?;
@@ -427,8 +452,10 @@ impl PluginAudioProcessorParams for VxnAudioProcessor<'_> {
 
 impl PluginStateImpl for VxnMainThread<'_> {
     fn save(&mut self, output: &mut OutputStream) -> Result<(), PluginError> {
+        let blob = state::save(&self.shared.params, &self.shared.store)
+            .map_err(|_| PluginError::Message("state serialize failed"))?;
         output
-            .write_all(&state::save(&self.shared.params))
+            .write_all(&blob)
             .map_err(|_| PluginError::Message("state save failed"))
     }
 
@@ -436,12 +463,17 @@ impl PluginStateImpl for VxnMainThread<'_> {
         let mut blob = Vec::new();
         std::io::Read::read_to_end(input, &mut blob)
             .map_err(|_| PluginError::Message("state read failed"))?;
-        state::load(&blob, &self.shared.params)
+        state::load(&blob, &self.shared.params, &self.shared.store)
             .map_err(|_| PluginError::Message("state parse failed"))?;
-        // The audio thread picks this up on its next `activate`. A load while
-        // active leaves the running engine on the old values until then, which
-        // is what every host does anyway — `clap.state` load is specified as a
-        // deactivated-plugin operation.
+        // The **patch** crosses immediately, as one snapshot on the topology
+        // ring, so a load while active is picked up on the next block.
+        //
+        // The eleven host params still wait for `activate`, which is what every
+        // host does anyway — `clap.state` load is specified as a
+        // deactivated-plugin operation. That the two halves land at different
+        // moments is not a coherence hole: each is latest-wins on its own
+        // channel, neither can be seen partly applied, and the second converges
+        // on the same state the first did.
         Ok(())
     }
 }
@@ -476,6 +508,7 @@ mod tests {
     fn a_fresh_engine_is_seeded_from_the_cache() {
         let shared = VxnShared {
             params: ParamCache::new(),
+            store: SharedParams::new(),
             sample_rate: AtomicU32::new(48_000.0_f32.to_bits()),
         };
         shared.params.set(0, 4.0); // web
@@ -520,6 +553,7 @@ mod tests {
     fn a_hostile_param_write_is_clamped_before_the_engine() {
         let shared = VxnShared {
             params: ParamCache::new(),
+            store: SharedParams::new(),
             sample_rate: AtomicU32::new(48_000.0_f32.to_bits()),
         };
         let mut engine = Engine::new(48_000.0);

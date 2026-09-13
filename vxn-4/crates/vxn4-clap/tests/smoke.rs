@@ -11,6 +11,7 @@
 //! factory, descriptor, ports, param table, event dispatch and process wiring
 //! are correct together — which is what "loads in a host" actually means.
 
+use clack_extensions::state::PluginState;
 use clack_host::events::event_types::{NoteOnEvent, ParamValueEvent};
 use clack_host::events::{Match, Pckn};
 use clack_host::factory::plugin::PluginFactory;
@@ -294,6 +295,145 @@ fn parameters_survive_a_reactivate_without_being_resent() {
     assert!(
         (after / before - 1.0).abs() < 0.25,
         "state was not carried across activate ({before} -> {after})"
+    );
+}
+
+// ── state ───────────────────────────────────────────────────────────────────
+
+/// One note, rendered for sixteen blocks; the left channel, concatenated.
+///
+/// Samples rather than a peak: two instruments can share a peak and be
+/// different sounds, and what a restored project has to be is the *same* sound.
+fn render_a_note(processor: &mut StartedPluginAudioProcessor<TestHost>) -> Vec<f32> {
+    let mut evs = EventBuffer::with_capacity(1);
+    note_on(&mut evs, 60, 0.8, 0);
+    let empty = EventBuffer::with_capacity(0);
+    let mut all = Vec::new();
+    let mut steady = 0u64;
+    for b in 0..16 {
+        let mut l = vec![0.0f32; MAX_FRAMES as usize];
+        let mut r = vec![0.0f32; MAX_FRAMES as usize];
+        process_one(
+            processor,
+            if b == 0 { &evs } else { &empty },
+            &mut l,
+            &mut r,
+            steady,
+        );
+        steady += MAX_FRAMES as u64;
+        all.extend_from_slice(&l);
+    }
+    all
+}
+
+/// An instance driven somewhere non-default, saved: the blob a host would put
+/// in its project, and what that instance sounds like.
+fn saved_project(entry: &PluginEntry) -> (Vec<u8>, Vec<f32>) {
+    let mut instance = instantiate(entry);
+
+    let mut processor = activate_started(&mut instance);
+    let mut evs = EventBuffer::with_capacity(3);
+    param(&mut evs, 0, 5.0, 0); // patch: grind
+    param(&mut evs, 2, 0.4, 0); // master gain, well down
+    param(&mut evs, params::N_FIXED + 2, 0.8, 0); // macro 3 open
+    peak_over(&mut processor, &evs, 2);
+    instance.deactivate(processor.stop_processing());
+
+    let mut blob = Vec::new();
+    {
+        let mut handle = instance.plugin_handle();
+        let state = handle
+            .get_extension::<PluginState>()
+            .expect("state extension");
+        state.save(&mut handle, &mut blob).expect("state save");
+    }
+
+    let mut processor = activate_started(&mut instance);
+    let sound = render_a_note(&mut processor);
+    instance.deactivate(processor.stop_processing());
+    (blob, sound)
+}
+
+/// Load `blob` into a fresh instance and render the same note.
+fn open_and_render(entry: &PluginEntry, blob: &[u8]) -> Vec<f32> {
+    let mut instance = instantiate(entry);
+    {
+        let mut handle = instance.plugin_handle();
+        let state = handle
+            .get_extension::<PluginState>()
+            .expect("state extension");
+        state
+            .load(&mut handle, &mut &blob[..])
+            .expect("state load failed");
+    }
+    let mut processor = activate_started(&mut instance);
+    render_a_note(&mut processor)
+}
+
+/// A saved project reopens as the same instrument, through the real `state`
+/// calls and a real second instance.
+///
+/// What needs a host is the path: save → blob → a *different* instance's load →
+/// the store → the topology ring → `activate` → the renderer. That the payload
+/// carries a patch the index could not name is a claim about the format and is
+/// pinned by `state.rs`'s unit tests — nothing in this shell can edit a patch
+/// field yet, so a host cannot put the two in disagreement from out here.
+#[test]
+fn a_saved_project_reopens_as_the_same_instrument() {
+    let entry = load_entry();
+    let (blob, want) = saved_project(&entry);
+
+    // The payload is there, and it is the preset text rather than a second
+    // binary layout.
+    let header = 8 + TOTAL_PARAMS * 4;
+    assert!(blob.len() > header + 4, "v2 saved no payload");
+    let text = String::from_utf8_lossy(&blob[header + 4..]);
+    assert!(
+        text.starts_with("schema = 1"),
+        "payload is not a preset:\n{text}"
+    );
+    assert!(
+        text.contains("[params]"),
+        "payload carries no patch:\n{text}"
+    );
+
+    assert!(
+        want.iter().any(|s| s.abs() > 0.001),
+        "the instance that was saved rendered silence"
+    );
+    assert_eq!(open_and_render(&entry, &blob), want);
+}
+
+/// An old project must not fail to open. Same state, written the way a build
+/// before 0384 wrote it — the header and the eleven floats, no payload — and it
+/// has to open to the same instrument, because the patch its index names is
+/// exactly what that blob meant.
+#[test]
+fn a_v1_project_blob_still_opens() {
+    let entry = load_entry();
+    let (v2, want) = saved_project(&entry);
+
+    let mut v1 = v2[..8 + TOTAL_PARAMS * 4].to_vec();
+    v1[4..6].copy_from_slice(&1u16.to_le_bytes());
+    assert_eq!(open_and_render(&entry, &v1), want);
+}
+
+/// A blob the host hands back damaged must be refused, not partly applied.
+#[test]
+fn a_truncated_blob_is_refused_by_the_host_call() {
+    let entry = load_entry();
+    let (blob, _) = saved_project(&entry);
+
+    let mut instance = instantiate(&entry);
+    let mut handle = instance.plugin_handle();
+    let state = handle
+        .get_extension::<PluginState>()
+        .expect("state extension");
+    assert!(
+        state
+            .load(&mut handle, &mut &blob[..blob.len() - 8])
+            .is_err(),
+        "a truncated blob loaded"
     );
 }
 

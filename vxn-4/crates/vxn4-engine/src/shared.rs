@@ -86,7 +86,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use crate::engine::Engine;
 use crate::matrix::Matrix;
 use crate::params::{self, EgField, N_PARAMS, OpField, Param, ParamId, is_patch_field, patch_ids};
-use crate::patch::{PatchTables, patch};
+use crate::patch::{Patch, PatchTables, patch};
 use crate::topology::{SlotEdit, TOPO_RING_SLOTS, TopoMsg, TopologyRing};
 
 /// What one drain of the topology ring did.
@@ -261,6 +261,30 @@ impl SharedParams {
     /// the preset codec, the editor's echo.
     pub fn matrix_snapshot(&self) -> Matrix {
         *self.lock()
+    }
+
+    /// The whole authoritative patch, as one [`Patch`]. **Main thread** — the
+    /// preset codec and `clap.state` both want all of it rather than a field at
+    /// a time, and neither can reach it through [`Self::write_tables`], which
+    /// deliberately fills the audio thread's name-less mirror.
+    ///
+    /// Topology first and values second, because that is how the two
+    /// authorities rank: [`Self::matrix_snapshot`] owns a slot's endpoints and
+    /// curves, `matrix-NN-depth` owns its depth. Taking them in this order
+    /// overwrites the depth the mirror happens to be carrying rather than
+    /// trusting it — the same split [`crate::topology::apply_snapshot`] makes,
+    /// read from the other side.
+    ///
+    /// [`Patch::name`] comes back empty. A store holds numbers; what they are
+    /// called belongs to whoever put them there — a preset's `[meta]`, or the
+    /// factory bank's label.
+    pub fn patch_snapshot(&self) -> Patch {
+        let mut p = crate::preset::default_patch();
+        p.matrix = self.matrix_snapshot();
+        for id in patch_ids() {
+            params::set_value(&mut p, id, self.get(id));
+        }
+        p
     }
 
     /// Apply one topology edit and post it to the audio thread. Out-of-range
@@ -644,6 +668,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The main thread's read-back of the whole patch. Both halves have to
+    /// arrive together, and the depths have to come from the atomics rather
+    /// than from the mirror's copy of them — a snapshot that read depth off the
+    /// topology table would hand `state.save` a number the store stopped
+    /// believing several edits ago.
+    #[test]
+    fn a_patch_snapshot_reads_the_values_and_the_topology_together() {
+        let sp = SharedParams::new();
+        sp.load_factory(5); // grind
+        let p = sp.patch_snapshot();
+        for id in patch_ids() {
+            assert_eq!(
+                params::value_of(&p, id).unwrap().to_bits(),
+                sp.get(id).to_bits(),
+                "{}",
+                params::desc(id).unwrap().name
+            );
+        }
+        assert_eq!(p.matrix, sp.matrix_snapshot());
+
+        // A value edit and a topology edit land in the same snapshot, each from
+        // its own channel.
+        sp.set(encode(Param::MatrixDepth { slot: 0 }), -0.5);
+        sp.edit_slot(source_edit(0, SourceId::Macro7));
+        let p = sp.patch_snapshot();
+        assert_eq!(p.matrix.slots[0].depth, -0.5);
+        assert_eq!(p.matrix.slots[0].source, SourceId::Macro7);
     }
 
     #[test]
