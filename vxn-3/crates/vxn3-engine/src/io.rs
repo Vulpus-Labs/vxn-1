@@ -28,6 +28,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::engine::N_TRACKS;
 use crate::flavour::Flavour;
+use crate::grid::Swing;
 use crate::sequencer::{Lock, LockParam, Pattern, Retrig};
 use crate::track_engine::EngineKind;
 
@@ -88,6 +89,45 @@ pub enum EngineCommand {
     SetGridBeats { track: u8, beats: u8 },
     /// Set a lane's subdivisions per beat — what `step_beats` was, as geometry.
     SetGridSubs { track: u8, subs: u8 },
+    /// Drag beat marker `marker` to `pos` beats, **preserving relative position**:
+    /// slot `marker - 1` stretches and slot `marker` squashes at once, so hits
+    /// rubber-band in both directions from one grab (ADR 0007 §5, ticket 0354).
+    ///
+    /// `pos` is a request, not a write. It goes through
+    /// [`crate::Grid::set_beat_marker`]'s clamp, which is the only path into the
+    /// marker array — so no editor can name a position the geometry cannot take, and
+    /// the pinned outer markers refuse this outright.
+    DragBeatMarker { track: u8, marker: u8, pos: f64 },
+    /// Insert a beat marker at `pos`, taking index `marker` and splitting the slot
+    /// before it — **preserving absolute time**, so the split moves nothing on
+    /// screen. The opposite rule to a drag, and deliberately a separate verb.
+    ///
+    /// `subs` **states the new beat's sub-count override outright** (`0` = none),
+    /// applied inside the same absolute-preserving edit. It rides the insert rather
+    /// than following as a [`Self::SetBeatSubs`] because that verb takes the
+    /// *relative* door: as two commands they compose to "preserve times, then move
+    /// everything in that beat", which is how undoing a marker delete came to
+    /// displace the hits it promised not to touch.
+    ///
+    /// Stated rather than defaulted, because the two readings of "unset" differ and
+    /// the editor mirrors this command locally. [`crate::Grid::insert_beat_marker`]
+    /// gives the new beat the *split beat's* override, so "leave it alone" and "clear
+    /// it" are different outcomes on a tuplet — and a page assuming one while the
+    /// engine took the other would part company with the model over a plain insert.
+    /// An ordinary insert therefore sends what the split inherits; only undo of a
+    /// delete sends something else, to put back the override the merge ate.
+    InsertBeatMarker { track: u8, marker: u8, pos: f64, subs: u8 },
+    /// Delete beat marker `marker`, merging the slots either side of it — absolute-
+    /// preserving like the insert, so the merge moves nothing on screen either.
+    DeleteBeatMarker { track: u8, marker: u8 },
+    /// Set a lane's swing warp: shape, amount and the period it spans (0347, 0365).
+    /// A geometry edit like a marker drag — the subdivision markers move and the
+    /// hits welded to them (`f = 0`) move exactly with them.
+    SetSwing { track: u8, swing: Swing },
+    /// Set or clear one beat's subdivision override — `subs: 0` clears it back to the
+    /// lane default. This is where tuplets live (ADR 0007 §2): three in an otherwise
+    /// 16ths lane, with no separate tuplet concept.
+    SetBeatSubs { track: u8, beat: u8, subs: u8 },
     /// Set a track's linear gain.
     SetGain { track: u8, gain: f32 },
     /// Set a track's pan (-1..1).
@@ -153,6 +193,11 @@ impl EngineCommand {
             | Self::QuantiseHitY { track, .. }
             | Self::SetGridBeats { track, .. }
             | Self::SetGridSubs { track, .. }
+            | Self::DragBeatMarker { track, .. }
+            | Self::InsertBeatMarker { track, .. }
+            | Self::DeleteBeatMarker { track, .. }
+            | Self::SetSwing { track, .. }
+            | Self::SetBeatSubs { track, .. }
             | Self::SetGain { track, .. }
             | Self::SetPan { track, .. }
             | Self::SetMacro { track, .. }
@@ -239,6 +284,26 @@ pub fn apply_pattern_command(pattern: &mut Pattern, cmd: EngineCommand) -> bool 
         EngineCommand::QuantiseHitY { hit, amount, .. } => pattern.quantise_y(hit as usize, amount),
         EngineCommand::SetGridBeats { beats, .. } => pattern.set_grid_beats(beats as usize),
         EngineCommand::SetGridSubs { subs, .. } => pattern.set_grid_subs(subs as u32),
+        // The marker verbs (0354). Drag is relative and insert/delete absolute
+        // (ADR 0007 §5), which is why they are three verbs rather than one with a
+        // flag: the asymmetry belongs in the vocabulary, not in a parameter.
+        EngineCommand::DragBeatMarker { marker, pos, .. } => {
+            pattern.drag_beat_marker(marker as usize, pos);
+        }
+        EngineCommand::InsertBeatMarker { marker, pos, subs, .. } => {
+            let subs = if subs == 0 { None } else { Some(subs as u32) };
+            pattern.insert_beat_marker_with_subs(marker as usize, pos, subs);
+        }
+        EngineCommand::DeleteBeatMarker { marker, .. } => {
+            pattern.delete_beat_marker(marker as usize);
+        }
+        // Swing and sub-count take the *relative* door, like a drag: the markers move
+        // and the hits hanging off them move with them, so a welded hit stays welded
+        // across a swing sweep instead of being left behind at an absolute time.
+        EngineCommand::SetSwing { swing, .. } => pattern.edit_grid(|g| g.set_swing(swing)),
+        EngineCommand::SetBeatSubs { beat, subs, .. } => pattern.edit_grid(|g| {
+            g.set_beat_subs(beat as usize, if subs == 0 { None } else { Some(subs as u32) })
+        }),
         EngineCommand::SetLock {
             hit, param, lock, ..
         } => pattern.set_lock(hit as usize, param, lock),
@@ -731,6 +796,111 @@ mod tests {
         assert_eq!(store.get(0).len(), 3);
         // Other lanes are untouched — the routing is per track.
         assert!(store.get(1).is_empty());
+    }
+
+    /// AC (0354): the marker verbs travel as deltas like every other edit, and the
+    /// two rules stay opposite through the queue — a drag rubber-bands the hits in
+    /// the slots either side, an insert leaves every hit exactly where it was.
+    #[test]
+    fn marker_commands_keep_drag_relative_and_insert_absolute() {
+        let store = PatternStore::new();
+        let mut engine_copy = Pattern::default();
+        fn both(store: &PatternStore, copy: &mut Pattern, c: EngineCommand) {
+            assert!(store.apply(c), "{c:?} is a lane edit");
+            assert!(apply_pattern_command(copy, c));
+        }
+        // One hit welded to a marker, one half way through the slot after it.
+        both(&store, &mut engine_copy, EngineCommand::AddHit {
+            track: 0, beat: 1, sub: 0, f: 0.0, nudge: 0, y: 0.5, note: 36.0, velocity: 1.0,
+        });
+        both(&store, &mut engine_copy, EngineCommand::AddHit {
+            track: 0, beat: 1, sub: 2, f: 0.5, nudge: 0, y: 0.5, note: 36.0, velocity: 1.0,
+        });
+        let welded = store.get(0).fire_beat(0);
+        let placed = store.get(0).fire_beat(1);
+
+        // Drag beat marker 1 late: both hits hang off slots the drag reshaped, so
+        // both move — and not one hit record was written.
+        both(&store, &mut engine_copy, EngineCommand::DragBeatMarker { track: 0, marker: 1, pos: 1.5 });
+        let p = store.get(0);
+        assert_eq!(p.grid().beat_marker(1), 1.5);
+        assert!(p.fire_beat(0) > welded, "the welded hit rode its marker");
+        assert!(p.fire_beat(1) > placed, "…and so did the one placed in the slot");
+        assert_eq!(p.fire_beat(0), 1.5, "welded means welded: exactly on the marker");
+        assert_eq!(p.hits(), engine_copy.hits(), "one implementation, two copies");
+
+        // Insert a marker mid-slot: the opposite rule, so nothing moves. The index
+        // is the one that *splits the slot the position is in* — `locate(pos).beat + 1`,
+        // which is what the editor sends; naming any other index would reach the
+        // clamp and reshape a slot the user did not point at.
+        let (a, b) = (p.fire_beat(0), p.fire_beat(1));
+        both(&store, &mut engine_copy, EngineCommand::InsertBeatMarker { track: 0, marker: 3, pos: 2.5, subs: 0 });
+        let p = store.get(0);
+        assert_eq!(p.grid().n_beats(), 5);
+        assert_eq!(p.grid().beat_marker(3), 2.5);
+        assert_eq!((p.fire_beat(0), p.fire_beat(1)), (a, b), "an insert moves nothing");
+        // …and deleting it again is equally inert.
+        both(&store, &mut engine_copy, EngineCommand::DeleteBeatMarker { track: 0, marker: 3 });
+        let p = store.get(0);
+        assert_eq!(p.grid().n_beats(), 4);
+        assert_eq!((p.fire_beat(0), p.fire_beat(1)), (a, b), "a delete moves nothing");
+        assert_eq!(p.hits(), engine_copy.hits());
+    }
+
+    /// AC (0354): a drag is a *request*. The editor never writes a marker position,
+    /// so a command asking for one past a neighbour clamps at `MIN_SLOT` rather than
+    /// producing a degenerate slot, and the pinned outer markers refuse it outright.
+    #[test]
+    fn a_marker_drag_command_clamps_instead_of_crossing() {
+        let store = PatternStore::new();
+        assert!(store.apply(EngineCommand::DragBeatMarker { track: 0, marker: 1, pos: 9.0 }));
+        assert_eq!(store.get(0).grid().beat_marker(1), 2.0 - crate::grid::MIN_SLOT);
+        assert!(store.apply(EngineCommand::DragBeatMarker { track: 0, marker: 1, pos: -5.0 }));
+        assert_eq!(store.get(0).grid().beat_marker(1), crate::grid::MIN_SLOT);
+        // The outer markers are the pattern bounds; a drag of one is inert.
+        for (marker, expect) in [(0_u8, 0.0), (4, 4.0)] {
+            assert!(store.apply(EngineCommand::DragBeatMarker { track: 0, marker, pos: 1.5 }));
+            assert_eq!(store.get(0).grid().beat_marker(marker as usize), expect);
+        }
+    }
+
+    /// AC (0354): swing is a geometry edit, and it takes the relative door — a hit at
+    /// `f = 0` stays welded to its subdivision marker throughout a sweep, which is the
+    /// behaviour the whole storage model exists to give.
+    #[test]
+    fn a_swing_sweep_keeps_welded_hits_on_their_markers() {
+        let store = PatternStore::new();
+        for sub in [1_u8, 2, 3] {
+            assert!(store.apply(EngineCommand::AddHit {
+                track: 0, beat: 0, sub, f: 0.0, nudge: 0, y: 0.5, note: 36.0, velocity: 1.0,
+            }));
+        }
+        for amount in [0.0, 0.25, 0.5, 1.0, -0.6] {
+            let swing = crate::grid::Swing::mpc(amount);
+            assert!(store.apply(EngineCommand::SetSwing { track: 0, swing }));
+            let p = store.get(0);
+            for (i, h) in p.hits().iter().enumerate() {
+                assert_eq!(
+                    p.fire_beat(i),
+                    p.grid().sub_pos(h.beat as usize, h.sub as u32),
+                    "hit {i} came off its marker at swing {amount}"
+                );
+            }
+        }
+        // …and a per-beat override is the tuplet: three evenly spaced subdivisions
+        // inside one beat of an otherwise-16ths lane.
+        assert!(store.apply(EngineCommand::SetSwing {
+            track: 0,
+            swing: crate::grid::Swing::straight(),
+        }));
+        assert!(store.apply(EngineCommand::SetBeatSubs { track: 0, beat: 1, subs: 3 }));
+        let g = *store.get(0).grid();
+        assert_eq!(g.subs(1), 3);
+        assert_eq!(g.sub_pos(1, 1), 1.0 + 1.0 / 3.0);
+        assert_eq!(g.subs(0), 4, "only the beat named");
+        // `0` clears the override rather than meaning "no subdivisions".
+        assert!(store.apply(EngineCommand::SetBeatSubs { track: 0, beat: 1, subs: 0 }));
+        assert_eq!(store.get(0).grid().sub_override(1), None);
     }
 
     /// Mix, macro and master verbs are not lane edits: they belong to `Track` and

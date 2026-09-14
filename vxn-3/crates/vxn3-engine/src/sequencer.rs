@@ -724,8 +724,39 @@ impl Pattern {
     /// marker ends up — an undo record wants `grid().beat_marker(i)` afterwards, not
     /// the `pos` it asked for.
     pub fn insert_beat_marker(&mut self, i: usize, pos: f64) -> Option<usize> {
+        self.insert_beat_marker_with_subs(i, pos, None)
+    }
+
+    /// Insert a beat marker **and** set the new beat's sub-count override, as one
+    /// absolute-time-preserving edit.
+    ///
+    /// This exists because the two cannot be done as two commands. An insert takes
+    /// the absolute door (hits hold their time, `(beat, sub, f)` is rebuilt under
+    /// them); [`Pattern::set_beat_subs`] takes the relative door by design (hits hold
+    /// `(beat, sub, f)` and the grid moves under them). Run in sequence they compose
+    /// to "preserve times, then move everything in that beat" — which is how undoing
+    /// a marker delete came to displace hits by a third of a slot while the status
+    /// line claimed nothing had moved.
+    ///
+    /// Inside one sandwich the combined change is what times are preserved across, so
+    /// restoring a deleted triplet puts both the marker and its sub-count back with
+    /// every hit exactly where it was. `subs` is `None` for "no override", matching
+    /// [`Grid::set_beat_subs`].
+    pub fn insert_beat_marker_with_subs(
+        &mut self,
+        i: usize,
+        pos: f64,
+        subs: Option<u32>,
+    ) -> Option<usize> {
         let mut taken = None;
-        self.edit_grid_preserving_times(|g| taken = g.insert_beat_marker(i, pos));
+        self.edit_grid_preserving_times(|g| {
+            taken = g.insert_beat_marker(i, pos);
+            // Only on success: a refused insert must not leave a sub-count change
+            // behind, or a no-op edit silently retimes a beat.
+            if let Some(at) = taken {
+                g.set_beat_subs(at, subs);
+            }
+        });
         taken
     }
 
@@ -1518,6 +1549,98 @@ mod tests {
         // The hits in the split slot really were re-derived — the ones above it rode
         // up a beat index, and the ones inside it changed subdivision.
         assert_ne!(p.hits(), before.hits());
+    }
+
+    /// AC: undoing a marker delete restores the override *and* leaves every hit where
+    /// it was — the two together, which is the part that was wrong.
+    ///
+    /// A delete merges two slots and discards the right beat's sub-count override, so
+    /// the undo has to put both the marker and the override back. Done as two commands
+    /// — insert, then `set_beat_subs` — it could not: the insert takes the absolute
+    /// door and the sub-count takes the relative one, so the pair composed to "preserve
+    /// times, then move everything in that beat", displacing hits by a third of a slot
+    /// (~55 ms at 120 bpm) while the editor's status line claimed nothing had moved.
+    /// The override rides the insert now, inside one sandwich.
+    #[test]
+    fn undoing_a_delete_restores_the_override_without_moving_a_hit() {
+        let mut p = Pattern::default();
+        p.edit_grid(|g| g.set_beat_subs(2, Some(3)));
+        for slot in 0..(p.total_subs().min(16) as usize) {
+            p.set(slot, slot as f32, 1.0);
+        }
+        // A hit *inside* the overridden beat, off its marker — the one a relative
+        // sub-count change moves and an absolute one does not.
+        p.insert(Hit { f: 0.5, note: 90.0, ..Hit::at(2, 1) });
+        let before = p;
+        let pos = before.grid().beat_marker(2);
+        let ovr = before.grid().sub_override(2);
+        assert_eq!(ovr, Some(3), "the beat under test really is a triplet");
+
+        assert!(p.delete_beat_marker(2));
+        assert_eq!(p.grid().sub_override(2), None, "the merge ate the override");
+
+        // The undo.
+        assert_eq!(p.insert_beat_marker_with_subs(2, pos, ovr), Some(2));
+
+        assert_eq!(p.grid(), before.grid(), "geometry restored, override included");
+
+        // Not `f64` equality, unlike the single-edit tests above, and the reason is
+        // worth stating: `Hit::f` is `f32`, so a *round trip* — re-derived by the
+        // delete, re-derived again by the insert — quantises. A hit welded at `f = 0`
+        // lands mid-slot in the merged slot (correct: a delete preserves where a hit
+        // *is*, not that it was snapped), and that fraction is not exactly
+        // representable. The residue is ~1e-8 beats, i.e. `f32` resolution.
+        //
+        // The tolerance is sized to stay useful: the defect this pins displaced hits by
+        // 0.111 beats — five orders of magnitude above this bound, so it fails here
+        // loudly rather than being absorbed.
+        const ROUND_TRIP_EPS: f64 = 1e-6;
+        for h in before.hits() {
+            let (now, then) = (fire_of(&p, h.note), fire_of(&before, h.note));
+            assert!(
+                (now - then).abs() < ROUND_TRIP_EPS,
+                "hit {} moved {} beats",
+                h.note,
+                now - then
+            );
+        }
+    }
+
+    /// A refused insert must not leave a sub-count change behind: the override rides
+    /// the insert, so a no-op edit that still retimed a beat would be the worst of both.
+    #[test]
+    fn a_refused_insert_with_subs_changes_nothing() {
+        let mut p = Pattern::default();
+        p.insert(Hit { f: 0.25, note: 90.0, ..Hit::at(1, 1) });
+        let before = p;
+        // Hard against the pattern's pinned start — no room to split.
+        assert_eq!(p.insert_beat_marker_with_subs(1, 0.0, Some(3)), None);
+        assert_eq!(p.grid(), before.grid());
+        assert_eq!(p.hits(), before.hits());
+    }
+
+    /// The sub-count is **stated**, never defaulted, and the two readings of "unset"
+    /// really do differ: splitting a triplet beat keeps both halves triplets, and
+    /// clearing the new one is a different grid. The editor mirrors this command
+    /// locally, so an ordinary insert passes what the split inherits — this is the
+    /// property that makes the page and the model land on the same geometry.
+    #[test]
+    fn a_stated_sub_count_is_not_the_same_as_a_cleared_one() {
+        let mut p = Pattern::default();
+        p.edit_grid(|g| g.set_beat_subs(1, Some(3)));
+
+        // What an ordinary insert sends: the split beat's own override.
+        let inherited = p.grid().sub_override(1);
+        let mut split = p;
+        assert_eq!(split.insert_beat_marker_with_subs(2, 1.5, inherited), Some(2));
+        assert_eq!(split.grid().sub_override(1), Some(3), "the left half is still a triplet");
+        assert_eq!(split.grid().sub_override(2), Some(3), "…and so is the right");
+
+        // Clearing it is a different grid — which is exactly why a caller must say.
+        let mut cleared = p;
+        assert_eq!(cleared.insert_beat_marker_with_subs(2, 1.5, None), Some(2));
+        assert_eq!(cleared.grid().sub_override(2), None);
+        assert_ne!(cleared.grid(), split.grid());
     }
 
     /// AC: deleting a beat marker changes no hit's absolute fire time either.

@@ -147,6 +147,145 @@ fn free_position_commands_place_move_and_quantise_a_hit() {
     assert!(engine.track_mut(0).pattern.is_empty());
 }
 
+/// The marker gestures end to end (0354), over the queue and into a *running*
+/// engine: a drag carries the hits in the slots either side, an insert leaves every
+/// one of them at the time it was firing at, and a swing sweep keeps the welded ones
+/// on their markers.
+#[test]
+fn marker_gestures_reshape_a_running_lane() {
+    let mut engine = Engine::new(SR, 512);
+    let io = engine.io();
+
+    // Welded to beat marker 1, and half way through the third 16th after it.
+    for (beat, sub, f) in [(1_u16, 0_u8, 0.0_f32), (1, 2, 0.5)] {
+        assert!(io.edits.push(EngineCommand::AddHit {
+            track: 0,
+            beat,
+            sub,
+            f,
+            nudge: 0,
+            y: 0.5,
+            note: 36.0,
+            velocity: 1.0,
+        }));
+    }
+    let _ = play_block(&mut engine, 0.0, 64);
+    assert_eq!(engine.track_mut(0).pattern.fire_beat(0), 1.0);
+    assert_eq!(engine.track_mut(0).pattern.fire_beat(1), 1.5 + 0.5 * 0.25);
+
+    // Drag marker 1 late. Both hits hang off slots the drag reshaped, so both move —
+    // the two-sidedness the strip highlights — and the welded one lands exactly on
+    // the marker, because a drag writes no hit record at all.
+    assert!(io.edits.push(EngineCommand::DragBeatMarker { track: 0, marker: 1, pos: 1.5 }));
+    let _ = play_block(&mut engine, 0.0, 64);
+    {
+        let p = &engine.track_mut(0).pattern;
+        assert_eq!(p.grid().beat_marker(1), 1.5);
+        assert_eq!(p.fire_beat(0), 1.5, "welded stays welded");
+        assert!(p.fire_beat(1) > 1.5 + 0.5 * 0.25, "the hit in the next slot moved too");
+    }
+
+    // A drag past a neighbour clamps rather than crossing: the editor asks, the grid
+    // decides, and no gesture can produce a slot narrower than MIN_SLOT.
+    assert!(io.edits.push(EngineCommand::DragBeatMarker { track: 0, marker: 1, pos: 99.0 }));
+    let _ = play_block(&mut engine, 0.0, 64);
+    assert_eq!(
+        engine.track_mut(0).pattern.grid().beat_marker(1),
+        2.0 - vxn3_engine::MIN_SLOT
+    );
+    assert!(io.edits.push(EngineCommand::DragBeatMarker { track: 0, marker: 1, pos: 1.5 }));
+
+    // Insert and delete are the opposite rule: the fire times survive the split and
+    // the merge, which is what "the hits visibly stay put" means.
+    let _ = play_block(&mut engine, 0.0, 64);
+    let before = [
+        engine.track_mut(0).pattern.fire_beat(0),
+        engine.track_mut(0).pattern.fire_beat(1),
+    ];
+    assert!(io.edits.push(EngineCommand::InsertBeatMarker { track: 0, marker: 3, pos: 2.5, subs: 0 }));
+    let _ = play_block(&mut engine, 0.0, 64);
+    {
+        let p = &engine.track_mut(0).pattern;
+        assert_eq!(p.grid().n_beats(), 5);
+        assert_eq!([p.fire_beat(0), p.fire_beat(1)], before, "an insert moves nothing");
+    }
+    assert!(io.edits.push(EngineCommand::DeleteBeatMarker { track: 0, marker: 3 }));
+    let _ = play_block(&mut engine, 0.0, 64);
+    {
+        let p = &engine.track_mut(0).pattern;
+        assert_eq!(p.grid().n_beats(), 4);
+        assert_eq!([p.fire_beat(0), p.fire_beat(1)], before, "a delete moves nothing");
+    }
+
+    // Swing, and the tuplet override beside it. The welded hit rides its marker
+    // through the whole sweep — the demo the storage model exists for.
+    for amount in [0.25_f64, 0.6, 1.0, -0.5, 0.0] {
+        assert!(io.edits.push(EngineCommand::SetSwing {
+            track: 0,
+            swing: vxn3_engine::Swing::mpc(amount),
+        }));
+        let _ = play_block(&mut engine, 0.0, 64);
+        let p = &engine.track_mut(0).pattern;
+        let h = p.hits()[0];
+        assert_eq!(
+            p.fire_beat(0),
+            p.grid().sub_pos(h.beat as usize, h.sub as u32),
+            "the welded hit came off its marker at swing {amount}"
+        );
+    }
+    assert!(io.edits.push(EngineCommand::SetBeatSubs { track: 0, beat: 2, subs: 3 }));
+    let _ = play_block(&mut engine, 0.0, 64);
+    assert_eq!(engine.track_mut(0).pattern.grid().subs(2), 3);
+    assert_eq!(engine.track_mut(0).pattern.grid().subs(0), 4, "only the beat named");
+}
+
+/// The marker verbs cross to the audio thread like every other delta, so applying one
+/// must not allocate — the insert and delete paths re-derive every hit's position,
+/// which is exactly the kind of code that reaches for a `Vec` if it is allowed to.
+#[test]
+fn marker_gesture_drain_is_allocation_free() {
+    let mut engine = Engine::new(SR, 512);
+    let io = engine.io();
+    for i in 0..8 {
+        io.edits.push(EngineCommand::AddHit {
+            track: 0,
+            beat: i % 4,
+            sub: (i % 4) as u8,
+            f: 0.25,
+            nudge: 7,
+            y: 0.5,
+            note: 36.0,
+            velocity: 1.0,
+        });
+    }
+    let bps = BPM / 60.0 / SR as f64;
+    let mut l = vec![0.0_f32; 512];
+    let mut r = vec![0.0_f32; 512];
+    engine.set_transport(Transport { playing: true, tempo_bpm: BPM, song_pos_beats: Some(0.0) });
+    engine.process_block(&mut l, &mut r); // prime
+
+    let allocs = alloc_trap::count_allocs(|| {
+        for b in 1..200 {
+            let pos = 1.0 + 0.5 * ((b % 3) as f64);
+            io.edits.push(EngineCommand::DragBeatMarker { track: 0, marker: 1, pos });
+            io.edits.push(EngineCommand::InsertBeatMarker { track: 0, marker: 4, pos: 3.5, subs: 0 });
+            io.edits.push(EngineCommand::DeleteBeatMarker { track: 0, marker: 4 });
+            io.edits.push(EngineCommand::SetSwing {
+                track: 0,
+                swing: vxn3_engine::Swing::mpc((b % 5) as f64 / 5.0),
+            });
+            io.edits.push(EngineCommand::SetBeatSubs { track: 0, beat: 2, subs: (b % 6) as u8 });
+            engine.set_transport(Transport {
+                playing: true,
+                tempo_bpm: BPM,
+                song_pos_beats: Some((b * 512) as f64 * bps),
+            });
+            engine.process_block(&mut l, &mut r);
+        }
+    });
+    assert_eq!(allocs, 0, "a marker gesture allocated on the audio thread");
+}
+
 /// The hit-keyed attribute verbs reach a hit a slot-keyed one cannot: two hits in
 /// one subdivision slot, only the second edited.
 #[test]
