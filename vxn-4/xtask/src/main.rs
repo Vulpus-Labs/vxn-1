@@ -11,8 +11,10 @@
 //! errors — the same shape as vxn-3.
 //!
 //! The bundle is the dylib, an `Info.plist` and a `PkgInfo`. There is no
-//! `Contents/Resources/` staging because there is no faceplate to stage: vxn-4
-//! is driven entirely through the host's generic parameter UI.
+//! `Contents/Resources/` staging even though vxn-4 now has a faceplate (0387):
+//! `vxn4-ui-web` embeds its assets with `include_str!`, so the dylib is
+//! self-contained. vxn-2 stages a copy only to serve its `VXN2_DEV_ASSETS`
+//! reload path, which vxn-4 does not have.
 //!
 //! The bundler is `vxn-xtask-common`, shared with the other three products, and
 //! it code-signs what it assembles — an unsigned macOS bundle is rejected by

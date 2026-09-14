@@ -1,0 +1,21 @@
+[package]
+name = "vxn4-ui-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "VXN4 HTML faceplate: page assets over vxn-core-ui-web's wry host."
+
+[dependencies]
+vxn-core-ui-web = { workspace = true }
+vxn-core-app = { workspace = true }
+# `CURVE_LABELS` — the page's curve pickers index the same flat (polarity,
+# shape) code a matrix slot stores, so the list has one owner.
+vxn-core-matrix = { workspace = true }
+# Structural counts only (operators, macros, matrix slots): the page states
+# them, so it should not also invent them. No patch state crosses yet — that is
+# 0388.
+vxn4-dsp = { workspace = true }
+vxn4-engine = { workspace = true }
+serde_json = "1"

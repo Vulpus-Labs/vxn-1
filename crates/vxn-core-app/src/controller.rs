@@ -52,6 +52,29 @@ impl ControllerHandle {
     pub fn post(&self, event: UiEvent) -> Result<(), TrySendError<UiEvent>> {
         self.ui.try_send(event)
     }
+
+    /// A handle with no controller behind it: every [`Self::post`] fails with
+    /// `Disconnected`.
+    ///
+    /// For the window where a synth's **faceplate lands before its app crate**
+    /// — vxn-4's editor opens in ticket 0387, and its `ParamModel` /
+    /// `PresetStore` arrive in 0386. The web editor host needs a handle to
+    /// build at all, and the honest answer at that point is that there is
+    /// nowhere for a UI intent to go. Dropping it at the channel is better
+    /// than the alternatives: a stub `ParamModel` would be a fake the page
+    /// could read wrong values out of, and making the handle optional would
+    /// put a `None` check on every IPC message forever to serve one
+    /// transitional ticket.
+    ///
+    /// Not a general escape hatch. A shell that has a controller must pass its
+    /// handle; the type is the same either way, so the only thing stopping
+    /// that is review.
+    pub fn detached() -> Self {
+        // Capacity 1: nothing is ever read from it, and the receiver is
+        // dropped on the next line, so the buffer only has to be legal.
+        let (ui, _rx) = sync_channel(1);
+        Self { ui }
+    }
 }
 
 pub struct Controller<M: ParamModel> {
@@ -544,5 +567,22 @@ impl<M: ParamModel> Controller<M> {
 
     fn send_status(&self, line: String) {
         self.push_view_event(ViewEvent::Status { line });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A detached handle must FAIL a post rather than silently pretending the
+    /// event landed — a faceplate whose intents are being swallowed should be
+    /// able to tell, even if nothing looks at the result yet.
+    #[test]
+    fn a_detached_handle_is_disconnected_not_silently_full() {
+        let handle = ControllerHandle::detached();
+        assert!(matches!(
+            handle.post(UiEvent::EditorReady),
+            Err(TrySendError::Disconnected(_))
+        ));
     }
 }

@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>VXN4</title>
+<style>__CSS__</style>
+</head>
+<body>
+<div class="faceplate" id="faceplate">
+
+  <div class="banner">VULPUS LABS &mdash; VXN-4</div>
+
+  <div class="preset-bar">
+    <button class="pbar-btn pbar-step" id="preset-prev" type="button">&lt;</button>
+    <div class="pbar-name" id="preset-name">&mdash;</div>
+    <button class="pbar-btn pbar-step" id="preset-next" type="button">&gt;</button>
+    <button class="pbar-btn" type="button">Browse</button>
+    <button class="pbar-btn" type="button">Save</button>
+    <button class="pbar-btn" type="button">Save As</button>
+    <div class="pbar-spacer"></div>
+  </div>
+
+  <div class="tab-strip" id="tab-strip">
+    <button type="button" class="tab-btn active" data-tab="perform">PERFORM</button>
+    <button type="button" class="tab-btn" data-tab="mixer">MIXER</button>
+    <button type="button" class="tab-btn" data-tab="operators">OPERATORS</button>
+    <button type="button" class="pbar-btn" id="matrix-open">Mod Matrix</button>
+  </div>
+
+  <!-- ═══ PERFORM ═══════════════════════════════════════════════════════════
+       Everything an ordinary user touches. Macros first and widest: they are
+       the primary surface. LFOs, envelopes and the filter are the shaping
+       controls behind them. Where a source *goes* is the mod matrix, which
+       opens over the whole faceplate from the tab strip. -->
+  <div class="tab-pane active" data-tab-pane="perform">
+
+    <!-- Macro row. Labels and ranges are patch data, so switching preset
+         relabels all eight; the index under each knob is the only fixed thing
+         about it, and is what host automation sees. -->
+    <div class="row" style="height:104px">
+      <div class="panel">
+        <div class="panel-header">MACROS</div>
+        <div class="panel-body macro-body" id="macro-body"></div>
+      </div>
+    </div>
+
+    <!-- LFOs + filter. LFO 1 is note-synced with a delayable onset; LFO 2 is
+         free-running. Both carry vxn-2's shape set.
+
+         Rows re-declare `--fader-h` rather than inheriting the root value: the
+         travel a fader wants is a property of the row it sits in, and a track
+         sized for the densest row reads as a hairline in the roomiest one. -->
+    <div class="row" style="height:196px; --fader-h:104px">
+      <div class="panel" style="flex-grow:1.15">
+        <div class="panel-header">LFO 1 &mdash; NOTE SYNC</div>
+        <div class="panel-body" id="lfo1-body"></div>
+        <div class="panel-strip" id="lfo1-strip"></div>
+      </div>
+      <div class="panel" style="flex-grow:0.8">
+        <div class="panel-header">LFO 2 &mdash; FREE</div>
+        <div class="panel-body" id="lfo2-body"></div>
+      </div>
+      <!-- Two stages, drawn as two captioned groups in one panel: a fixed
+           high-pass ahead of the multimode filter. Separate because they are
+           separate in the signal path and are reached for at different times —
+           HP is corrective, the main filter is the instrument. -->
+      <div class="panel" style="flex-grow:2.2">
+        <div class="panel-header">
+          <span class="hdr-switch on" data-hdr="filter"></span>
+          <span>FILTER</span>
+        </div>
+        <div class="panel-body" id="filter-body"></div>
+      </div>
+    </div>
+
+    <!-- Envelopes + scope. ADHSR: attack, decay, hold, sustain, release, with
+         a curve rocker. These two are mod SOURCES, distinct from the
+         per-operator amplitude EGs on the OPERATORS tab. -->
+    <div class="row" style="height:172px; --fader-h:104px">
+      <div class="panel" style="flex-grow:1">
+        <div class="panel-header">ENV 1</div>
+        <div class="panel-body" id="env1-body"></div>
+      </div>
+      <div class="panel" style="flex-grow:1">
+        <div class="panel-header">ENV 2</div>
+        <div class="panel-body" id="env2-body"></div>
+      </div>
+      <div class="panel panel-scope" style="flex-grow:1.9">
+        <div class="panel-header">SCOPE</div>
+        <div class="panel-body">
+          <canvas class="graph-canvas" id="scope"></canvas>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /perform -->
+
+  <!-- ═══ MIXER ════════════════════════════════════════════════════════════
+       vxn-1b's global pane, minus what vxn-4 does not have: one layer, so no
+       layer strips and no keyboard split; no voice stacking; and the only
+       oversampling control is the operator section's 8x/16x quality toggle. -->
+  <div class="tab-pane" data-tab-pane="mixer">
+
+    <div class="row" style="height:250px; --fader-h:140px">
+      <div class="panel" style="flex-grow:2.6">
+        <div class="panel-header">
+          <span class="hdr-switch on" data-hdr="dynamics"></span>
+          <span>DYNAMICS</span>
+        </div>
+        <div class="panel-body" id="dyn-body" style="align-items:center;gap:12px"></div>
+      </div>
+      <div class="panel" style="flex-grow:1.4">
+        <div class="panel-header">MASTER</div>
+        <div class="panel-body" id="master-body"></div>
+        <div class="panel-strip" id="master-strip" style="justify-content:space-around"></div>
+      </div>
+    </div>
+
+    <div class="row" style="height:236px; --fader-h:150px">
+      <div class="panel">
+        <div class="panel-header">
+          <span class="hdr-switch" data-hdr="phaser"></span><span>PHASER</span>
+        </div>
+        <div class="panel-body" id="phaser-body"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header">
+          <span class="hdr-switch on" data-hdr="chorus"></span><span>CHORUS</span>
+        </div>
+        <div class="panel-body" id="chorus-body"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header">
+          <span class="hdr-switch on" data-hdr="delay"></span><span>DELAY</span>
+        </div>
+        <div class="panel-body" id="delay-body"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header">
+          <span class="hdr-switch on" data-hdr="reverb"></span><span>REVERB</span>
+        </div>
+        <div class="panel-body" id="reverb-body"></div>
+      </div>
+    </div>
+
+  </div><!-- /mixer -->
+
+  <!-- ═══ OPERATORS ════════════════════════════════════════════════════════
+       The expert tier. Pick an operator, then edit its parameters and its ten
+       outgoing routes: eight into the operator bank (including its own
+       self-feedback), then the sum-bus send and its pan. Each route is a
+       constant plus a mod-matrix offset (source + curve) and a mod-matrix
+       scaling (source + curve) — the shape a vxn-core-matrix slot has. -->
+  <div class="tab-pane" data-tab-pane="operators">
+
+    <!-- Height declared like every other row: this is the tallest pane's first
+         row, so the number the window is sized to goes through it. -->
+    <div class="row" style="height:28px; align-items:center">
+      <div class="op-tabs" id="op-tabs"></div>
+      <div class="pbar-spacer"></div>
+      <div class="panel-strip" id="op-global-strip" style="gap:16px"></div>
+    </div>
+
+    <div class="row" style="height:186px; --fader-h:110px">
+      <div class="panel">
+        <div class="panel-header" id="opcfg-header">OPERATOR 1</div>
+        <div class="panel-body opcfg-body" id="opcfg-body"></div>
+      </div>
+    </div>
+
+    <!-- Routes and the grid sit in one row: the grid is the map, the table is
+         the detail for the one operator the map has selected. -->
+    <div class="row" style="height:250px">
+      <div class="panel panel-routes">
+        <div class="panel-header" id="routes-header">ROUTES OUT &mdash; OPERATOR 1</div>
+        <div class="panel-body" style="align-items:stretch">
+          <div class="routes" id="routes"></div>
+        </div>
+      </div>
+      <div class="panel" style="flex:0 0 auto">
+        <div class="panel-header">PM GRID</div>
+        <div class="panel-body" style="align-items:center; flex-direction:column; gap:4px">
+          <div class="pm-grid" id="pm-grid"></div>
+          <div class="pm-axis">columns: source &middot; rows: destination</div>
+          <!-- The swatches carry the outline, the fill and the accent bar, so
+               they double as the key for all three. -->
+          <div class="pm-axis pm-legend">
+            <span class="pm-swatch pm-swatch-pos"></span>positive
+            <span class="pm-swatch pm-swatch-neg"></span>negative
+          </div>
+          <div class="pm-axis" style="color:#3f464c">drag &#8597; depth &middot; dbl-click on/off</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row" style="height:186px; --fader-h:104px">
+      <div class="panel" style="flex-grow:1.05">
+        <div class="panel-header" id="opeg-header">OPERATOR 1 &mdash; AMP EG</div>
+        <div class="panel-body" id="opeg-body"></div>
+      </div>
+      <div class="panel" style="flex-grow:1.2">
+        <div class="panel-header">EG SHAPE</div>
+        <div class="panel-body">
+          <canvas class="graph-canvas grabbable" id="eg-graph"></canvas>
+        </div>
+      </div>
+      <!-- Key scaling, ported in idiom from vxn-2's per-op KS graph: a break
+           point with an independent depth and curve either side of it. This is
+           what the old "Key Trk" fader could not say — a single number cannot
+           express "quieter as you go up, much quieter as you go down". -->
+      <div class="panel" style="flex-grow:1.5">
+        <div class="panel-header">KEY SCALING &mdash; LEVEL</div>
+        <div class="panel-body" style="align-items:stretch; gap:8px">
+          <canvas class="graph-canvas grabbable" id="ks-graph"></canvas>
+          <div id="ks-side" class="ks-side"></div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /operators -->
+
+  <!-- Mod matrix — the voice-level routing table. Opens over the whole
+       faceplate from the tab strip rather than living on a panel: it is
+       reached rarely, it is wide, and it is not tied to one tab. Destinations
+       reach the filter, the FX mixes, the other mod sources (an envelope on an
+       LFO's rate), pitch, and any individual operator parameter. -->
+  <div class="overlay-backdrop" id="matrix-backdrop" hidden>
+    <div class="overlay-panel" style="width:96%">
+      <button class="overlay-close" id="matrix-close" type="button">&times;</button>
+      <div class="overlay-title">Mod Matrix</div>
+      <div class="overlay-sub">
+        Per-route offsets into the operator bank live on the OPERATORS tab; these slots
+        are everything else.
+      </div>
+      <div class="mm-list">
+        <div class="mm-grid" id="mm-grid"></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Structural facts from the engine — operator count, matrix slot count, the
+     curve table. Spliced rather than fetched so the page is complete the moment
+     it parses: there is no first frame where the grid is the wrong size. -->
+<script>window.__VXN4_CONFIG__ = __CONFIG_JSON__;</script>
+<script>__APP_JS__</script>
+</body>
+</html>

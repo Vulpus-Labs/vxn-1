@@ -53,6 +53,15 @@
   --pad-outer: 10px;
   --banner-h: 26px;
   --preset-bar-h: 30px;
+  /* The plugin window is a fixed rectangle the host allocates once, so the
+     page's height has to be a number somebody can add up rather than whatever
+     the text happens to render to. These two are what used to be implicit: the
+     tab button's height came out of the font's line box, and the pane's came
+     out of whichever tab was showing. Both are declared now, and the faceplate
+     is sized to the TALLEST pane — operators — with the other two leaving
+     space at the bottom rather than resizing the window under the player. */
+  --tab-h: 26px;
+  --pane-h: 674px;
   --panel-pad: 5px;
   --row-vgap: 8px;
   --row-hgap: 6px;
@@ -152,9 +161,13 @@ body { display: flex; justify-content: center; padding: 16px 0 40px; }
   display: flex; gap: 2px; align-items: stretch;
   border-bottom: 1px solid var(--panel-border);
 }
+/* Height declared, not derived: a button sized by its line box is a different
+   height in the host's fallback font than in ours, and the whole page shifts
+   under it. */
 .tab-btn {
   background: transparent; border: none;
-  padding: 5px 16px 6px;
+  box-sizing: border-box;
+  height: var(--tab-h); padding: 0 16px;
   color: #7d7d7d; font: inherit; font-size: 11px;
   letter-spacing: 2px; cursor: pointer;
   border-bottom: 2px solid transparent;
@@ -164,7 +177,10 @@ body { display: flex; justify-content: center; padding: 16px 0 40px; }
 .tab-strip .pbar-btn { align-self: center; margin-left: auto; margin-right: 2px; }
 
 .tab-pane { display: none; }
-.tab-pane.active { display: flex; flex-direction: column; gap: var(--row-vgap); }
+.tab-pane.active {
+  display: flex; flex-direction: column; gap: var(--row-vgap);
+  min-height: var(--pane-h);
+}
 
 /* ── Rows and panels ────────────────────────────────────────────────────── */
 .row { display: flex; gap: var(--row-hgap); align-items: stretch; }
@@ -367,7 +383,10 @@ body { display: flex; justify-content: center; padding: 16px 0 40px; }
 .op-tabs { display: flex; gap: 4px; align-items: center; }
 .op-tab {
   position: relative;
-  width: 46px; height: 26px;
+  /* Border-box, so the declared height is the rendered one — this is the row
+     the tallest pane's height is measured through. */
+  box-sizing: border-box;
+  width: 46px; height: 28px;
   background: #262626; border: 1px solid #3a3a3a; border-radius: 3px;
   color: #8a8a8a; font: inherit; font-size: 10px; letter-spacing: 1px;
   cursor: pointer;
@@ -681,7 +700,10 @@ body { display: flex; justify-content: center; padding: 16px 0 40px; }
        scaling (source + curve) — the shape a vxn-core-matrix slot has. -->
   <div class="tab-pane" data-tab-pane="operators">
 
-    <div class="row" style="align-items:center">
+    <!-- Height declared like every other row: the operator tabs are the tallest
+         pane's first row, so the number the window is sized to goes through it
+         and must not depend on a border-box quirk. -->
+    <div class="row" style="height:28px; align-items:center">
       <div class="op-tabs" id="op-tabs"></div>
       <div class="pbar-spacer"></div>
       <div class="panel-strip" id="op-global-strip" style="gap:16px"></div>

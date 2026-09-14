@@ -2523,8 +2523,10 @@ dependencies = [
  "clack-extensions",
  "clack-host",
  "clack-plugin",
+ "vxn-core-app",
  "vxn-core-clap",
  "vxn4-engine",
+ "vxn4-ui-web",
 ]
 
 [[package]]
@@ -2557,6 +2559,18 @@ dependencies = [
 name = "vxn4-render"
 version = "0.3.1"
 dependencies = [
+ "vxn4-engine",
+]
+
+[[package]]
+name = "vxn4-ui-web"
+version = "0.3.1"
+dependencies = [
+ "serde_json",
+ "vxn-core-app",
+ "vxn-core-matrix",
+ "vxn-core-ui-web",
+ "vxn4-dsp",
  "vxn4-engine",
 ]
 

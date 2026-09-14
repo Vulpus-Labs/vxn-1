@@ -1,13 +1,13 @@
 //! VXN4 CLAP plugin shell (clack).
 //!
 //! Host-loadable plugin: stereo out, note in, eleven automatable parameters,
-//! state save/restore. **No faceplate** — there is no `gui` or `timer`
-//! extension here, and no webview. The synth is still an ear-driven sketch, and
-//! a host's generic parameter UI is enough to turn eight knobs.
+//! state save/restore, and the `vxn4-ui-web` faceplate through the `gui`
+//! extension (see [`gui`]).
 //!
-//! Structurally the smallest of the four shells. vxn-2 and vxn-3 carry a
-//! controller, a view-event pump and a dirty bitset because they have pages to
-//! drive; vxn-4 has a param cache, a patch store and an engine.
+//! Structurally still the smallest of the four shells. vxn-2 and vxn-3 carry a
+//! controller, a view-event pump, a dirty bitset and a host timer because they
+//! have pages to drive; vxn-4 has a param cache, a patch store, an engine, and
+//! a page that so far drives itself (0387 opened the editor; 0388 binds it).
 //!
 //! ## Where parameters are applied
 //!
@@ -25,6 +25,7 @@ use clack_extensions::audio_ports::{
     AudioPortFlags, AudioPortInfo, AudioPortInfoWriter, AudioPortType, PluginAudioPorts,
     PluginAudioPortsImpl,
 };
+use clack_extensions::gui::PluginGui;
 use clack_extensions::latency::{PluginLatency, PluginLatencyImpl};
 use clack_extensions::note_ports::{
     NoteDialect, NoteDialects, NotePortInfo, NotePortInfoWriter, PluginNotePorts,
@@ -46,6 +47,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use vxn_core_clap::{EngineNotes, batch_range, dispatch_notes};
 use vxn4_engine::{Engine, HOST_LATENCY_SAMPLES, SharedParams};
 
+pub mod gui;
 pub mod params;
 pub mod state;
 
@@ -64,6 +66,7 @@ impl Plugin for VxnPlugin {
             .register::<PluginNotePorts>()
             .register::<PluginLatency>()
             .register::<PluginParams>()
+            .register::<PluginGui>()
             .register::<PluginState>();
     }
 }
@@ -90,7 +93,7 @@ impl DefaultPluginFactory for VxnPlugin {
         _host: HostMainThreadHandle<'a>,
         shared: &'a VxnShared,
     ) -> Result<VxnMainThread<'a>, PluginError> {
-        Ok(VxnMainThread { shared })
+        Ok(VxnMainThread { shared, gui: None })
     }
 }
 
@@ -126,6 +129,9 @@ impl PluginShared<'_> for VxnShared {}
 
 pub struct VxnMainThread<'a> {
     shared: &'a VxnShared,
+    /// The open editor, or `None` while the host has no GUI up. See
+    /// [`gui`] — the WebView is torn down by this field being dropped.
+    gui: Option<vxn4_ui_web::EditorHandle>,
 }
 
 impl<'a> PluginMainThread<'a, VxnShared> for VxnMainThread<'a> {}

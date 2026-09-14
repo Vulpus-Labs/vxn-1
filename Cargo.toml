@@ -49,6 +49,7 @@ members = [
     # measurements.
     "vxn-4/crates/vxn4-dsp",
     "vxn-4/crates/vxn4-engine",
+    "vxn-4/crates/vxn4-ui-web",
     "vxn-4/crates/vxn4-clap",
     "vxn-4/crates/vxn4-op-bench",
     "vxn-4/crates/vxn4-render",
@@ -102,6 +103,7 @@ vxn1b-web-controller = { path = "vxn-1b/crates/vxn1b-web-controller" }
 # vxn-4 (path).
 vxn4-dsp = { path = "vxn-4/crates/vxn4-dsp" }
 vxn4-engine = { path = "vxn-4/crates/vxn4-engine" }
+vxn4-ui-web = { path = "vxn-4/crates/vxn4-ui-web" }
 vxn4-clap = { path = "vxn-4/crates/vxn4-clap" }
 
 # clack — pinned to a known-good main commit (no compatible crates.io release of

@@ -450,3 +450,55 @@ fn every_declared_param_decodes() {
     }
     assert!(matches!(params::decode(0), Some(Slot::Patch)));
 }
+
+/// The host can find the `gui` extension, negotiate a size, and take the
+/// editor through create → destroy twice (ticket 0387).
+///
+/// `set_parent` is not here and cannot be: it needs a live NSView, which means
+/// a window server, which means this stops being a test and starts being a
+/// session. What it does cover is the half that has no excuse for being wrong —
+/// that the extension is exported at all (a missing `register` is a plugin with
+/// no editor and no error message), that the negotiated size is the faceplate's
+/// own, and that a second create after a destroy is accepted, which is what a
+/// host does every time the user closes and reopens the window.
+#[test]
+fn the_host_can_open_and_close_the_editor_twice() {
+    use clack_extensions::gui::{GuiApiType, GuiConfiguration, PluginGui};
+
+    let entry = load_entry();
+    let mut instance = instantiate(&entry);
+    let gui = instance
+        .plugin_handle()
+        .get_extension::<PluginGui>()
+        .expect("the plugin does not export the gui extension");
+
+    let Some(api_type) = GuiApiType::default_for_current_platform() else {
+        return; // headless platform; there is no embedded API to negotiate
+    };
+    let embedded = GuiConfiguration {
+        api_type,
+        is_floating: false,
+    };
+    assert!(gui.is_api_supported(&mut instance.plugin_handle(), embedded));
+    // Floating is refused: the editor is embedded, and accepting the request
+    // would leave the host showing an empty floating frame.
+    let floating = GuiConfiguration {
+        api_type,
+        is_floating: true,
+    };
+    assert!(!gui.is_api_supported(&mut instance.plugin_handle(), floating));
+
+    for pass in 0..2 {
+        gui.create(&mut instance.plugin_handle(), embedded)
+            .unwrap_or_else(|_| panic!("gui.create refused on pass {pass}"));
+        let size = gui
+            .get_size(&mut instance.plugin_handle())
+            .expect("no size");
+        assert_eq!(
+            (size.width, size.height),
+            (vxn4_ui_web::EDITOR_WIDTH, vxn4_ui_web::EDITOR_HEIGHT),
+            "the host was offered a surface the page does not fit"
+        );
+        gui.destroy(&mut instance.plugin_handle());
+    }
+}

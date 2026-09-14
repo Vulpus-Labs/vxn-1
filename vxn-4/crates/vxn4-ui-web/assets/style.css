@@ -1,0 +1,520 @@
+/* ─────────────────────────────────────────────────────────────────────────
+   VXN-4 faceplate.
+
+   Ported from `vxn-4/ui-mockup/index.html`, which stays in the tree as the
+   place layout iteration happens: a layout question gets answered there first
+   and ported here second, so the reviewed page and the shipped page cannot
+   drift apart by argument.
+
+   Palette and control idioms are lifted from vxn-1b's faceplate.css so the
+   instruments read as one family; the wave knob, the filter control set and
+   the key-scaling graph come from vxn-2.
+
+   The floating value popup's ruleset is NOT here — `.value-pop` comes from
+   `vxn-core-ui-web/assets/value-pop.css`, spliced in by `build_html`. It was
+   copied into three stylesheets once and drifted in all three.
+   ───────────────────────────────────────────────────────────────────────── */
+:root {
+  --face-bg: #2b2b2b;
+  --panel-bg: #1c1c1c;
+  --panel-bg-hi: #2f2f2f;
+  --panel-border: #0e0e0e;
+  --panel-corner: 4px;
+  --header-bg: #a7cfe2;
+  --header-fg: #141414;
+  --banner-fg: #a7cfe2;
+  --text: #d6d6d6;
+  --ctl-label: #aeaeae;
+  --ctl-value: #d9701b;
+  --track-bg: #0e0e0e;
+  --fader-fill-pale: #35507e;
+  --fader-fill-bright: #6cb1ff;
+  --lit-bg: #1f9cff;
+  --lit-border: #84cdff;
+  --lit-glow: #36b3ff;
+  --thumb-bg: #87afb2;
+  --thumb-border: #a7cfe2;
+  --glyph: #888888;
+  --glyph-active: #a7cfe2;
+  --knob-face: #2a2a2a;
+  --knob-rim: #444444;
+  --knob-dimple: #222222;
+  --knob-indicator: #a7cfe2;
+
+  /* `--editor-w` and `EDITOR_WIDTH` must agree; `editor_width_matches_the_css`
+     asserts it rather than trusting it. */
+  --editor-w: 1140px;
+  --pad-outer: 10px;
+  --banner-h: 26px;
+  --preset-bar-h: 30px;
+  /* The plugin window is a fixed rectangle the host allocates once, so the
+     page's height has to be a number somebody can add up rather than whatever
+     the text happens to render to. The tab button's height used to come out of
+     the font's line box and the pane's out of whichever tab was showing; both
+     are declared now. The window is sized to the TALLEST pane — operators —
+     and the other two leave space at the bottom. */
+  --tab-h: 26px;
+  --pane-h: 674px;
+  --panel-pad: 5px;
+  --row-vgap: 8px;
+  --row-hgap: 6px;
+  --header-h: 16px;
+  --ctl-label-h: 12px;
+  --ctl-gap: 2px;
+  --tg-box: 11px;
+  --fader-h: 84px;
+  --fader-track-w: 4px;
+  --thumb-w: 18px;
+  --thumb-h: 6px;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--face-bg);
+  color: var(--text);
+  font-family: "IBM Plex Sans Condensed", -apple-system, system-ui, sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+  /* The webview is exactly EDITOR_WIDTH × EDITOR_HEIGHT and the page is built
+     to fill it. A scrollbar here would mean the arithmetic is wrong, and a
+     scrollable plugin editor is worse than a clipped one — it lets the player
+     scroll the faceplate half out of its own window. */
+  overflow: hidden;
+}
+
+.faceplate {
+  position: relative;
+  width: var(--editor-w);
+  box-sizing: border-box;
+  padding: var(--pad-outer);
+  display: flex;
+  flex-direction: column;
+  gap: var(--row-vgap);
+}
+
+/* ── Chrome: banner, preset bar, tab strip ──────────────────────────────── */
+.banner {
+  height: var(--banner-h);
+  background: linear-gradient(to top left, var(--panel-bg), var(--panel-bg-hi));
+  border: 1px solid var(--panel-border);
+  border-radius: var(--panel-corner);
+  color: var(--banner-fg);
+  font-size: 16px;
+  letter-spacing: 3px;
+  display: flex; align-items: center; justify-content: center;
+}
+
+.preset-bar {
+  height: var(--preset-bar-h);
+  background: linear-gradient(to top left, var(--panel-bg), var(--panel-bg-hi));
+  border: 1px solid var(--panel-border);
+  border-radius: var(--panel-corner);
+  display: flex; align-items: center;
+  padding: 0 8px; gap: 6px;
+  box-sizing: border-box;
+}
+.pbar-btn {
+  height: 20px; padding: 0 10px;
+  background: #262626; color: var(--ctl-label);
+  border: 1px solid #3a3a3a; border-radius: 3px;
+  font: inherit; font-size: 10px; letter-spacing: 1px;
+  text-transform: uppercase; cursor: pointer;
+}
+.pbar-btn:hover { border-color: var(--glyph-active); color: #ececec; }
+.pbar-btn.lit { background: #17334a; border-color: var(--lit-border); color: #ececec; }
+.pbar-step { padding: 0 6px; min-width: 18px; text-align: center; }
+.pbar-name {
+  min-width: 150px; padding: 0 8px; height: 20px;
+  display: flex; align-items: center;
+  background: #141414; border: 1px solid #3a3a3a; border-radius: 3px;
+  color: var(--ctl-value); font-size: 12px; letter-spacing: 1px;
+}
+.pbar-spacer { flex: 1 1 auto; }
+
+.tab-strip {
+  display: flex; gap: 2px; align-items: stretch;
+  border-bottom: 1px solid var(--panel-border);
+}
+/* Height declared, not derived: a button sized by its line box is a different
+   height in the host's fallback font than in ours, and the whole page shifts
+   under it. */
+.tab-btn {
+  background: transparent; border: none;
+  box-sizing: border-box;
+  height: var(--tab-h); padding: 0 16px;
+  color: #7d7d7d; font: inherit; font-size: 11px;
+  letter-spacing: 2px; cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+.tab-btn:hover { color: var(--text); }
+.tab-btn.active { color: var(--glyph-active); border-bottom-color: var(--glyph-active); }
+.tab-strip .pbar-btn { align-self: center; margin-left: auto; margin-right: 2px; }
+
+.tab-pane { display: none; }
+.tab-pane.active {
+  display: flex; flex-direction: column; gap: var(--row-vgap);
+  min-height: var(--pane-h);
+}
+
+/* ── Rows and panels ────────────────────────────────────────────────────── */
+.row { display: flex; gap: var(--row-hgap); align-items: stretch; }
+.panel {
+  background: linear-gradient(to top left, var(--panel-bg), var(--panel-bg-hi));
+  border: 1px solid var(--panel-border);
+  border-radius: var(--panel-corner);
+  padding: var(--panel-pad);
+  box-sizing: border-box;
+  display: flex; flex-direction: column; gap: 4px;
+  flex: 1 1 0; min-width: 0;
+}
+.panel-header {
+  height: var(--header-h);
+  background: var(--header-bg); color: var(--header-fg);
+  border-radius: 2px;
+  font-size: 10px; letter-spacing: 2px;
+  display: flex; align-items: center; justify-content: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.panel-header .hdr-switch {
+  width: var(--tg-box); height: var(--tg-box);
+  border: 1px solid #4a4a4a; background: #141414;
+  border-radius: 2px; cursor: pointer;
+}
+.panel-header .hdr-switch.on {
+  background: var(--lit-bg); border-color: var(--lit-border);
+  box-shadow: 0 0 4px var(--lit-glow);
+}
+.panel-body {
+  flex: 1 1 auto;
+  display: flex; align-items: flex-start; justify-content: space-around;
+  gap: 6px; min-height: 0;
+}
+.panel-strip {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 12px;
+  min-height: 13px;
+}
+.panel-sep { width: 1px; align-self: stretch; background: #0e0e0e; margin: 0 4px; }
+/* A named sub-group inside a panel — the filter's HP stage against its main
+   stage. The caption is what stops "two cutoffs" from reading as a mistake. */
+.subgroup { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.subgroup-body { display: flex; align-items: flex-start; gap: 6px; }
+.subgroup-cap {
+  font-size: 8px; letter-spacing: 2px; color: #6f7780;
+  text-transform: uppercase; order: -1;
+}
+
+/* ── Control primitives ─────────────────────────────────────────────────── */
+.ctl {
+  display: flex; flex-direction: column; align-items: center;
+  gap: var(--ctl-gap); flex: 0 0 auto;
+}
+.ctl-label {
+  height: var(--ctl-label-h); line-height: var(--ctl-label-h);
+  font-size: 9px; letter-spacing: 1px; color: var(--ctl-label);
+  text-transform: uppercase; white-space: nowrap;
+}
+.ctl-col { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+
+/* Vertical fader. */
+.ctl-fader { height: var(--fader-h); width: 22px; position: relative; cursor: ns-resize; }
+.ctl-fader-track {
+  position: absolute; left: 50%; top: 0; bottom: 0;
+  width: var(--fader-track-w); transform: translateX(-50%);
+  background: var(--track-bg); border-radius: 2px; overflow: hidden;
+}
+.ctl-fader-fill {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  background: linear-gradient(to top, var(--fader-fill-pale), var(--fader-fill-bright));
+}
+.ctl-fader-thumb {
+  position: absolute; left: 50%; width: var(--thumb-w); height: var(--thumb-h);
+  transform: translate(-50%, 50%);
+  background: var(--thumb-bg); border: 1px solid var(--thumb-border);
+  border-radius: 2px;
+}
+.ctl-fader.dragging .ctl-fader-thumb { background: #cfe6e8; }
+
+/* Rotary dial. */
+.ctl-dial { cursor: ns-resize; line-height: 0; }
+.ctl-dial .dial-track { fill: none; stroke: var(--track-bg); stroke-linecap: round; }
+.ctl-dial .dial-fill { fill: none; stroke: var(--fader-fill-bright); stroke-linecap: round; }
+.ctl-dial .dial-face { fill: var(--knob-face); stroke: var(--knob-rim); stroke-width: 1; }
+.ctl-dial .dial-indicator { stroke: var(--knob-indicator); stroke-width: 2; stroke-linecap: round; }
+.ctl-dial.dragging .dial-fill { stroke: #fff; }
+.ctl-dial.dragging .dial-indicator { stroke: #fff; }
+
+/* Rotary waveform selector (vxn-2's wave knob). The lit glyph is the readout —
+   an enum has nothing a popup would add. */
+.ctl-wave { cursor: pointer; line-height: 0; }
+.ctl-wave .knob-face { fill: var(--knob-face); stroke: var(--knob-rim); stroke-width: 1; }
+.ctl-wave .knob-dimple { fill: var(--knob-dimple); }
+.ctl-wave .knob-indicator-line { stroke: var(--knob-indicator); stroke-width: 2; stroke-linecap: round; }
+.ctl-wave .wave-glyph { fill: none; stroke: var(--glyph); stroke-width: 1.2; }
+.ctl-wave .wave-glyph.active { stroke: var(--glyph-active); stroke-width: 1.6; }
+.ctl-wave .wave-hit { fill: transparent; }
+
+/* Operator waveform picker. Eleven waveforms is past what a rotary selector
+   can carry — the glyphs collide on the arc and the hit targets stop being
+   clickable — so the operator uses a dropdown with a drawn preview above it.
+   The LFO keeps its knob: six shapes still fit, and shape is a performed
+   choice there in a way an operator's waveform is not. */
+.wave-pick { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+.wave-preview {
+  background: #0b0f0d; border: 1px solid #262626; border-radius: 2px;
+  display: block;
+}
+.wave-preview .wave-trace { fill: none; stroke: var(--glyph-active); stroke-width: 1.3; }
+.wave-preview .wave-axis { stroke: #23372c; stroke-width: 1; }
+.wave-pick .combo { width: 96px; }
+.wave-pick .wave-preview-holder { line-height: 0; }
+/* Waveforms with a non-zero mean are flagged where they are chosen. On a
+   modulator DC is only a constant phase offset, but on a carrier it is bias at
+   the sum bus — a note-on thump and lost headroom — so it is a property worth
+   seeing before you pick, not after. */
+.dc-chip {
+  font-size: 8px; letter-spacing: 1px; color: #b58b5e;
+  border: 1px solid #4a3a2a; border-radius: 2px;
+  padding: 0 3px; line-height: 11px;
+}
+.dc-chip.hidden { visibility: hidden; }
+
+/* Toggle row — small box + inline label. */
+.ctl-tg-row { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; height: 13px; }
+.ctl-tg-box {
+  width: var(--tg-box); height: var(--tg-box);
+  border: 1px solid #4a4a4a; background: #141414; border-radius: 2px;
+  flex: 0 0 auto;
+}
+.ctl-tg-row:hover .ctl-tg-box { border-color: #c4c4c4; }
+.ctl-tg-row.on .ctl-tg-box {
+  background: var(--lit-bg); border-color: var(--lit-border);
+  box-shadow: 0 0 4px var(--lit-glow);
+}
+.ctl-tg-lbl { font-size: 9px; letter-spacing: 1px; color: var(--ctl-label); text-transform: uppercase; }
+.ctl-tg-row.on .ctl-tg-lbl { color: #ececec; }
+.ctl-tg-cell { justify-self: center; }
+
+/* Button group — a strip of toggle rows, one of which is lit. */
+.ctl-buttongroup .tg-rows { display: flex; flex-direction: column; gap: 2px; }
+.ctl-buttongroup[data-flow="row"] .tg-rows { flex-direction: row; gap: 8px; }
+
+/* Combo (matrix source / dest / curve pickers). */
+.combo {
+  appearance: none; -webkit-appearance: none;
+  background: #141414 url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='8' height='5'><path d='M0 0 L4 5 L8 0 Z' fill='%23aeaeae'/></svg>") no-repeat right 5px center;
+  color: var(--text); border: 1px solid #3a3a3a; border-radius: 2px;
+  font: inherit; font-size: 10px; height: 17px;
+  padding: 0 14px 0 5px; width: 100%; min-width: 0; cursor: pointer;
+}
+.combo:hover, .combo:focus { border-color: var(--glyph-active); outline: none; }
+.combo.empty { color: #6f7780; }
+
+/* ── Macro row ──────────────────────────────────────────────────────────── */
+.macro-body { justify-content: space-between; padding: 0 4px; }
+.macro-cell { flex: 1 1 0; }
+.macro-cell .ctl-label { color: var(--glyph-active); font-size: 10px; }
+.macro-cell .macro-idx { font-size: 8px; color: #6f7780; letter-spacing: 1px; height: 10px; line-height: 10px; }
+
+/* ── Canvases ───────────────────────────────────────────────────────────── */
+.panel-scope .panel-body { align-items: stretch; }
+/* `min-width: 0` matters: a canvas beside a control column (the key-scaling
+   panel) otherwise refuses to shrink and pushes the column off the panel. */
+.graph-canvas {
+  flex: 1 1 0; min-width: 0; height: 100%;
+  background: #0b0f0d; border: 1px solid #0e0e0e; border-radius: 2px;
+  display: block;
+}
+.graph-canvas.grabbable { cursor: crosshair; }
+.ks-side {
+  flex: 0 0 auto;
+  display: flex; flex-direction: column; gap: 4px;
+  justify-content: center; align-items: center;
+}
+
+/* ── Meters ─────────────────────────────────────────────────────────────── */
+/* Stereo throughout: a mono bar cannot show a patch that has collapsed to one
+   side, which on an instrument with per-operator pan is a thing you need to
+   see. Two bars share one frame so the pair reads as one meter. */
+.meter-col { display: flex; flex-direction: column; align-items: center; gap: var(--ctl-gap); }
+.meter-bar {
+  height: var(--fader-h);
+  background: #0b0b0b; border: 1px solid #0e0e0e; border-radius: 2px;
+  display: flex; gap: 1px; padding: 1px;
+}
+.meter-chan { position: relative; width: 6px; overflow: hidden; }
+.meter-fill {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  background: linear-gradient(to top, #2f9e44 0%, #2f9e44 62%, #e8b13a 82%, #e03131 100%);
+  background-size: 100% var(--fader-h);
+  background-position: bottom;
+}
+.meter-peak { position: absolute; left: 0; right: 0; height: 1px; background: #ececec; }
+/* One channel, so it takes the width the stereo pair would have had rather
+   than reading as half a meter. */
+.meter-gr .meter-chan { width: 13px; }
+.meter-gr .meter-fill { top: 0; bottom: auto; background: #d9701b; }
+.meter-gr .meter-peak { display: none; }
+
+/* ── Dial grid (dynamics) ───────────────────────────────────────────────── */
+.dial-grid { display: grid; grid-template-columns: repeat(3, auto); gap: 4px 8px; }
+
+/* ── Operator panel ─────────────────────────────────────────────────────── */
+.op-tabs { display: flex; gap: 4px; align-items: center; }
+.op-tab {
+  position: relative;
+  box-sizing: border-box;
+  width: 46px; height: 28px;
+  background: #262626; border: 1px solid #3a3a3a; border-radius: 3px;
+  color: #8a8a8a; font: inherit; font-size: 10px; letter-spacing: 1px;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.op-tab:hover { border-color: var(--glyph-active); color: var(--text); }
+.op-tab.active { background: #17334a; border-color: var(--lit-border); color: #ececec; }
+.op-tab .op-dot {
+  position: absolute; top: 3px; right: 3px;
+  width: 5px; height: 5px; border-radius: 50%; background: #3a3a3a;
+}
+.op-tab.audible .op-dot { background: var(--lit-bg); box-shadow: 0 0 4px var(--lit-glow); }
+
+.opcfg-body { align-items: flex-start; gap: 10px; padding: 0 12px; }
+
+/* The 8×8 PM grid. Rows are destinations, columns sources; the last column is
+   the sum-bus send. */
+.pm-grid { display: grid; grid-template-columns: 16px repeat(8, 17px) 10px 22px; gap: 2px; }
+.pm-grid .pm-hd {
+  font-size: 8px; color: #6f7780; text-align: center;
+  line-height: 12px; letter-spacing: 0;
+}
+.pm-grid .pm-rowhd { font-size: 8px; color: #6f7780; line-height: 17px; text-align: right; }
+.pm-cell {
+  width: 17px; height: 17px; border-radius: 2px;
+  background: #141414; border: 1px solid #262626; cursor: ns-resize;
+}
+.pm-cell:hover { border-color: var(--glyph-active); }
+.pm-cell.dragging { border-color: #fff; }
+.pm-cell.diag { border-color: #3a3a3a; }
+.pm-cell.sel-src { border-color: #55707e; }
+.pm-cell.bus { width: 22px; }
+.pm-axis {
+  font-size: 8px; color: #4e565e; letter-spacing: 1px;
+  text-transform: uppercase; text-align: center;
+}
+/* Sign key. The swatches carry the accent bar as well as the hue, so the
+   legend shows both cues rather than teaching only the one that fails for a
+   colour-blind player. */
+.pm-legend {
+  display: flex; align-items: center; justify-content: center; gap: 3px;
+  color: #3f464c;
+}
+.pm-swatch { width: 11px; height: 11px; border-radius: 2px; }
+.pm-swatch-pos {
+  background: rgba(108, 177, 255, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(108, 177, 255, 0.62),
+              inset 0 -3px 0 -1px rgba(108, 177, 255, 0.95);
+}
+.pm-swatch-neg {
+  background: rgba(198, 122, 232, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(198, 122, 232, 0.62),
+              inset 0 3px 0 -1px rgba(198, 122, 232, 0.95);
+}
+.pm-swatch-pos { margin-left: 2px; }
+.pm-swatch-neg { margin-left: 6px; }
+
+/* Route table for the selected operator. */
+.panel-routes .panel-body { justify-content: flex-start; }
+.routes {
+  position: relative;
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: 26px 50px 1fr 1.25fr 84px 1.25fr 84px;
+  gap: 3px 8px;
+  align-items: center;
+  align-content: start;
+  font-size: 10px;
+}
+.routes-hd {
+  font-size: 8px; letter-spacing: 1px; color: #6f7780;
+  text-transform: uppercase; padding-bottom: 2px;
+  border-bottom: 1px solid #0e0e0e;
+}
+.route-target { color: #8a8a8a; letter-spacing: 1px; }
+.route-row-bus .route-target { color: var(--glyph-active); }
+.route-row-self .route-target { color: #b58b5e; }
+/* Arriving from a PM-grid cell highlights the row it named, so the click lands
+   somewhere visible instead of silently swapping the table underneath you.
+
+   One band across the whole row, not a box per cell: the row is the thing being
+   pointed at, and seven separate outlines read as seven findings. It is
+   absolutely positioned over the grid rather than being a grid item — an item
+   spanning `1 / -1` would occupy the row and push the auto-placed cells out of
+   it — and is measured off the row's first cell after layout. */
+.route-band {
+  position: absolute; left: -3px; right: -3px;
+  border: 1px solid var(--lit-border); border-radius: 3px;
+  background: rgba(31, 156, 255, 0.07);
+  pointer-events: none;
+}
+
+/* Horizontal bipolar fader — a route's authored constant. */
+.hfader { position: relative; height: 15px; cursor: ew-resize; }
+.hfader-track {
+  position: absolute; top: 50%; left: 0; right: 0; height: 4px;
+  transform: translateY(-50%);
+  background: var(--track-bg); border-radius: 2px; overflow: hidden;
+}
+.hfader-fill { position: absolute; top: 0; bottom: 0; background: var(--fader-fill-bright); }
+.hfader-centre { position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; background: #3a3a3a; }
+.hfader-thumb {
+  position: absolute; top: 50%; width: 6px; height: 15px;
+  transform: translate(-50%, -50%);
+  background: var(--thumb-bg); border: 1px solid var(--thumb-border); border-radius: 2px;
+}
+
+.dim { opacity: 0.35; pointer-events: none; }
+
+/* ── Mod-matrix overlay ─────────────────────────────────────────────────── */
+.overlay-backdrop {
+  position: absolute; inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 40;
+}
+.overlay-backdrop[hidden] { display: none; }
+.overlay-panel {
+  position: relative;
+  background: var(--panel-bg);
+  border: 1px solid #3a3a3a; border-radius: 5px;
+  padding: 10px 12px 12px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.6);
+  max-height: 88%; display: flex; flex-direction: column; gap: 6px;
+}
+.overlay-title {
+  color: var(--glyph-active); font-size: 11px; letter-spacing: 2px;
+  text-transform: uppercase; text-align: center;
+}
+.overlay-sub {
+  color: #6f7780; font-size: 9px; letter-spacing: 1px;
+  text-align: center; margin-top: -4px;
+}
+.overlay-close {
+  position: absolute; top: 6px; right: 8px;
+  background: none; border: none; color: #6f7780;
+  font-size: 15px; cursor: pointer; line-height: 1;
+}
+.overlay-close:hover { color: var(--text); }
+.mm-list { overflow-y: auto; padding-right: 4px; }
+.mm-grid {
+  display: grid;
+  grid-template-columns: 24px 20px 1.1fr 1.5fr 130px 82px 1.1fr 82px;
+  gap: 3px 8px; align-items: center; font-size: 10px;
+}
+.mm-hd {
+  font-size: 8px; letter-spacing: 1px; color: #6f7780;
+  text-transform: uppercase; padding-bottom: 2px;
+  border-bottom: 1px solid #0e0e0e;
+}
+.mm-num { font-size: 9px; color: #4e565e; text-align: right; font-variant-numeric: tabular-nums; }

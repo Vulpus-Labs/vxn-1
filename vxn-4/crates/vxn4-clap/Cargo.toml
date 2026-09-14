@@ -7,7 +7,7 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-description = "VXN4 CLAP plugin shell (clack) — 8-operator PM synth, no faceplate."
+description = "VXN4 CLAP plugin shell (clack) — 8-operator PM synth with an HTML faceplate."
 
 [lib]
 # cdylib for the host-loadable plugin; rlib so in-process tests link the shell
@@ -21,6 +21,9 @@ vxn4-engine = { workspace = true }
 # channel-agnostic dispatch is exactly right — unlike vxn-1b, which needs its
 # own.
 vxn-core-clap = { workspace = true }
+# The faceplate (0387) and the handle types the `gui` extension names.
+vxn4-ui-web = { workspace = true }
+vxn-core-app = { workspace = true }
 clack-plugin = { workspace = true }
 clack-extensions = { workspace = true, features = [
     "audio-ports",
@@ -28,6 +31,7 @@ clack-extensions = { workspace = true, features = [
     "params",
     "state",
     "latency",
+    "gui",
     "clack-plugin",
 ] }
 
@@ -35,7 +39,9 @@ clack-extensions = { workspace = true, features = [
 # In-process lifecycle test: drives the plugin through the real CLAP calls via
 # clack-host without dlopen, so a panic surfaces with a backtrace.
 clack-host = { workspace = true }
-# Re-declared with `clack-host` so the *host* side of the extensions compiles
-# for the smoke test — `PluginState::save`/`load` is how the state round trip
-# (0384) goes through the real CLAP calls rather than around them.
-clack-extensions = { workspace = true, features = ["state", "clack-host"] }
+# The host half of the extension wrappers, so the smoke test can drive the
+# plugin the way a host does: `PluginState::save`/`load` for the state round
+# trip (0384) and `gui` for the editor lifecycle (0387), both through the real
+# CLAP calls rather than around them. Dev-only — the feature is not unified
+# into a plain `cargo build`, so the shipped cdylib links no host code.
+clack-extensions = { workspace = true, features = ["state", "gui", "clack-host"] }
