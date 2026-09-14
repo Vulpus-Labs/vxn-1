@@ -265,6 +265,10 @@ and [lane.rs](../crates/vxn3-engine/src/lane.rs) does not implement.
 - **Loop wrap, retrig interaction and p-lock interaction are unchanged** from
   0004 §3 / 0006 §4: retrig offsets its window origin to the hit's actual fire
   time; a p-lock resolves on the tick the hit actually fires.
+
+  > **Amended 2026-09-12 — see [Amendment](#amendment-2026-09-12--retrig-is-withdrawn).**
+  > Retrig is withdrawn from the design. The loop-wrap and p-lock halves of this
+  > bullet stand unchanged; the retrig half no longer has a subject.
 - **`Termination::Revert { n }` counts subdivision slots**, which is what "lane
   tick" now means. With per-beat sub-counts the slot duration varies, so a revert
   hold is a count of grid positions, not a duration — the same semantics
@@ -381,3 +385,57 @@ first-class option rather than an accident — but it widens the swing control t
 ticket 0354 has to build, so it is a deliberate choice rather than a detail.
 Ticket 0365 carries the change; it must land before 0354, since what the swing
 control reads out depends on which interval it drives.
+
+## Amendment (2026-09-12) — retrig is withdrawn
+
+**Retrig n-over-m is removed from the design.** ADR 0001 §2's "Retrig n-over-m"
+lever is withdrawn, along with its per-trig params (count `n`, span `m`, timing
+curve, velocity ramp) and its mention among the trig attributes in §3a. This ADR's
+§9 bullet on retrig window origins has no subject and is void; its loop-wrap and
+p-lock clauses stand.
+
+### Why
+
+Retrig was defined as *"a trig owns a sub-window of `m` steps and fires `n` times
+within it"* — a **macro over step indices**. It presupposed the grid this ADR
+removed. Its whole value was expressing, in one object, something a step grid
+could not otherwise say: several trigs at positions between the steps, with a
+velocity ramp across them.
+
+This ADR makes that the ordinary case. A hit is a free point on a continuous
+timeline with its own `f`, `nudge`, `y` and `rgb`; `n` hits placed where the user
+wants them, with whatever velocity contour the Y-centre curve or their own
+velocities give, is strictly more expressive than `n` evenly-or-curve-spaced
+subdivisions of a span measured in steps. The macro is a compression of a
+vocabulary the hit list now has natively, so it earns nothing and costs a parallel
+scheduling path.
+
+### What this trades away, stated plainly
+
+- **Budget.** A retrig was one `Hit` that expanded to `n` fire times at schedule
+  time. Written out, it is `n` entries against `MAX_HITS`. A dense roll that fit
+  before may not now. `MAX_HITS` is a tunable constant, not an invariant, so this
+  is a sizing question rather than a design one — but it is a real regression for
+  the densest patterns and should be measured before the ceiling is raised.
+- **Editability as one object.** Changing "16ths, accelerating, ramp to 0.4" was
+  one edit; over a written-out roll it is `n`. That is an editor affordance
+  (multi-select, or a generator that *places* hits and then forgets about them),
+  not a reason to keep a second scheduling model in the engine.
+
+Both are consequences of the decision, not arguments against it: the point of
+this ADR is that hit positions are data, and a macro that generates positions
+should produce data rather than persist as a parallel representation of it.
+
+### Scope of the removal
+
+- **ADR 0001** §2 and §3a: the retrig lever and its listing among trig attributes
+  are withdrawn by this amendment. ADR 0001 is otherwise unaffected.
+- **ADRs 0004 and 0006** are superseded and are left untouched. They record what
+  was decided at the time, including retrig's interaction with micro-timing and
+  with the groove template; rewriting a superseded ADR would destroy the record
+  rather than correct it. Read them as history.
+- **The code removal is a separate ticket.** `Retrig`, `RetrigCurve`, the
+  `expand_retrig` path in `lane.rs`, the `SetRetrig` command, and the faceplate's
+  retrig affordance all still exist and still work. Nothing here changes the
+  engine; this amendment removes retrig from the *specification*, which is what
+  makes the removal ticket legible when it is written.

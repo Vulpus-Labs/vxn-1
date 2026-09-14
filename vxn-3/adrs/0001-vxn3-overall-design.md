@@ -57,9 +57,15 @@ for the target genre.
 
 Per-track / per-trig levers:
 
-- **Retrig n-over-m** (patches tracker model): a trig owns a sub-window of `m`
+- ~~**Retrig n-over-m** (patches tracker model): a trig owns a sub-window of `m`
   steps and fires `n` times within it. Per-trig params: count `n`, span `m`,
-  timing curve (even / accel / decel), velocity ramp. A per-trig *macro*.
+  timing curve (even / accel / decel), velocity ramp. A per-trig *macro*.~~
+
+  > **Withdrawn 2026-09-12** by [ADR 0007's retrig amendment](0007-vxn3-continuous-lane-editor.md#amendment-2026-09-12--retrig-is-withdrawn).
+  > This lever was a macro over **step indices** and presupposed the step grid
+  > ADR 0007 removed. Freely-positioned hits express the same rolls directly, and
+  > more besides, so the macro compresses a vocabulary the hit list now has
+  > natively.
 - **Probabilistic + conditional trigs:** per-trig probability and condition
   groups (1:2, 3:4, fill, prev/neighbour). Cheap, large "alive" payoff.
 - **Per-step p-locks:** pin a param value (or a ramp toward one) to a step, with
@@ -98,11 +104,12 @@ buses remain the default. (Bus count and how many may be external: ADR 0002 §5.
 ### 3a. Parameter locks — semantics
 
 A p-lock is a per-step override of a *continuous* track param (engine param,
-send amount, pan, level…). It is distinct from **trig attributes** (retrig
-n/m, probability, condition, velocity/accent), which live *on the trig*
+send amount, pan, level…). It is distinct from **trig attributes** (~~retrig
+n/m,~~ probability, condition, velocity/accent), which live *on the trig*
 and have no base to revert to. (Micro-timing was formerly a trig attribute;
 [ADR 0006](0006-vxn3-groove.md) moves timing feel out to the groove template.
-Per-step **velocity/accent** stays on the trig — compositional accent, distinct
+Retrig was withdrawn outright — see the §2 note above. Per-step
+**velocity/accent** stays on the trig — compositional accent, distinct
 from the groove's feel-based velocity contour.) p-locks subsume what would otherwise be a
 separate automation lane: a "lane" is the per-param view over a track's locks.
 
@@ -215,8 +222,8 @@ achievable.
   rewritten 4-wide SoA or stays scalar is **per the engine's voicing model**
   (§5): a kernel that wants independent overlapping tails — or later trigs that
   choke but don't terminate earlier ones — needs the parallel-voice SoA rewrite;
-  a kernel where retrig simply restarts the envelope stays scalar (width 1) and
-  the port is close to a straight copy.
+  a kernel where a new trig simply restarts the envelope stays scalar (width 1)
+  and the port is close to a straight copy.
 - Reuse the VXN2 6-op FM core as an FM body / tonal engine where it earns its
   place.
 - Add modal/metallic and noise engines for the resonator class.
