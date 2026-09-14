@@ -73,3 +73,41 @@ later. `phase_spread` is the known example: it is applied at note onset, so
 editing it cannot affect notes already sounding
 ([ops.rs:174-177](../../vxn-4/crates/vxn4-dsp/src/ops.rs#L174-L177)), and that is
 correct behaviour rather than a bug to fix.
+
+## Close-out (2026-09-14)
+
+- `Engine` no longer owns a `Patch`. It holds `PatchTables` — the flattened
+  numbers it renders from — at
+  [engine.rs:286](../../vxn-4/crates/vxn4-engine/src/engine.rs#L286); the
+  `&'static str` name is gone, since an edited patch has no factory identity.
+- [shared.rs](../../vxn-4/crates/vxn4-engine/src/shared.rs) is the authority:
+  one `AtomicU32` per descriptor id, the matrix topology behind a mutex the
+  audio thread has no accessor for, and a reload flag.
+  [topology.rs](../../vxn-4/crates/vxn4-engine/src/topology.rs) is the SPSC ring
+  — `TopoMsg::Edit` per field, `TopoMsg::Snapshot` for bulk, the snapshot
+  doubling as the overflow backstop (`a_full_ring_falls_back_to_the_snapshot_path`).
+- The no-lock guarantee is structural, not documentary: `topology.rs` contains
+  no mutex at all, and `lock()` in `shared.rs` appears only in main-thread
+  methods, never on `sync` → `drain_topology` → `adopt_params`.
+  `the_audio_thread_drains_while_the_editor_holds_the_lock` is the
+  priority-inversion test.
+- Coherence both ways round: `params_and_topology_converge_in_either_order` and
+  `a_reload_seen_after_the_drain_still_finds_its_snapshot`.
+- **Bit-identical, verified independently.**
+  [tests/bit_identical.rs](../../vxn-4/crates/vxn4-engine/tests/bit_identical.rs)
+  hashes a chord, macro pose, held-note macro move and release tail for all
+  seven patches at both qualities, against digests captured at `b663dfd` before
+  the inversion. Confirmed non-circular by running the harness unchanged against
+  that commit, where it also passes.
+- The voice-reset decision, documented on `Engine::resync`: **no field-level
+  edit needs a reset.** Ratio edits repitch sounding notes
+  (`a_ratio_edit_repitches_notes_already_sounding`); phase and phase-spread are
+  onset-scoped and correct to be
+  (`a_phase_spread_edit_reaches_the_next_note_and_not_the_held_one`); only
+  `set_patch` panics voices, and a preset load through the store does not
+  (`loading_a_patch_through_the_store_does_not_panic_the_voices`).
+- 23 tests in `shared`, 10 in `topology`, 2 integration. The 78 pre-existing
+  engine tests pass unedited.
+- Not done here, deliberately: nothing called `sync` until
+  [0384](0384-vxn4-clap-state-v2.md) wired it into `activate` and `process`,
+  which is what made the inversion load-bearing in the shipping plugin.

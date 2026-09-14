@@ -70,3 +70,53 @@ The mockup's `#mixer` / `#operators` / `#matrix` hash routing is a
 screenshotting aid for iterating on layout. Keep it — it is how the next round
 of design review happens — but it must not be the mechanism the real tab strip
 uses.
+
+## Close-out (2026-09-14)
+
+- New crate `vxn4-ui-web`:
+  [src/lib.rs](../../vxn-4/crates/vxn4-ui-web/src/lib.rs) with `build_html`,
+  `open_editor` over `vxn_core_ui_web::open_editor`, the size constants, and the
+  re-exported handle/error types. Assets split into `index.html` / `style.css` /
+  `app.js` plus 17 modules under `assets/panels/`, ESM-authored with the export
+  syntax stripped at splice and the order declared in one array
+  (`html_has_every_asset_spliced`, `the_bundle_carries_no_module_syntax`).
+- `gui` extension in [gui.rs](../../vxn-4/crates/vxn4-clap/src/gui.rs); `lib.rs`
+  gained only the module, the registration and one handle field. Drives
+  create → get_size → destroy twice through `clack-host`
+  (`the_host_can_open_and_close_the_editor_twice`); a null parent errors rather
+  than panicking (`a_null_parent_is_an_error_and_not_a_panic`).
+- **1140 × 803, sized to the tallest pane** — operators is 674px against the
+  mixer's 494 and perform's 488. Trimming operators means redesigning three rows
+  of real controls; renegotiating `get_size` per tab resizes the host window
+  mid-edit. The short panes leave visible space at the bottom; that is the trade.
+  `editor_width_matches_the_css`, `editor_height_accounts_for_the_tallest_pane`.
+- Reused rather than copied: `valuePop` and its `value-pop.css` (spliced from
+  the shared crate — `grep -c '^\.value-pop'` on vxn-4's stylesheet returns 0),
+  `wireDrag`, and `noteName`. Genuinely new: the PM grid and the operator wave
+  picker, as the ticket predicted. vxn-1b's and vxn-2's fader/dial/button-group
+  bind to `data-vxn-param` markup and build no DOM, so they were the shape to
+  follow rather than the code to import.
+- Four edits to the mockup, made there first and none changing how it renders:
+  `--tab-h` / `--pane-h`, an explicit height on `.tab-btn` (its height came out
+  of the font's line box), `min-height` on the active pane, and border-box on
+  `.op-tab`.
+- `cargo xtask bundle` still produces an ad-hoc-signed `vxn4.clap`; no
+  `Contents/Resources/` staging, because the assets are `include_str!`-embedded.
+- 8 Rust tests in the crate, 19 JS tests behind `VXN_JS_TESTS`
+  (`js_suite_passes`), 24 + 12 in `vxn4-clap`. Verified by rendering the real
+  assembled page and confirming it matches the mockup, and by driving synthetic
+  pointer sequences against the PM grid, the popup and the tab canvases.
+- Two things this ticket changed relative to design review: the matrix overlay
+  shows **48 rows, not 16**, because it now reads `N_MATRIX_SLOTS` from Rust and
+  16 would leave slots 17–48 unreachable; and `ControllerHandle::detached()` was
+  added to `vxn-core-app` (additive, documented as transitional) because the
+  editor host needs a handle and `vxn4-app` is
+  [0386](0386-vxn4-app-crate.md) — a post that fails at the channel beats a stub
+  `ParamModel` the page could read wrong values out of.
+- Chrome only, as scoped: controls own their own local state and nothing
+  dispatches. `set_parent` could not be exercised without a window server; the
+  open/close claim rests on the create/destroy cycle test plus `EditorHandle`'s
+  drop. Binding is 0388.
+- Flagged for E008: the LFO wave-glyph table is now a third copy of vxn-2's
+  `panels/knob.js`. Lifting it into core means editing vxn-2, which this ticket
+  was scoped out of.

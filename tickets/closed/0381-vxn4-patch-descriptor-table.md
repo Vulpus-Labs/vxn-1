@@ -93,3 +93,33 @@ Deliberately **not** in scope: any field the mockup draws that the engine does
 not have (filter, LFOs, ADHSR mod sources, FX, key scaling, rational tuning).
 Those get descriptors when they get implementations. The table describes what
 exists.
+
+## Close-out (2026-09-14)
+
+- `vxn4-engine::params` carries 252 descriptors:
+  [params.rs](../../vxn-4/crates/vxn4-engine/src/params.rs). The patch region is
+  241 (8 ops × 15 fields, 64 PM constants, 8 sum-bus sends, 48 matrix slot
+  depths, patch gain); the host region is the eleven CLAP params.
+  `the_table_is_the_size_the_layout_implies` pins the arithmetic, so a field
+  added to `OpConfig` without a descriptor fails the build's tests.
+- Names are kebab, zero-based, index embedded, matching `matrix.rs`'s
+  `DEST_NAMES` — built with `concat!` rather than formatted, which is what lets
+  `ParamDesc` stay a plain static. `every_id_round_trips_through_its_name` and
+  `names_are_unique` cover the scheme; `pm_ids_agree_with_the_matrix_layout`
+  asserts a PM param and its destination name the same route.
+- `ParamId` is the model id and `clap_id` the host id, joined only by
+  `clap_id_for` / `param_for_clap`. `the_two_id_spaces_meet_only_at_the_host_region`
+  holds the mapping; a grep for casts between the two returns nothing.
+- `variant_or_default` makes an unknown enum label take the descriptor default
+  rather than fail the file — `an_unknown_enum_label_falls_back_to_the_default`.
+  0383 surfaces the substitution as a warning.
+- `every_taper_is_invertible` round-trips every descriptor's taper over 21
+  fader positions. It is the one that catches configuration errors in this file
+  (a `BipolarExp` with `mid >= max/2` degrades silently to linear; a mispinned
+  `Exp` emits NaN into a fader) rather than bugs in the shared taper math.
+- Two corrections to the ticket as written, both recorded in it above: matrix
+  slot depths were missing from the criteria, and the host params are a separate
+  region rather than patch fields that happen to be CLAP-exposed —
+  `Patch::gain` (`gain`) and the player's output trim (`master-gain`) are
+  different params and both exist.
+- 27 tests under `params::tests`; `cargo test -p vxn4-engine` green.

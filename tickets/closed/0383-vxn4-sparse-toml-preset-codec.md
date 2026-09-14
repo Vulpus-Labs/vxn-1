@@ -69,3 +69,43 @@ The mockup invents macro labels per patch
 labels are patch data, they belong in this format — probably in `[meta]` or a
 `[macros]` table, since they are display strings rather than values. Settle it
 here; 0388 will need it.
+
+## Close-out (2026-09-14)
+
+- [preset.rs](../../vxn-4/crates/vxn4-engine/src/preset.rs) reads and writes the
+  shared `vxn-preset` envelope (`schema`, `[meta]`) over a vxn-4 body of
+  `[params]`, `[macros]` and `[[matrix]]`. Deterministic —
+  `writing_the_same_patch_twice_produces_the_same_bytes`.
+- Sparse against the descriptor defaults
+  (`a_preset_writes_only_what_deviates_from_the_default`,
+  `an_empty_body_decodes_to_the_descriptor_defaults`). Enums store their kebab
+  label (`enum_fields_store_their_label_not_their_discriminant`).
+- Topology rides `[[matrix]]`, depth stays a param
+  (`depth_is_a_param_and_is_not_duplicated_in_the_topology_rows`). Only wired
+  slots are written, but a **switched-off** wired slot still is — the toggle is
+  not a delete (`a_switched_off_route_is_still_written`).
+- Warnings are non-fatal and collected on `Preset::warnings`: unknown param key,
+  unknown enum label, type mismatch, unknown macro key, out-of-range slot,
+  unknown endpoint or shaping column. Only malformed TOML and an unsupported
+  schema are `PresetError` (`malformed_toml_is_an_error_rather_than_a_warning`,
+  `an_unsupported_schema_is_a_typed_error`).
+- **Macro labels settled into a `[macros]` table**, keyed by the same
+  `macro-1`…`macro-8` names the host params use, and held *beside* `Patch`
+  rather than inside it — a `String` in the render-path struct would put a
+  deallocation on the audio thread when 0382 drops a snapshot there.
+  `the_macro_table_is_keyed_by_the_host_param_names`.
+- Host params never serialise; a `[params]` key naming one warns rather than
+  moving the player's knobs
+  (`a_host_param_in_the_body_warns_rather_than_moving_the_players_knobs`).
+- Round-trip verified at the level the epic asks for:
+  `every_factory_patch_renders_bit_identically_after_a_round_trip` renders six
+  held notes with five macros off zero and compares raw `f32` bits. Confirmed
+  sensitive rather than vacuous by mutation — dropping `pm-*` from the writer
+  makes it fail at sample 97 on `epiano`. Plus `random_patches_round_trip_field_by_field`
+  over 64 generated patches from a fixed seed.
+- 27 tests under `preset::tests`.
+- Flagged, not fixed: `eg_off()` differs from `EgParams::default()`, so an
+  unused operator costs ~9 lines of "this operator is off" per file. Correcting
+  it means changing a default, which is the user-visible act the module doc
+  warns about. The seven factory patches also ship with blank macro labels —
+  authoring them is voicing work for [0388](0388-vxn4-bind-and-grey.md).
