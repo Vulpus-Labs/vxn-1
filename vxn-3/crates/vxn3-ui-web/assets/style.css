@@ -108,7 +108,7 @@ input[type="range"]:disabled::-webkit-slider-thumb { background: var(--dim); box
    from the lane's real geometry, so nothing here may assume even spacing (the
    swung grid is unevenly spaced by construction). */
 .strip {
-  position: relative; width: 420px; height: 54px;
+  position: relative; width: 420px; height: 68px;
   background: var(--panel-hi);
   border: 1px solid var(--line); border-radius: 4px;
   overflow: hidden; cursor: crosshair;
@@ -116,12 +116,67 @@ input[type="range"]:disabled::-webkit-slider-thumb { background: var(--dim); box
 .strip.full { box-shadow: inset 0 0 0 2px #ff5c5c; }
 
 /* Marker / centre / playhead layers never take the pointer: a click on the strip
-   is a placement, and it must not depend on which piece of the grid it landed on. */
-.markers, .centre, .playhead, .hits { position: absolute; inset: 0; pointer-events: none; }
+   is a placement, and it must not depend on which piece of the grid it landed on.
+   They start below the grid rail (0354), so the hit surface and the rail have the
+   same X and different Y — one pointer mapping, two gestures. */
+.markers, .centre, .playhead, .hits, .slots {
+  position: absolute; left: 0; right: 0; top: 14px; bottom: 0; pointer-events: none;
+}
 .marker { position: absolute; top: 0; bottom: 0; transform: translateX(-50%); }
 .marker.sub  { width: 1px; background: #2b333f; }
 .marker.beat { width: 2px; background: #5b6884; }
 .marker.beat.end { background: #46516a; }
+
+/* ── The grid rail (0354): the geometry's own surface ──
+   Beat markers are the stored, draggable tier (ADR 0007 §2); their handles live
+   here rather than on the marker lines, so grabbing one can never be confused with
+   placing a hit. Every `left` is a real marker position — the rail is exactly as
+   unevenly spaced as the grid is. */
+.rail {
+  position: absolute; top: 0; left: 0; right: 0; height: 14px;
+  background: #14181f; border-bottom: 1px solid var(--line);
+  pointer-events: auto; cursor: default;
+}
+.rail-beat { position: absolute; top: 0; bottom: 0; }
+.rail-beat.alt { background: rgba(255, 255, 255, 0.025); }
+/* The beat's subdivision count, and the tuplet control. An overridden beat is
+   marked, so a lane-wide sub edit cannot look as though it erased one silently. */
+.subs-badge {
+  position: absolute; left: 50%; top: 0; transform: translateX(-50%);
+  font-size: 9px; line-height: 13px; color: var(--dim);
+  padding: 0 3px; cursor: ns-resize; user-select: none;
+}
+.subs-badge.ovr { color: var(--accent); font-weight: 700; }
+.subs-badge:hover { color: var(--text); }
+
+.mhandle {
+  position: absolute; top: 0; bottom: 0; width: 9px; margin-left: -4.5px;
+  cursor: ew-resize;
+}
+.mhandle::after {
+  content: ""; position: absolute; left: 3px; top: 2px; bottom: 2px; width: 3px;
+  background: #5b6884; border-radius: 1px;
+}
+.mhandle:hover::after { background: var(--accent); }
+/* Pinned: the pattern's bounds. Hollow and not-allowed, so "you cannot drag this"
+   is visible before the drag rather than being learnt from it doing nothing. */
+.mhandle.pinned { cursor: not-allowed; }
+.mhandle.pinned::after { background: none; box-shadow: inset 0 0 0 1px #46516a; }
+.mhandle.active::after { background: var(--accent); }
+.mhandle.clamped::after { background: #ff5c5c; }
+
+/* Drag feedback. Both adjacent slots light at once because both are moving — the
+   two-sidedness is the part nobody predicts — and the clamp bounds show where the
+   marker will stop before it stops there. */
+.slot-hi { position: absolute; top: 0; bottom: 0; }
+.slot-hi.stretch { background: rgba(120, 200, 255, 0.12); box-shadow: inset 0 0 0 1px rgba(120, 200, 255, 0.3); }
+.slot-hi.squash  { background: rgba(255, 170, 90, 0.12); box-shadow: inset 0 0 0 1px rgba(255, 170, 90, 0.3); }
+.clamp-bound {
+  position: absolute; top: 0; bottom: 0; width: 1px; transform: translateX(-50%);
+  background: repeating-linear-gradient(to bottom, #ff5c5c 0 3px, transparent 3px 6px);
+  opacity: 0.55;
+}
+.clamp-bound.at { opacity: 1; width: 2px; }
 
 /* The groove's Y-centre curve — flat until 0350 puts control points on the beat
    markers, which is exactly why Y reads as absolute-in-lane for now. */
@@ -144,7 +199,7 @@ input[type="range"]:disabled::-webkit-slider-thumb { background: var(--dim); box
 
 /* ── Rack toolbar: snap, quantise amount, the two quantise verbs ── */
 .rackbar {
-  display: flex; align-items: center; gap: 14px;
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
   margin: 8px 8px 0; padding: 6px 10px;
   background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
 }
@@ -160,6 +215,22 @@ input[type="range"]:disabled::-webkit-slider-thumb { background: var(--dim); box
 .rb-btn:hover { border-color: var(--accent); color: var(--accent); }
 .rb-status { color: #ff8a8a; font-size: 11px; }
 .rb-hint { margin-left: auto; color: var(--dim); font-size: 10px; }
+/* The rail's gestures take their own line: they read differently from the strip's
+   (a marker drag carries its hits, an insert leaves them) and must not blur into
+   one list of shortcuts. */
+.rb-hint.rail { flex-basis: 100%; margin-left: 0; }
+
+/* The swing control: a knob-shaped column with the period beside the number,
+   because what the number means depends on the interval it spans (0365). */
+.swing { display: flex; flex-direction: column; align-items: center; gap: 2px; width: 56px; }
+.swing label { color: var(--dim); font-size: 9px; white-space: nowrap; }
+.swing input { width: 56px; }
+.swing-period {
+  background: var(--panel-hi); color: var(--dim);
+  border: 1px solid var(--line); border-radius: 3px;
+  font-size: 9px; padding: 0 5px; cursor: pointer;
+}
+.swing-period:hover { color: var(--accent); border-color: var(--accent); }
 
 .knobs { display: flex; gap: 8px; align-items: center; justify-content: flex-start; }
 .knob { display: flex; flex-direction: column; align-items: center; gap: 2px; width: 42px; }

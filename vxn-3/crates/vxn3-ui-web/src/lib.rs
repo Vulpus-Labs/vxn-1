@@ -42,12 +42,14 @@ use vxn3_engine::flavour::{Binding, Curve, Flavour, colour_override};
 use vxn3_engine::sequencer::{Retrig, RetrigCurve, Y_CENTRE};
 use vxn3_engine::track_engine::{EngineKind, MACRO_SLOTS};
 use vxn3_engine::{
-    EngineCommand, Grid, Hit, MAX_BEATS, MAX_HITS, MAX_NUDGE_TICKS, MAX_SUBS, N_TRACKS, Pattern,
-    TICKS_PER_BEAT, flavours_for, params_for,
+    EngineCommand, Grid, Hit, MAX_BEATS, MAX_HITS, MAX_NUDGE_TICKS, MAX_SUBS, MIN_SLOT, N_TRACKS,
+    Pattern, Swing, SwingPeriod, SwingShape, TICKS_PER_BEAT, flavours_for, params_for,
 };
 
 pub const EDITOR_WIDTH: u32 = 900;
-pub const EDITOR_HEIGHT: u32 = 420;
+/// Taller since 0354: each lane strip carries a grid rail above its hit surface, so
+/// a row is 14px taller and the window follows rather than showing fewer lanes.
+pub const EDITOR_HEIGHT: u32 = 530;
 
 /// Pitch a hit takes when a payload carries none — C2, [`vxn3_engine::Hit`]'s own
 /// default. See the `add_hit` arm of [`parse_custom_ui`] for why this defaults
@@ -180,6 +182,10 @@ pub fn build_html(model: &[Pattern]) -> String {
         "max_hits": MAX_HITS,
         "max_beats": MAX_BEATS,
         "max_subs": MAX_SUBS,
+        // The marker clamp, shipped rather than duplicated (0354): the strip shows
+        // the bound a drag is about to hit, and a page guessing at it would draw the
+        // bound in one place and have the engine clamp in another.
+        "min_slot": MIN_SLOT,
         "ticks_per_beat": TICKS_PER_BEAT,
         "max_nudge_ticks": MAX_NUDGE_TICKS,
         "y_centre": Y_CENTRE,
@@ -210,6 +216,14 @@ fn f32_at(v: &Json, key: &str) -> Option<f32> {
 /// tick count rather than being read through the unsigned helpers above.
 fn i16_at(v: &Json, key: &str) -> Option<i16> {
     Some(v.get(key)?.as_i64()? as i16)
+}
+/// A marker position, which is the one quantity on the wire that must stay `f64`:
+/// beat markers are absolute positions the whole geometry is measured against, and
+/// [`vxn3_engine::MIN_SLOT`]'s exactness argument is an `f64` one (0349). Narrowing
+/// a drag through `f32` would land the marker somewhere the page did not compute,
+/// and the page's mirror of the grid would part company with the model's.
+fn f64_at(v: &Json, key: &str) -> Option<f64> {
+    v.get(key)?.as_f64()
 }
 
 fn kind_of(s: &str) -> Option<EngineKind> {
@@ -425,6 +439,43 @@ fn parse_custom_ui(op: &str, v: &Json) -> Option<UiEvent> {
         })),
         "set_grid_subs" => Some(edit(EngineCommand::SetGridSubs {
             track,
+            subs: u8_at(v, "subs")?,
+        })),
+        // The marker gestures (0354). Three verbs, not one: a drag preserves each
+        // hit's position *relative* to the slots either side, an insert and a delete
+        // preserve its absolute time. Same geometry, opposite rules (ADR 0007 §5).
+        "drag_beat_marker" => Some(edit(EngineCommand::DragBeatMarker {
+            track,
+            marker: u8_at(v, "marker")?,
+            pos: f64_at(v, "pos")?,
+        })),
+        "insert_beat_marker" => Some(edit(EngineCommand::InsertBeatMarker {
+            track,
+            marker: u8_at(v, "marker")?,
+            pos: f64_at(v, "pos")?,
+            // Optional: an ordinary insert omits it and inherits, as `Grid` decides.
+            // Only undo-of-delete names one, to put back the override the merge ate.
+            subs: v.get("subs").and_then(|s| s.as_u64()).unwrap_or(0) as u8,
+        })),
+        "delete_beat_marker" => Some(edit(EngineCommand::DeleteBeatMarker {
+            track,
+            marker: u8_at(v, "marker")?,
+        })),
+        // Shape and period are enum tags, read through `from_u8` so an unknown one
+        // falls back rather than failing the parse — the amount is the control the
+        // user is holding, and dropping the whole edit over a tag would freeze it.
+        "set_swing" => Some(edit(EngineCommand::SetSwing {
+            track,
+            swing: Swing {
+                shape: SwingShape::from_u8(u8_at(v, "shape").unwrap_or(0)),
+                amount: f64_at(v, "amount")?,
+                period: SwingPeriod::from_u8(u8_at(v, "period").unwrap_or(2)),
+            },
+        })),
+        // `subs: 0` clears the override — the lane default, not "no subdivisions".
+        "set_beat_subs" => Some(edit(EngineCommand::SetBeatSubs {
+            track,
+            beat: u8_at(v, "beat")?,
             subs: u8_at(v, "subs")?,
         })),
         "set_gain" => Some(edit(EngineCommand::SetGain {
@@ -798,6 +849,149 @@ mod tests {
         assert_eq!(hits[0]["rgb"], Json::Null, "uncoloured is null, never black");
         assert_eq!(hits[1]["rgb"], serde_json::json!([0.0, 0.0, 0.0]), "black is a colour");
         assert_eq!(hits[2]["rgb"], serde_json::json!([1.0, 0.5, 0.25]));
+    }
+
+    /// AC (0354): the marker gestures reach the model as the *three* verbs ADR 0007
+    /// §5 distinguishes, and a drag's position crosses as `f64` — it is an absolute
+    /// beat position the whole geometry is measured against, and the `MIN_SLOT`
+    /// clamp's exactness argument is an `f64` one.
+    #[test]
+    fn parses_the_marker_gestures() {
+        let ev = parse_custom_ui(
+            "drag_beat_marker",
+            &obj(r#"{"track":2,"marker":1,"pos":1.0009765625}"#),
+        )
+        .unwrap();
+        match ev {
+            UiEvent::Custom(b) => match *b.downcast::<Vxn3UiCustom>().unwrap() {
+                Vxn3UiCustom::Edit(EngineCommand::DragBeatMarker { track, marker, pos }) => {
+                    assert_eq!((track, marker), (2, 1));
+                    assert_eq!(pos, 1.000_976_562_5, "the position is not narrowed to f32");
+                }
+                _ => panic!("wrong variant"),
+            },
+            _ => panic!("not custom"),
+        }
+        // The new beat's sub-count rides the insert — the two cannot be two commands,
+        // since a following `set_beat_subs` takes the *relative* door and would move
+        // the hits the insert had just preserved.
+        let ev = parse_custom_ui(
+            "insert_beat_marker",
+            &obj(r#"{"track":0,"marker":3,"pos":2.5,"subs":3}"#),
+        )
+        .unwrap();
+        match ev {
+            UiEvent::Custom(b) => match *b.downcast::<Vxn3UiCustom>().unwrap() {
+                Vxn3UiCustom::Edit(EngineCommand::InsertBeatMarker { marker, pos, subs, .. }) => {
+                    assert_eq!((marker, pos, subs), (3, 2.5, 3));
+                }
+                _ => panic!("wrong variant"),
+            },
+            _ => panic!("not custom"),
+        }
+        // Absent reads as "no override" rather than failing the parse, for the reason
+        // `add_hit`'s attributes do: the page has already drawn the split.
+        let ev =
+            parse_custom_ui("insert_beat_marker", &obj(r#"{"track":0,"marker":3,"pos":2.5}"#))
+                .unwrap();
+        match ev {
+            UiEvent::Custom(b) => match *b.downcast::<Vxn3UiCustom>().unwrap() {
+                Vxn3UiCustom::Edit(EngineCommand::InsertBeatMarker { subs, .. }) => {
+                    assert_eq!(subs, 0);
+                }
+                _ => panic!("wrong variant"),
+            },
+            _ => panic!("not custom"),
+        }
+        let ev = parse_custom_ui("delete_beat_marker", &obj(r#"{"track":0,"marker":2}"#)).unwrap();
+        match ev {
+            UiEvent::Custom(b) => match *b.downcast::<Vxn3UiCustom>().unwrap() {
+                Vxn3UiCustom::Edit(EngineCommand::DeleteBeatMarker { marker, .. }) => {
+                    assert_eq!(marker, 2);
+                }
+                _ => panic!("wrong variant"),
+            },
+            _ => panic!("not custom"),
+        }
+    }
+
+    /// AC (0354): the swing control's three fields, and the per-beat sub-count that
+    /// is how a tuplet is entered. The enum tags read through `from_u8`, so an
+    /// unknown one falls back rather than dropping an edit the user is mid-gesture on.
+    #[test]
+    fn parses_swing_and_the_per_beat_sub_count() {
+        let ev =
+            parse_custom_ui("set_swing", &obj(r#"{"track":1,"shape":1,"amount":0.6,"period":0}"#))
+                .unwrap();
+        match ev {
+            UiEvent::Custom(b) => match *b.downcast::<Vxn3UiCustom>().unwrap() {
+                Vxn3UiCustom::Edit(EngineCommand::SetSwing { track, swing }) => {
+                    assert_eq!(track, 1);
+                    assert_eq!(swing.shape, SwingShape::Mpc);
+                    assert_eq!(swing.amount, 0.6);
+                    assert_eq!(swing.period, SwingPeriod::Beat, "the period is a control (0365)");
+                }
+                _ => panic!("wrong variant"),
+            },
+            _ => panic!("not custom"),
+        }
+        // An unknown tag is its fallback, not a dropped edit.
+        let ev = parse_custom_ui(
+            "set_swing",
+            &obj(r#"{"track":0,"shape":9,"amount":0.0,"period":99}"#),
+        )
+        .unwrap();
+        match ev {
+            UiEvent::Custom(b) => match *b.downcast::<Vxn3UiCustom>().unwrap() {
+                Vxn3UiCustom::Edit(EngineCommand::SetSwing { swing, .. }) => {
+                    assert_eq!(swing.shape, SwingShape::Straight);
+                    assert_eq!(swing.period, SwingPeriod::Pair);
+                }
+                _ => panic!("wrong variant"),
+            },
+            _ => panic!("not custom"),
+        }
+        // `subs: 0` is "follow the lane default", which is how the override clears.
+        for (json, subs) in [
+            (r#"{"track":0,"beat":2,"subs":3}"#, 3),
+            (r#"{"track":0,"beat":2,"subs":0}"#, 0),
+        ] {
+            let ev = parse_custom_ui("set_beat_subs", &obj(json)).unwrap();
+            match ev {
+                UiEvent::Custom(b) => match *b.downcast::<Vxn3UiCustom>().unwrap() {
+                    Vxn3UiCustom::Edit(EngineCommand::SetBeatSubs { beat, subs: s, .. }) => {
+                        assert_eq!((beat, s), (2, subs));
+                    }
+                    _ => panic!("wrong variant"),
+                },
+                _ => panic!("not custom"),
+            }
+        }
+    }
+
+    /// AC (0354): the page draws the clamp bound a drag is about to hit, so the bound
+    /// is shipped rather than guessed — a page holding its own `MIN_SLOT` would draw
+    /// the wall in one place and have the engine clamp in another.
+    #[test]
+    fn the_config_ships_the_marker_clamp() {
+        assert!(build_html(&[]).contains("\"min_slot\":0.015625"));
+        assert!(APP_JS.contains("CFG.min_slot"));
+    }
+
+    /// AC (0354): the rail the markers are dragged on is drawn from the lane's own
+    /// marker positions, like everything else on the strip. A stride times an index
+    /// would be wrong the moment a marker moved or the lane swung — and the two rules
+    /// of ADR 0007 §5 are both present, the absolute one reachable only through the
+    /// insert/delete pair.
+    #[test]
+    fn the_rail_is_drawn_from_the_lanes_own_markers() {
+        assert!(APP_JS.contains("function renderRail("));
+        assert!(APP_JS.contains("g.markers[i] / g.len_beats"), "handles sit on real markers");
+        assert!(APP_JS.contains("function setBeatMarker("), "the clamped write is ported");
+        assert!(APP_JS.contains("function editPreservingTimes("), "…and the absolute door");
+        for op in ["drag_beat_marker", "insert_beat_marker", "delete_beat_marker", "set_swing"] {
+            assert!(APP_JS.contains(op), "the page sends {op}");
+        }
     }
 
     /// The view has no verb for asking. It is built from the model and told when

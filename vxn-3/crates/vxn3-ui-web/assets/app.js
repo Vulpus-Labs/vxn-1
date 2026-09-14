@@ -102,7 +102,10 @@
   // reading them back over a channel that does not exist.
 
   var MPC_MAX_RATIO = 0.75;   // Swing's knee ceiling
-  var MIN_SLOT = 1 / 64;      // grid.rs MIN_SLOT
+  // grid.rs MIN_SLOT, shipped rather than guessed (0354): the strip draws the bound
+  // a marker drag is about to clamp against, and a page holding its own idea of it
+  // would draw the bound in one place while the engine clamped in another.
+  var MIN_SLOT = CFG.min_slot || 1 / 64;
   var F_MAX = Math.fround(1 - 1.1920928955078125e-7); // 1 - f32::EPSILON
   var f32 = Math.fround;      // one `f32` rounding, where the engine stores one
   // Rust's `f32::round` breaks ties away from zero; `Math.round` breaks them
@@ -152,6 +155,18 @@
     }
     var last = g.n_beats - 1;
     return { beat: last, sub: g.subs[last] - 1 };
+  }
+  // Grid::pos_of — the forward map, a (beat, sub, frac) triple's beat position.
+  // The inverse of `locate`, and what the absolute-preserving marker edits capture
+  // before the geometry moves under them.
+  function posOf(g, beat, sub, frac) {
+    var b = Math.min(beat, g.n_beats - 1);
+    var k = Math.min(sub, subsAt(g, b) - 1);
+    var p0 = subPos(g, b, k), p1 = subPos(g, b, k + 1);
+    var f = isFinite(frac) ? frac : 0;
+    if (f <= 0) return p0;
+    if (f >= 1) return p1;  // exactly the next marker, so slot ends round-trip
+    return p0 + f * (p1 - p0);
   }
   // Grid::locate — resolve a beat position to its owning (beat, sub, frac).
   function locate(g, t) {
@@ -309,6 +324,159 @@
     return null;
   }
 
+  // ── marker edits: drag is relative, insert/delete absolute (0349, 0354) ──────
+  // The page's half of ADR 0007 §5's two opposite rules. Ported from `sequencer.rs`
+  // and `grid.rs` rather than approximated, for the reason the geometry port above
+  // is: the page mirrors the engine's fire-order indices, so the two have to agree
+  // on where every hit lands after a geometry edit, not merely nearly agree.
+  //
+  // Nothing here writes `markers[i]` directly — `setBeatMarker` is the single door,
+  // exactly as it is in the engine, so no gesture can produce a slot narrower than
+  // MIN_SLOT or unpin an outer marker.
+
+  // Rebuild the resolved per-beat sub-counts after the overrides or the lane
+  // default moved. `subs` is derived storage; `sub_override` is the truth.
+  function syncSubs(g) {
+    var subs = [];
+    for (var b = 0; b < g.n_beats; b++) subs.push(g.sub_override[b] || g.default_subs);
+    g.subs = subs;
+  }
+  // The bounds `set_beat_marker` clamps into — what the strip draws during a drag,
+  // so the user sees the wall before hitting it.
+  function markerBounds(g, i) {
+    var lo = g.markers[i - 1] + MIN_SLOT, hi = g.markers[i + 1] - MIN_SLOT;
+    return { lo: lo, hi: Math.max(hi, lo) };
+  }
+  // Grid::set_beat_marker — a clamped write, returning the position actually taken.
+  // The outer markers are the pattern bounds and ignore this entirely.
+  function setBeatMarker(g, i, pos) {
+    if (i === 0 || i >= g.n_beats) return g.markers[Math.min(i, g.n_beats)];
+    if (!isFinite(pos)) return g.markers[i];
+    var b = markerBounds(g, i);
+    g.markers[i] = clamp(pos, b.lo, b.hi);
+    return g.markers[i];
+  }
+  // Grid::drop_marker — the body of a delete, and the inverse of an insert's shift.
+  function dropMarker(g, i) {
+    g.markers.splice(i, 1);
+    g.sub_override.splice(i, 1);
+    g.n_beats -= 1;
+    syncSubs(g);
+  }
+  // Grid::insert_beat_marker — the two halves inherit the sub-count of the beat they
+  // were cut from, and `pos` goes through the same clamp a drag takes. Returns the
+  // index taken, or -1 for a refusal (the lane is full, or the slot is too narrow to
+  // yield two of MIN_SLOT). A refused insert leaves the geometry as it was.
+  function insertBeatMarker(g, i, pos) {
+    if (g.n_beats >= MAX_BEATS || i === 0 || i > g.n_beats || !isFinite(pos)) return -1;
+    if (pos <= g.markers[0] || pos >= g.markers[g.n_beats]) return -1;
+    if (g.markers[i] - g.markers[i - 1] < 2 * MIN_SLOT) return -1;
+    g.markers.splice(i, 0, g.markers[i - 1]); // overwritten by the clamped write below
+    g.sub_override.splice(i, 0, g.sub_override[i - 1]);
+    g.n_beats += 1;
+    setBeatMarker(g, i, pos);
+    if (g.markers[i] <= g.markers[i - 1] || g.markers[i + 1] <= g.markers[i]) {
+      dropMarker(g, i);
+      return -1;
+    }
+    syncSubs(g);
+    return i;
+  }
+
+  // Pattern::edit_grid_preserving_times — the **absolute** door. Resolve every hit's
+  // grid position, apply the edit, rebuild (beat, sub, f) from those positions, so an
+  // insert or a delete moves nothing on screen.
+  //
+  // The nudge is held out of the sandwich (it is absolute by definition) but
+  // *resolving* one is not geometry-free: `fireBeat` clamps it to ±½ of the hit's own
+  // slot, so a slot that changed width changes how much of a large nudge survives.
+  // Hence the second candidate — the grid part shifted by the change in the resolved
+  // nudge — taken only when it lands closer to the fire time being preserved.
+  function hitPos(g, h) {
+    var b = Math.min(h.beat, g.n_beats - 1);
+    return { beat: b, sub: Math.min(h.sub, subsAt(g, b) - 1), frac: h.f };
+  }
+  function resolvedNudge(g, at, nudge) {
+    var half = 0.5 * (subPos(g, at.beat, at.sub + 1) - subPos(g, at.beat, at.sub));
+    return clamp(nudge / TICKS_PER_BEAT, -half, half);
+  }
+  // Where a candidate would land once `f` has been through the `f32` it is stored in.
+  function storedPosOf(g, at) { return posOf(g, at.beat, at.sub, f32(at.frac)); }
+  // `edit` returns whether the geometry actually changed; a refused edit returns
+  // early rather than rebuilding against a grid that did not move (that rebuild is
+  // very nearly the identity, and "very nearly" is not what a refusal should do).
+  function editPreservingTimes(lane, edit) {
+    var g = lane.g, hits = lane.hits, at = [], nudged = [], i;
+    for (i = 0; i < hits.length; i++) {
+      var p0 = hitPos(g, hits[i]);
+      at[i] = posOf(g, p0.beat, p0.sub, p0.frac);
+      nudged[i] = resolvedNudge(g, p0, hits[i].nudge);
+    }
+    if (!edit(g)) return false;
+    for (i = 0; i < hits.length; i++) {
+      var nudge = hits[i].nudge;
+      var p = locate(g, at[i]), np = resolvedNudge(g, p, nudge), best = p;
+      if (np !== nudged[i]) {
+        var q = locate(g, at[i] + nudged[i] - np), nq = resolvedNudge(g, q, nudge);
+        var target = at[i] + nudged[i];
+        if (Math.abs(storedPosOf(g, q) + nq - target) < Math.abs(storedPosOf(g, p) + np - target)) {
+          best = q;
+        }
+      }
+      hits[i].beat = best.beat; hits[i].sub = best.sub; hits[i].f = best.frac;
+    }
+    canonicaliseLane(lane);
+    return true;
+  }
+
+  // Pattern::drag_beat_marker — **relative**: not one hit record is written, so the
+  // slots either side stretch and squash and their hits rubber-band with them. The
+  // list is still re-sorted, because `nudge` is absolute and a hit near a slot that
+  // just narrowed can genuinely overtake its neighbour.
+  function dragMarker(lane, i, pos) {
+    var taken = setBeatMarker(lane.g, i, pos);
+    canonicaliseLane(lane);
+    return taken;
+  }
+  // `subs` **states** the new beat's sub-count override (0 = none) **inside** the same
+  // absolute-preserving edit. It cannot be a following `setBeatSubs`: that takes the
+  // relative door, so the pair composes to "preserve times, then move everything in
+  // this beat".
+  //
+  // Stated and not defaulted, matching the opcode: `insertBeatMarker` gives the new
+  // beat the split beat's override, so "leave it" and "clear it" differ on a tuplet.
+  // If this skipped a zero the page would keep an inherited override the engine had
+  // cleared, and the two grids would part company over an ordinary insert.
+  function insertMarker(lane, i, pos, subs) {
+    var taken = -1;
+    editPreservingTimes(lane, function (g) {
+      taken = insertBeatMarker(g, i, pos);
+      if (taken < 0) return false;
+      g.sub_override[taken] = clamp(subs | 0, 0, MAX_SUBS);
+      syncSubs(g);
+      return true;
+    });
+    return taken;
+  }
+  function deleteMarker(lane, i) {
+    var g = lane.g;
+    if (i === 0 || i >= g.n_beats) return false;
+    return editPreservingTimes(lane, function (gg) { dropMarker(gg, i); return true; });
+  }
+  // Swing and the per-beat sub-count take the **relative** door, like a drag: the
+  // markers move and the hits hanging off them move with them, which is what keeps a
+  // welded hit (`f = 0`) welded across a swing sweep.
+  function setLaneSwing(lane, swing) {
+    lane.g.swing = { shape: swing.shape, amount: swing.amount, period: swing.period };
+    canonicaliseLane(lane);
+  }
+  function setBeatSubs(lane, beat, subs) {
+    if (beat < 0 || beat >= lane.g.n_beats) return;
+    lane.g.sub_override[beat] = clamp(subs | 0, 0, MAX_SUBS);
+    syncSubs(lane.g);
+    canonicaliseLane(lane);
+  }
+
   // ── voice library ───────────────────────────────────────────────────────────
   // voice = { id, name, engine, flavour, note }. Seeded from the factory flavours (one
   // voice per authored flavour); the per-engine "default" flavour is named for the
@@ -461,6 +629,9 @@
   var stripEls = [];      // stripEls[t] — the lane strip
   var markerEls = [];     // markerEls[t] — its marker layer
   var hitLayerEls = [];   // hitLayerEls[t] — its diamond layer
+  var railEls = [];       // railEls[t] — the grid rail: marker handles + beat cells
+  var slotEls = [];       // slotEls[t] — the drag-feedback layer (slot highlight, clamp bounds)
+  var swingEls = [];      // swingEls[t] — its swing control, refreshed by a lane readback
   var playEls = [];       // playEls[t] — its playhead line
   var voiceBoxEls = [];   // voiceBoxEls[t]
   var macroLabelEls = []; // macroLabelEls[t][slot]
@@ -510,8 +681,74 @@
     end.style.left = "100%";
     layer.appendChild(end);
   }
+  // ── the grid rail (0354): where the geometry is edited ──────────────────────
+  // Beat markers are the stored tier (ADR 0007 §2) and the only draggable one, so
+  // they get handles of their own in a rail above the hit surface. Putting them
+  // there rather than on the marker lines themselves keeps a click on the strip a
+  // placement, whatever piece of the grid it lands on.
+  //
+  // Every X here is `markers[i] / len_beats` — a real position, never a stride times
+  // an index. The markers are unevenly spaced the moment one is dragged.
+  function renderRail(t) {
+    var lane = lanes[t], g = lane.g, rail = railEls[t], b, i;
+    rail.innerHTML = "";
+    // One cell per beat slot, carrying that beat's sub-count. The count is the
+    // tuplet control: an overridden beat is marked, so a lane-wide sub edit does not
+    // look as though it silently erased one.
+    for (b = 0; b < g.n_beats; b++) {
+      var cell = el("div", "rail-beat" + (b % 2 ? " alt" : ""));
+      cell.style.left = pct(g.markers[b] / g.len_beats);
+      cell.style.width = pct((g.markers[b + 1] - g.markers[b]) / g.len_beats);
+      var ovr = g.sub_override[b] || 0;
+      var badge = el("span", "subs-badge" + (ovr ? " ovr" : ""), String(g.subs[b]));
+      badge.dataset.beat = String(b);
+      badge.title = "beat " + (b + 1) + ": " + g.subs[b] + " subdivisions"
+        + (ovr ? " (this beat's own — 3 is a triplet)" : " (the lane's)")
+        + " · drag up/down to change it · click to follow the lane again";
+      cell.appendChild(badge);
+      rail.appendChild(cell);
+    }
+    var dragging = mdrag && mdrag.track === t;
+    for (i = 0; i <= g.n_beats; i++) {
+      var pinned = i === 0 || i === g.n_beats;
+      var live = dragging && mdrag.i === i;
+      var hnd = el("div", "mhandle" + (pinned ? " pinned" : "")
+        + (live ? " active" : "") + (live && mdrag.clamped ? " clamped" : ""));
+      hnd.style.left = pct(g.markers[i] / g.len_beats);
+      hnd.dataset.marker = String(i);
+      hnd.title = pinned
+        ? "pinned — the outer markers are the pattern's bounds and cannot be dragged"
+        : "drag: stretches the slot to the left and squashes the one to the right, "
+          + "hits and all · right-click: deletes it, leaving every hit where it is";
+      rail.appendChild(hnd);
+    }
+  }
+  // Drag feedback, drawn over the hit surface because that is where the consequence
+  // is: both adjacent slots lit at once — the two-sidedness is the part nobody
+  // predicts — and the two positions the clamp will not let the marker past.
+  function renderDragFeedback(t) {
+    var layer = slotEls[t];
+    layer.innerHTML = "";
+    if (!mdrag || mdrag.track !== t) return;
+    var g = lanes[t].g, s;
+    for (s = mdrag.i - 1; s <= mdrag.i; s++) {
+      if (s < 0 || s >= g.n_beats) continue;
+      var hi = el("div", "slot-hi" + (s < mdrag.i ? " stretch" : " squash"));
+      hi.style.left = pct(g.markers[s] / g.len_beats);
+      hi.style.width = pct((g.markers[s + 1] - g.markers[s]) / g.len_beats);
+      layer.appendChild(hi);
+    }
+    var at = g.markers[mdrag.i];
+    [["lo", mdrag.lo], ["hi", mdrag.hi]].forEach(function (bound) {
+      var line = el("div", "clamp-bound" + (at === bound[1] ? " at" : ""));
+      line.style.left = pct(bound[1] / g.len_beats);
+      layer.appendChild(line);
+    });
+  }
   function renderLaneStrip(t) {
+    renderRail(t);
     renderMarkers(t);
+    renderDragFeedback(t);
     renderHits(t);
   }
 
@@ -576,17 +813,77 @@
     return { wrap: wrap, input: inp };
   }
 
+  // The swing control (0347, 0365): one per lane, driving the warp.
+  //
+  // It is **self-documenting**. The subdivision markers redraw unevenly as it moves
+  // and every welded hit rides with them, so the feel is read off the strip rather
+  // than off a percentage — the number in the label is the secondary readout, not
+  // the primary one.
+  //
+  // The **period** is a control and not a constant (ADR 0007 Amendment, 0365): one
+  // knee spans a pair of subdivisions or the whole beat, which on a 16ths lane is
+  // 16th shuffle versus 8th swing. What the number means depends on it, so it is
+  // beside the number rather than buried.
+  function makeSwing(t) {
+    var wrap = el("div", "swing");
+    var lab = el("label", null, "Swg 0%");
+    var inp = document.createElement("input");
+    inp.type = "range"; inp.min = -1; inp.max = 1; inp.step = 0.01; inp.value = 0;
+    inp.title = "swing — watch the subdivision markers, not the number: hits welded to a marker ride with it";
+    var per = el("button", "swing-period", "pair");
+    per.title = "the interval one knee spans — a pair of subdivisions (shuffle) or the whole beat";
+    // The gesture, not the sample: a slider drag is one undo step however many
+    // `input` events it fires.
+    var before = null;
+    function swingOf(t) {
+      var s = lanes[t].g.swing;
+      return { shape: s.shape, amount: s.amount, period: s.period };
+    }
+    function show(sw) {
+      var n = Math.round(sw.amount * 100);
+      lab.textContent = "Swg " + (n > 0 ? "+" : "") + n + "%";
+      inp.value = sw.amount;
+      per.textContent = sw.period === 0 ? "beat" : sw.period === 2 ? "pair" : String(sw.period);
+      paintRange(inp);
+    }
+    inp.addEventListener("input", function () {
+      if (!before) before = swingOf(t);
+      var amount = parseFloat(inp.value);
+      // Shape follows the amount. At zero the Mpc warp *is* the identity — bit for
+      // bit, so nothing moves as it flips — and calling that Straight keeps a lane
+      // nobody swung equal to one that was never swung.
+      applySwing(t, { shape: amount === 0 ? 0 : 1, amount: amount, period: swingOf(t).period });
+    });
+    inp.addEventListener("change", function () {
+      if (before) pushUndo(t, "a swing change", (function (prev) {
+        return function () { applySwing(t, prev); };
+      })(before));
+      before = null;
+    });
+    per.addEventListener("click", function () {
+      var prev = swingOf(t);
+      applySwing(t, { shape: prev.shape, amount: prev.amount, period: prev.period === 0 ? 2 : 0 });
+      pushUndo(t, "a swing period", function () { applySwing(t, prev); });
+    });
+    wrap.appendChild(lab); wrap.appendChild(inp); wrap.appendChild(per);
+    // `cancel` is for the readback: `before` is closure state the resync cannot
+    // reach, and a snapshot taken before a lane was replaced describes a swing that
+    // lane no longer has.
+    return { wrap: wrap, show: show, cancel: function () { before = null; } };
+  }
+
   // ── strip interaction: place, drag, delete ──────────────────────────────────
   // A pointer position, resolved through the lane's geometry rather than through
   // any notion of a cell: `x` is a beat position, `y` is the lane's modulation axis.
   function pointerAt(t, ev) {
-    var s = stripEls[t], r = s.getBoundingClientRect();
-    // The **padding** box, not the border box: the marker and diamond layers are
-    // `inset: 0` inside the strip's 1px border, so measuring the pointer against
-    // the outer box would offset placement from what is drawn by that border.
-    var w = s.clientWidth || r.width, h = s.clientHeight || r.height;
-    var u = clamp((ev.clientX - r.left - (s.clientLeft || 0)) / Math.max(w, 1), 0, 1);
-    var y = clamp((ev.clientY - r.top - (s.clientTop || 0)) / Math.max(h, 1), 0, 1);
+    // Measured against the **hit layer**, which is the surface the diamonds are
+    // drawn on: it sits inside the strip's border and below the grid rail, so its
+    // own box is the coordinate space without any of that having to be added back.
+    // The rail shares its X, which is what lets a marker gesture and a placement
+    // resolve the same pointer to the same beat position.
+    var r = hitLayerEls[t].getBoundingClientRect();
+    var u = clamp((ev.clientX - r.left) / Math.max(r.width, 1), 0, 1);
+    var y = clamp((ev.clientY - r.top) / Math.max(r.height, 1), 0, 1);
     return { t: u * lanes[t].g.len_beats, y: f32(1 - y) };
   }
   // Where a drag or a placement lands, as the stored form. With snap on the hit is
@@ -692,6 +989,251 @@
     for (var t = 0; t < NT; t++) renderHits(t);
   }
 
+  // ── geometry gestures: marker drag, insert, delete, sub-count ────────────────
+  // Every one of these is a *request*: the page applies the engine's own clamped
+  // edit locally and sends the same command, so the two land on the same geometry
+  // rather than the page writing a position and hoping.
+  //
+  // The hits are never translated by a pixel delta. They are redrawn from `subPos`
+  // after the geometry moved, which is the only thing that stays right on a grid
+  // whose markers are unevenly spaced — and the only thing that does not
+  // double-apply once the model has taken the same edit.
+  var mdrag = null;  // { track, i, from, lo, hi, last, clamped, moved }
+  var sdrag = null;  // { track, beat, y0, subs, was, moved }
+
+  // A marker drag is one stored number however many hits appear to move (0349), so
+  // its undo record is one number too — which is what lets a single step put every
+  // apparent hit position back.
+  var UNDO_MAX = 64;
+  var undoStack = [];
+  function pushUndo(track, label, fn) {
+    undoStack.push({ track: track, label: label, undo: fn });
+    if (undoStack.length > UNDO_MAX) undoStack.shift();
+  }
+  // A record is a marker index and a position *in a particular geometry*. Anything
+  // that re-lays the markers wholesale — a beat-count change, a lane the model
+  // replaced — leaves every stored index naming a different marker or none, so the
+  // records for that lane go rather than being replayed against a grid they do not
+  // describe.
+  function dropUndo(track) {
+    undoStack = undoStack.filter(function (r) { return r.track !== track; });
+  }
+  function undoLast() {
+    var rec = undoStack.pop();
+    if (!rec) { setStatus("Nothing to undo."); return; }
+    rec.undo();
+    setStatus("Undid " + rec.label + " on track " + (rec.track + 1) + ".");
+  }
+
+  // The four geometry edits, each as "tell the engine, apply the same thing here,
+  // redraw". Shared by the gestures and by undo, so an undo cannot take a different
+  // path from the edit it reverses.
+  function applyMarkerDrag(t, i, pos) {
+    send("drag_beat_marker", { track: t, marker: i, pos: pos });
+    var taken = dragMarker(lanes[t], i, pos);
+    renderLaneStrip(t);
+    return taken;
+  }
+  // `subs` is the new beat's override, stated. An ordinary insert passes what the
+  // split inherits — the beat being cut — so the page and the engine cannot read a
+  // missing value two different ways.
+  function applyMarkerInsert(t, i, pos, subs) {
+    if (subs == null) subs = lanes[t].g.sub_override[i - 1] || 0;
+    var at = insertMarker(lanes[t], i, pos, subs);
+    if (at < 0) return -1;
+    send("insert_beat_marker", { track: t, marker: i, pos: pos, subs: subs });
+    refreshGeometry(t);
+    renderLaneStrip(t);
+    return at;
+  }
+  function applyMarkerDelete(t, i) {
+    if (!deleteMarker(lanes[t], i)) return false;
+    send("delete_beat_marker", { track: t, marker: i });
+    refreshGeometry(t);
+    renderLaneStrip(t);
+    return true;
+  }
+  function applyBeatSubs(t, beat, subs) {
+    send("set_beat_subs", { track: t, beat: beat, subs: subs });
+    setBeatSubs(lanes[t], beat, subs);
+    renderLaneStrip(t);
+  }
+  function applySwing(t, swing) {
+    send("set_swing", { track: t, shape: swing.shape, amount: swing.amount, period: swing.period });
+    setLaneSwing(lanes[t], swing);
+    refreshGeometry(t);
+    renderLaneStrip(t);
+  }
+  // The Bts / Sub / Swg controls are a readout of the lane's geometry as much as the
+  // strip is, and a rail gesture changes that geometry. A Bts box still showing the
+  // count from before an insert is not merely stale: the next click on its spinner
+  // sends `set_grid_beats` from the *wrong* number, which re-lays every marker the
+  // user placed by hand.
+  function refreshGeometry(t) {
+    var g = lanes[t].g;
+    if (beatsInputEls[t]) beatsInputEls[t].value = g.n_beats;
+    if (subsInputEls[t]) subsInputEls[t].value = g.default_subs;
+    if (swingEls[t]) swingEls[t].show(g.swing);
+  }
+
+  function onRailDown(t, ev) {
+    // The rail is not the hit surface: a gesture here must never fall through and
+    // place a diamond.
+    ev.preventDefault();
+    ev.stopPropagation();
+    // Left button only. `mousedown` fires for the right one too, and arming a drag
+    // from it would leave a drag live underneath the delete that button is *for* —
+    // the marker indices shift under a delete, so the still-held button would then
+    // be dragging a different marker than the one it was pressed on.
+    if (ev.button) return;
+    var lane = lanes[t], g = lane.g, target = ev.target;
+    if (target.classList.contains("subs-badge")) {
+      var beat = parseInt(target.dataset.beat, 10);
+      sdrag = {
+        track: t, beat: beat, y0: ev.clientY,
+        subs: g.subs[beat], was: g.sub_override[beat] || 0, moved: false,
+      };
+      return;
+    }
+    if (!target.classList.contains("mhandle")) return;
+    var i = parseInt(target.dataset.marker, 10);
+    if (i === 0 || i === g.n_beats) {
+      setStatus("The outer markers are the pattern's bounds — use Bts to change the lane's length.");
+      return;
+    }
+    var b = markerBounds(g, i);
+    mdrag = { track: t, i: i, from: g.markers[i], lo: b.lo, hi: b.hi, last: g.markers[i], clamped: false, moved: false };
+    renderLaneStrip(t);
+    setStatus("Slot " + i + " stretches, slot " + (i + 1) + " squashes — both sets of hits move.");
+  }
+
+  function onMarkerDragMove(ev) {
+    var t = mdrag.track, p = pointerAt(t, ev);
+    // Clamped by the engine's own rule, in the engine's own arithmetic. The bound
+    // being *hit* is worth showing even when nothing moves — that is the moment the
+    // user needs to know the marker is not going any further.
+    var taken = clamp(p.t, mdrag.lo, mdrag.hi);
+    var wasClamped = mdrag.clamped;
+    mdrag.clamped = taken !== p.t;
+    if (taken === mdrag.last) {
+      if (mdrag.clamped !== wasClamped) renderLaneStrip(t);
+      return;
+    }
+    mdrag.last = taken;
+    mdrag.moved = true;
+    // `p.t` and not `taken`: the position is a request, and the clamp is the
+    // engine's to apply. Sending the pre-clamp value keeps one implementation of the
+    // bound instead of two that have to agree.
+    applyMarkerDrag(t, mdrag.i, p.t);
+  }
+  function onMarkerDragUp() {
+    var m = mdrag;
+    mdrag = null;
+    if (!m) return;
+    if (m.moved) {
+      var t = m.track, i = m.i, from = m.from;
+      // Re-assert where the marker finished. A drag streams one command per
+      // mousemove, and a full edit ring drops them (`EditQueue::push`) — so the
+      // engine can be left on an older position with nothing following to correct
+      // it. The last one is idempotent and costs a single command.
+      //
+      // Gated on `moved` alone, deliberately: a marker parked at its `MIN_SLOT`
+      // wall, dragged away and back, ends where it started, so a `!== from` gate
+      // would skip the re-assert on precisely the longest command stream — the
+      // drag most likely to have lost one. The undo record still needs `!== from`,
+      // since restoring a position the marker already holds is not an edit.
+      applyMarkerDrag(t, i, lanes[t].g.markers[i]);
+      if (lanes[t].g.markers[i] !== from) {
+        pushUndo(t, "a marker drag", function () { applyMarkerDrag(t, i, from); });
+      }
+    }
+    renderLaneStrip(m.track);
+    setStatus("");
+  }
+  function onSubsDragMove(ev) {
+    // Vertical, like a knob: 7px a subdivision, so the count is nudged rather than
+    // flicked through. The strip redraws as it changes, which is the readout —
+    // a beat set to 3 is three evenly-spaced subdivisions, visibly.
+    var d = Math.round((sdrag.y0 - ev.clientY) / 7);
+    if (d === 0 && !sdrag.moved) return;
+    var n = clamp(sdrag.subs + d, 1, MAX_SUBS);
+    sdrag.moved = true;
+    if (n === lanes[sdrag.track].g.subs[sdrag.beat]) return;
+    applyBeatSubs(sdrag.track, sdrag.beat, n);
+  }
+  function onSubsDragUp() {
+    var s = sdrag;
+    sdrag = null;
+    if (!s) return;
+    var g = lanes[s.track].g;
+    // A click, not a drag: hand the beat back to the lane default. The two live on
+    // one control on purpose — "this beat's own count" and "no, follow the lane"
+    // are the same question.
+    if (!s.moved && s.was) applyBeatSubs(s.track, s.beat, 0);
+    if ((g.sub_override[s.beat] || 0) === s.was) return;
+    pushUndo(s.track, "a sub-count", (function (t, b, v) {
+      return function () { applyBeatSubs(t, b, v); };
+    })(s.track, s.beat, s.was));
+  }
+
+  // Insert and delete are the **absolute**-preserving pair, and get affordances of
+  // their own so they are not conflated with the drag: double-click the rail to
+  // split a slot, right-click a handle to merge one. Both leave every hit exactly
+  // where it is on screen, which is the opposite of what a drag does.
+  function onRailDblClick(t, ev) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    // The rail's *background* splits a slot. A handle has its own gestures, and the
+    // sub-count badge's single click already means something — double-clicking it is
+    // a natural thing to do to a number, and it must not also cut the beat in two.
+    if (ev.target.classList.contains("mhandle") || ev.target.classList.contains("subs-badge")) {
+      return;
+    }
+    var lane = lanes[t], p = pointerAt(t, ev);
+    // The index that splits the slot the pointer is *in*. Any other index would meet
+    // the clamp and reshape a slot the user did not point at.
+    var i = locate(lane.g, p.t).beat + 1;
+    if (lane.g.n_beats >= MAX_BEATS) {
+      setStatus("Track " + (t + 1) + " is at " + MAX_BEATS + " beats — the marker ceiling.");
+      return;
+    }
+    if (applyMarkerInsert(t, i, p.t) < 0) {
+      // Refused: either the slot cannot yield two of MIN_SLOT, or the position is
+      // against a pattern bound. One message, because from the pointer's point of
+      // view they are the same thing — there is no room here.
+      setStatus("No room to split there — a slot cannot be thinner than the minimum.");
+      return;
+    }
+    pushUndo(t, "a marker insert", function () { applyMarkerDelete(t, i); });
+    setStatus("Marker inserted — the hits either side did not move.");
+  }
+  function onRailContext(t, ev) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (!ev.target.classList.contains("mhandle")) return;
+    var g = lanes[t].g, i = parseInt(ev.target.dataset.marker, 10);
+    if (i === 0 || i === g.n_beats) {
+      setStatus("The outer markers are the pattern's bounds and cannot be deleted.");
+      return;
+    }
+    var pos = g.markers[i];
+    // The merged slot keeps the **left** beat's sub-count, so the right beat's own
+    // override is what a delete discards — and an insert gives the new beat the
+    // left's. Undo therefore has to put the override back explicitly, or a deleted
+    // triplet would come back as a plain beat while the status line claimed nothing
+    // had moved.
+    var ovr = g.sub_override[i] || 0;
+    if (!applyMarkerDelete(t, i)) return;
+    pushUndo(t, "a marker delete", function () {
+      // The override rides the insert rather than following it. As a separate
+      // `set_beat_subs` it took the relative door and displaced every hit in the
+      // restored beat — the undo put the triplet back and moved the hits it had just
+      // promised not to touch.
+      applyMarkerInsert(t, i, pos, ovr);
+    });
+    setStatus("Marker deleted — the hits either side did not move.");
+  }
+
   // ── quantise: two independent verbs, applied to the selection ───────────────
   // Editor verbs, not storage constraints (ADR 0007 §1). The page applies the same
   // arithmetic the engine does so the two lists stay in step; a full quantise-X
@@ -773,8 +1315,13 @@
     bar.appendChild(statusEl);
 
     var hint = el("span", "rb-hint",
-      "click places · drag moves · alt deletes · ctrl cycles probability · dbl toggles retrig · shift selects");
+      "strip: click places · drag moves · alt deletes · ctrl cycles probability · dbl toggles retrig · shift selects");
     bar.appendChild(hint);
+    // The rail's gestures read differently from the strip's and are worth naming
+    // apart: a marker drag carries its hits, an insert or a delete leaves them.
+    var rail = el("span", "rb-hint rail",
+      "rail: drag a marker (hits follow, both sides) · dbl inserts · right-click deletes (hits stay) · drag the number for tuplets · ⌘Z undoes");
+    bar.appendChild(rail);
     rack.parentNode.insertBefore(bar, rack);
   }
 
@@ -796,11 +1343,20 @@
     var centre = el("div", "centre");
     centre.style.top = pct(1 - Y_CENTRE);
     strip.appendChild(centre);
+    slotEls[t] = el("div", "slots");
+    strip.appendChild(slotEls[t]);
     playEls[t] = el("div", "playhead hidden");
     strip.appendChild(playEls[t]);
     hitLayerEls[t] = el("div", "hits");
     strip.appendChild(hitLayerEls[t]);
+    // Last, so the handles sit over everything else — the rail is the only layer in
+    // the strip that takes the pointer besides the diamonds themselves.
+    railEls[t] = el("div", "rail");
+    strip.appendChild(railEls[t]);
     (function (t) {
+      railEls[t].addEventListener("mousedown", function (ev) { onRailDown(t, ev); });
+      railEls[t].addEventListener("dblclick", function (ev) { onRailDblClick(t, ev); });
+      railEls[t].addEventListener("contextmenu", function (ev) { onRailContext(t, ev); });
       strip.addEventListener("mousedown", function (ev) { onStripDown(t, ev); });
       strip.addEventListener("dblclick", function (ev) {
         if (!ev.target || !ev.target.classList.contains("hit")) return;
@@ -851,6 +1407,9 @@
       send("set_grid_beats", { track: t, beats: n });
       relayoutBeats(lanes[t].g, n);
       canonicaliseLane(lanes[t]);
+      // A relayout throws the marker positions away and re-lays them evenly, so
+      // every undo record's marker index names something else now.
+      dropUndo(t);
       renderLaneStrip(t);
     });
     beatsInputEls[t] = beatsNum.input;
@@ -861,10 +1420,15 @@
       send("set_grid_subs", { track: t, subs: n });
       setDefaultSubs(lanes[t].g, n);
       canonicaliseLane(lanes[t]);
+      dropUndo(t); // a stored sub-count is a count in the geometry that just changed
       renderLaneStrip(t);
     });
     subsInputEls[t] = subsNum.input;
     knobs.appendChild(subsNum.wrap);
+    // Swing: the lane's warp, and the per-beat override on the rail is the tuplet.
+    swingEls[t] = makeSwing(t);
+    swingEls[t].show(lanes[t].g.swing);
+    knobs.appendChild(swingEls[t].wrap);
     // Choke group (0 = none). Tracks sharing a non-zero group cut each other.
     knobs.appendChild(makeNumber("Chk", "choke group (0 = none; shared group = mutual cut)", 0, 7, lanes[t].choke, function (g) {
       lanes[t].choke = g;
@@ -879,8 +1443,30 @@
 
   buildRackBar();
   for (var t2 = 0; t2 < NT; t2++) buildTrack(t2);
-  document.addEventListener("mousemove", onDragMove);
-  document.addEventListener("mouseup", onDragUp);
+  document.addEventListener("mousemove", function (ev) {
+    if (mdrag) { onMarkerDragMove(ev); return; }
+    if (sdrag) { onSubsDragMove(ev); return; }
+    onDragMove(ev);
+  });
+  document.addEventListener("mouseup", function () {
+    if (mdrag) onMarkerDragUp();
+    if (sdrag) onSubsDragUp();
+    onDragUp();
+  });
+  // Undo, for the geometry gestures. A marker drag is the case that needs it: one
+  // grab moves every hit in two slots, and putting them back by hand is not a thing
+  // a user can do.
+  document.addEventListener("keydown", function (ev) {
+    if (!(ev.ctrlKey || ev.metaKey) || ev.shiftKey) return;
+    if ((ev.key || "").toLowerCase() !== "z") return;
+    // Not while a field has focus: the page has text boxes (voice and macro names)
+    // and number boxes, and undo in one of those means undo the typing, not undo
+    // somebody's marker drag two lanes away.
+    var tag = ev.target && ev.target.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    ev.preventDefault();
+    undoLast();
+  });
   // Push the seeded kit to the backend: each track's default engine is generic, so without
   // this the loaded pattern would play default voices, not the labelled ones. Sends engine +
   // flavour + snaps the macro knobs for every lane.
@@ -1147,13 +1733,20 @@
     var next = laneFrom(ev);
     lane.g = next.g;
     lane.hits = next.hits;
-    // Any index a gesture is holding named the *old* list, so no gesture survives.
+    // Any index a gesture is holding named the *old* list, so no gesture survives —
+    // and neither does an undo record, whose whole content is a position in a
+    // geometry this lane no longer has.
     if (drag && drag.track === t) drag = null;
+    if (mdrag && mdrag.track === t) mdrag = null;
+    if (sdrag && sdrag.track === t) sdrag = null;
+    if (swingEls[t]) swingEls[t].cancel();
+    dropUndo(t);
     // The selection holds hit *objects*; the ones this replaced are now in no lane
     // at all, so drop exactly those and leave other lanes' alone.
     selection = selection.filter(stillPlaced);
-    if (beatsInputEls[t]) beatsInputEls[t].value = lane.g.n_beats;
-    if (subsInputEls[t]) subsInputEls[t].value = lane.g.default_subs;
+    // The same three boxes a rail gesture refreshes, through the same function: two
+    // copies of "what the geometry controls read" would only have to be kept in step.
+    refreshGeometry(t);
     renderLaneStrip(t);
   }
   function stillPlaced(h) {
