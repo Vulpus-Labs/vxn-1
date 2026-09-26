@@ -12,7 +12,7 @@
 #![allow(clippy::needless_range_loop)]
 
 use crate::CHANNELS_PER_LAYER;
-use crate::math::fast_sine;
+use crate::math::{FAST_TANH_LIMIT, fast_sine};
 use crate::oscillator::Waveform;
 use crate::random_walk::{BoundedRandomWalk, OSCILLATOR_DRIFT_STEP};
 
@@ -36,26 +36,30 @@ pub(super) fn pblep(t: f32, dt: f32) -> f32 {
     rise * m_rise + fall * m_fall
 }
 
-/// Branchless `tanh` approximation: Padé(5,6) clamped to ±2.5 (where it
-/// saturates to ±1). RMS error < 0.05 over [−3, 3]. The clamp keeps it
-/// SIMD-friendly inside the lane loop — early-out `if`s would defeat NEON
-/// vectorisation the way runtime enum matches do (see `WaveKind`). Used as the
-/// per-stage non-linearity in the OTA ladder feedback path and the diode ring's
-/// gain stage; the better fit (vs the cheaper Padé(3,3) form) is audible at
-/// high drive / resonance for ~15–25% extra time on the saturator-heavy paths.
+/// Branchless `tanh` approximation: Padé(5,6) with the input clamped to
+/// ±`FAST_TANH_LIMIT`, the rational's turnover (where it reaches ±0.99928).
+/// Max abs error 4.6e−6 over [0, 2.5]. The clamp keeps it SIMD-friendly inside
+/// the lane loop — early-out `if`s would defeat NEON vectorisation the way
+/// runtime enum matches do (see `WaveKind`). Used as the per-stage
+/// non-linearity in the OTA ladder feedback path and the diode ring's gain
+/// stage; the better fit (vs the cheaper Padé(3,3) form) is audible at high
+/// drive / resonance for ~15–25% extra time on the saturator-heavy paths.
 ///
-/// Shares the Padé(5,6) coefficients with the shared scalar `fast_tanh`
-/// (`vxn-core-utils::math`, re-exported as [`crate::math::fast_tanh`]) — keep
-/// the two in sync if you retune them. They are deliberately NOT merged: this
-/// branchless `clamp` form vectorises in the poly lane loop, while `fast_tanh`'s
-/// early-return branches are fine on scalar paths.
+/// Shares the Padé(5,6) coefficients and the clamp limit with the shared scalar
+/// `fast_tanh` (`vxn-core-utils::math`, re-exported as
+/// [`crate::math::fast_tanh`]) — keep the two in sync if you retune them; the
+/// `tanh_c_matches_fast_tanh` test holds them together. The only difference is
+/// the top: this saturates at 0.99928 (input clamp), `fast_tanh` at 1.0
+/// (output clamp), 7.2e−4 apart. They are deliberately NOT merged: this
+/// branchless `clamp` form vectorises in the poly lane loop, while
+/// `fast_tanh`'s early-return branches are fine on scalar paths.
 #[inline(always)]
 pub(super) fn tanh_c(x: f32) -> f32 {
-    let x = x.clamp(-2.5, 2.5);
+    let x = x.clamp(-FAST_TANH_LIMIT, FAST_TANH_LIMIT);
     let x2 = x * x;
     let x4 = x2 * x2;
     let x6 = x4 * x2;
-    x * (10395.0 + 1260.0 * x2 + 21.0 * x4) / (10395.0 + 4725.0 * x2 + 210.0 * x4 + 4.0 * x6)
+    x * (10395.0 + 1260.0 * x2 + 21.0 * x4) / (10395.0 + 4725.0 * x2 + 210.0 * x4 + x6)
 }
 
 /// Naive (pre-BLEP) oscillator value — the raw, discontinuous waveform. Used to
@@ -804,6 +808,23 @@ pub fn poly_ring_mod(o1: &[f32; N], o2: &[f32; N], gain: f32, out: &mut [f32; N]
 mod tests {
     use super::*;
     use crate::oscillator::Oscillator;
+
+    /// `tanh_c` and the scalar `fast_tanh` agree across [−6, 6], past the
+    /// clamp included — they drifted 0.028 apart at the top before 0390. Below
+    /// the limit they are the same rational; above it they differ only by the
+    /// 7.2e−4 step (0.99928 vs 1.0).
+    #[test]
+    fn tanh_c_matches_fast_tanh() {
+        let mut x = -6.0f32;
+        while x <= 6.0 {
+            let d = (tanh_c(x) - crate::math::fast_tanh(x)).abs();
+            assert!(d < 7.5e-4, "tanh_c vs fast_tanh at {x}: {d}");
+            if x.abs() < FAST_TANH_LIMIT {
+                assert!(d < 1e-6, "tanh_c vs fast_tanh below clamp at {x}: {d}");
+            }
+            x += 0.001;
+        }
+    }
 
     #[test]
     fn poly_saw_matches_scalar_within_tolerance() {

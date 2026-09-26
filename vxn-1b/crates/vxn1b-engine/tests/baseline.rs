@@ -70,7 +70,15 @@ const BLK: usize = 32;
 /// kernel — a real DSP change, and the delay is in this patch. The previous
 /// value, `0xef1c_866f_d4a3_8540`, still verified on this machine at the commit
 /// before the migration, so the move is the whole of the difference.
-const EXPECTED: u64 = 0x5d7f_71bf_c17f_b2f2;
+///
+/// **Re-captured by ticket 0390**, which corrected the `tanh` Padé's `x⁶`
+/// coefficient (4 → 1) and moved its clamp from ±2.5 to the turnover at
+/// ±4.3731 — the saturation curve itself changed (max 1.5e−2 closer to `tanh`,
+/// the 0.028 step at the clamp now 7.2e−4), and the ladder saturator is in
+/// this patch. The null against the old reference was −5.95 dBFS peak; the
+/// reference render was re-captured alongside. Previous value
+/// `0x5d7f_71bf_c17f_b2f2`.
+const EXPECTED: u64 = 0xcd92_1c58_c1e4_fd74;
 
 /// E049's bar: the difference peak between two renders of the same patch must
 /// sit at or below this, which is beneath the 16-bit noise floor and far

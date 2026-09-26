@@ -129,3 +129,30 @@ coefficient fix for both forms and this noted as the option not taken.
 - **RMS error < 0.05 over [−3, 3]**, which `tanh_c`'s docstring claims as its accuracy, is an
   order of magnitude looser than either variant deserves and is worth recomputing while the
   coefficients are in hand.
+
+## Close-out (2026-09-26)
+
+- `fast_tanh` carries the Padé's `x⁶` coefficient (1) and clamps at the new
+  `FAST_TANH_LIMIT = 4.3731`, the rational's turnover
+  ([math.rs](../../crates/vxn-core-utils/src/math.rs)); exported from `vxn-core-utils` and
+  re-exported through `vxn-dsp::math`. Docstring states error bounds (4.6e−6 over [0, 2.5],
+  4.0e−4 over [0, LIMIT], RMS 5.2e−6 over [−3, 3] — the old "< 0.05" claim replaced) and the
+  7.2e−4 remaining step. One multiply fewer.
+- `tanh_c` ([oscillator.rs](../../vxn-1b/crates/vxn-dsp/src/poly/oscillator.rs)) takes the same
+  coefficient and clamps its input at `FAST_TANH_LIMIT` (shared constant, not a copied literal);
+  docstring says where the two differ (0.99928 vs 1.0 at the top) and names the test holding them.
+- Tests: `math::tests::tanh_error_bound_over_saturator_range` (< 6e−6 over [0, 2.5]),
+  `tanh_error_bound_up_to_clamp` (< 4.5e−4 over [0, LIMIT]), `tanh_step_at_clamp` (step pinned to
+  [7.0e−4, 7.4e−4]); `tanh_monotone_and_bounded` widened to [−6, 6];
+  `poly::oscillator::tests::tanh_c_matches_fast_tanh` (< 7.5e−4 across [−6, 6], < 1e−6 below the
+  clamp).
+- Re-baselined deliberately: vxn-1b `baseline.rs` — null vs old reference was −5.95 dBFS peak;
+  `reference_render.f32` re-captured and `EXPECTED` 0x5d7f_71bf_c17f_b2f2 → 0xcd92_1c58_c1e4_fd74
+  (dev, debug), with a comment naming this ticket. vxn-2's baseline is unmoved (hash
+  0x9b76_78e7_f9d3_534b and null both pass — its reference patch doesn't reach the curve).
+  `vxn2-dsp` `filter::tests::aliasing_decreases_monotonically_with_oversampling`: with the step gone
+  2×/4×/8× all sit at the ≈ −83 dB analysis floor (1× −53.4 dB), so the assertion now permits ties
+  below −80 dB and additionally requires ≥ 20 dB 1× → 8×; old and new figures recorded in its doc.
+  Everything else (dynamics, phaser, BBD, ladder tests) passed unchanged. `cargo test --workspace`
+  green.
+- Release note: carried in the VXN release cut immediately after this ticket.

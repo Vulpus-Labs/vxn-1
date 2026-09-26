@@ -351,21 +351,30 @@ mod tests {
     /// 1× → 2× → 4× → 8×. dB figures are printed for the record.
     ///
     /// Recorded (driven LP4, cutoff 4 kHz, reso 0.8, drive 6×, f0 ≈ 2.34 kHz):
-    /// 1× = −54.6 dB, 2× = −64.7 dB, 4× = −67.1 dB, 8× = −75.1 dB inharmonic
-    /// energy — a ~20 dB alias reduction from 1× to 8×.
+    /// 1× = −53.4 dB, then 2× / 4× / 8× all ≈ −83 dB inharmonic energy — the
+    /// analysis floor of this measurement (f32 render, 4096-point window).
+    ///
+    /// Before ticket 0390 the saturator's `tanh` carried a 0.028 step at ±2.5,
+    /// a wideband event that only more oversampling could push down, so the
+    /// fractions fell 1× −54.6 → 2× −64.7 → 4× −67.1 → 8× −75.1 dB. With the
+    /// curve smooth, 2× already reaches the floor; a factor that is already at
+    /// the floor may therefore tie rather than strictly drop.
     #[test]
     fn aliasing_decreases_monotonically_with_oversampling() {
+        // −80 dB: just above the ≈ −83 dB measurement floor.
+        const FLOOR: f64 = 1e-8;
         let mut prev = f64::INFINITY;
         let mut db = Vec::new();
         for &factor in &[1usize, 2, 4, 8] {
             let frac = inharmonic_fraction(factor);
             db.push((factor, 10.0 * frac.log10()));
             assert!(
-                frac < prev,
-                "{factor}×: inharmonic fraction {frac:.6} did not drop below {prev:.6}",
+                frac < prev || (frac < FLOOR && prev < FLOOR),
+                "{factor}×: inharmonic fraction {frac:.3e} did not drop below {prev:.3e}",
             );
             prev = frac;
         }
+        assert!(db[0].1 - db[3].1 > 20.0, "1× → 8× alias reduction under 20 dB: {db:?}");
         // Visible with `cargo test -- --nocapture`.
         for (f, d) in &db {
             println!("aliasing {f}×: inharmonic energy {d:.1} dB");

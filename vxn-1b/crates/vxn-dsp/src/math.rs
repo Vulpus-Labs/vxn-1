@@ -20,7 +20,7 @@ mod rng_tests {
 /// Scalar Padé(5,6) `tanh`. Re-exported from `vxn-core-utils::math`. Distinct
 /// from `poly::oscillator::tanh_c`: that branchless `clamp` form vectorises in
 /// the poly lane loop where this early-return form would not.
-pub use vxn_core_utils::math::{fast_tanh, xorshift64};
+pub use vxn_core_utils::math::{FAST_TANH_LIMIT, fast_tanh, xorshift64};
 
 static SINE_TABLE: std::sync::LazyLock<Vec<f32>> =
     std::sync::LazyLock::new(|| (0..1024).map(|i| (i as f32 / 1024.0 * TAU).sin()).collect());

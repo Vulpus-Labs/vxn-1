@@ -6,25 +6,37 @@
 //! `clamp` form vectorises in the per-lane hot loop where this early-return
 //! form would not (memory `vxn1-tanh-branchless-only`).
 
-/// Rational (Padé degree-5/6) approximation to `tanh`, saturating to ±1 for
-/// `|x| ≥ 2.5`. Exact at 0, monotone, RMS error < 0.05 over [−3, 3].
+/// Input magnitude at which [`fast_tanh`]'s rational peaks (x ≈ 4.37313, value
+/// 0.99928). Past it the rational decays back toward 0, so both the scalar form
+/// and the branchless poly-lane `tanh_c` clamp here — an unguarded large input
+/// would otherwise come out *quiet*.
+pub const FAST_TANH_LIMIT: f32 = 4.3731;
+
+/// Rational (Padé degree-5/6, the `x/(1+x²/(3+x²/(5+…)))` continued-fraction
+/// convergent) approximation to `tanh`, saturating to ±1 for
+/// `|x| ≥ FAST_TANH_LIMIT`. Exact at 0, odd, monotone. Max abs error against
+/// `tanh`: 4.6e−6 over [0, 2.5], 4.0e−4 over [0, LIMIT]; RMS 5.2e−6 over
+/// [−3, 3]. The clamp sits at the rational's turnover, where the slope is
+/// already ~0, so the remaining step into ±1 is 7.2e−4 (ticket 0390 — the
+/// denominator's `x⁶` coefficient used to be 4, not the Padé's 1, which put a
+/// 0.028 step at a ±2.5 clamp).
 ///
-/// The ±2.5 hard-clamp branches are hot-path-sensitive (VXN1's
-/// `tanh-branchless-only` lesson — branch-free variants matter in the poly hot
-/// loop, and swapping the clamp regresses); keep the branch structure as-is and
-/// re-measure rather than refactoring.
+/// The clamp branches are hot-path-sensitive (VXN1's `tanh-branchless-only`
+/// lesson — branch-free variants matter in the poly hot loop, and swapping the
+/// clamp regresses); keep the branch structure as-is and re-measure rather than
+/// refactoring.
 #[inline(always)]
 pub fn fast_tanh(x: f32) -> f32 {
-    if x >= 2.5 {
+    if x >= FAST_TANH_LIMIT {
         return 1.0;
     }
-    if x <= -2.5 {
+    if x <= -FAST_TANH_LIMIT {
         return -1.0;
     }
     let x2 = x * x;
     let x4 = x2 * x2;
     let x6 = x4 * x2;
-    x * (10395.0 + 1260.0 * x2 + 21.0 * x4) / (10395.0 + 4725.0 * x2 + 210.0 * x4 + 4.0 * x6)
+    x * (10395.0 + 1260.0 * x2 + 21.0 * x4) / (10395.0 + 4725.0 * x2 + 210.0 * x4 + x6)
 }
 
 #[cfg(test)]
@@ -38,6 +50,39 @@ mod tests {
         assert!((fast_tanh(-10.0) + 1.0).abs() < 1e-6);
     }
 
+    /// Max abs error against `f64::tanh`, sampled over `[0, hi)`.
+    fn max_tanh_err(hi: f32) -> f64 {
+        let n = 100_000;
+        (0..n)
+            .map(|i| {
+                let x = hi * i as f32 / n as f32;
+                (fast_tanh(x) as f64 - (x as f64).tanh()).abs()
+            })
+            .fold(0.0, f64::max)
+    }
+
+    #[test]
+    fn tanh_error_bound_over_saturator_range() {
+        let e = max_tanh_err(2.5);
+        assert!(e < 6e-6, "max error over [0, 2.5] = {e}");
+    }
+
+    #[test]
+    fn tanh_error_bound_up_to_clamp() {
+        let e = max_tanh_err(FAST_TANH_LIMIT);
+        assert!(e < 4.5e-4, "max error over [0, LIMIT] = {e}");
+    }
+
+    /// The step into ±1 at the clamp. Pinned both ways so moving the clamp (or
+    /// the coefficients) has to be deliberate — 0390 found a 0.028 step here.
+    #[test]
+    fn tanh_step_at_clamp() {
+        let below = fast_tanh(FAST_TANH_LIMIT - 1e-4);
+        let step = fast_tanh(FAST_TANH_LIMIT) - below;
+        assert!((7.0e-4..7.4e-4).contains(&step), "clamp step = {step}");
+        assert_eq!(fast_tanh(-FAST_TANH_LIMIT), -1.0);
+    }
+
     #[test]
     fn tanh_is_odd() {
         let mut x = -3.0f32;
@@ -49,9 +94,9 @@ mod tests {
 
     #[test]
     fn tanh_monotone_and_bounded() {
-        let mut prev = fast_tanh(-3.0);
-        let mut x = -3.0f32;
-        while x <= 3.0 {
+        let mut prev = fast_tanh(-6.0);
+        let mut x = -6.0f32;
+        while x <= 6.0 {
             let y = fast_tanh(x);
             assert!(y >= prev - 1e-6, "not monotone at {x}");
             assert!((-1.0..=1.0).contains(&y), "out of range at {x}: {y}");
